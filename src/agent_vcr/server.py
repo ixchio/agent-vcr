@@ -8,6 +8,7 @@ import logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any, AsyncGenerator
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -93,7 +94,7 @@ class VCRFileWatcher(FileSystemEventHandler):
             asyncio.ensure_future, self.broadcast(message)
         )
 
-    def on_modified(self, event) -> None:
+    def on_modified(self, event: Any) -> None:
         """Handle file modification events."""
         if not event.src_path.endswith(".vcr"):
             return
@@ -116,7 +117,7 @@ class VCRFileWatcher(FileSystemEventHandler):
         except Exception as e:
             logger.debug("Error processing file modification for %s: %s", session_id, e)
 
-    def on_created(self, event) -> None:
+    def on_created(self, event: Any) -> None:
         """Handle file creation events."""
         if not event.src_path.endswith(".vcr"):
             return
@@ -147,7 +148,7 @@ class VCRServer:
         self.host = host
         self.port = port
         self.watcher = VCRFileWatcher(self.vcr_dir)
-        self.observer: Observer | None = None
+        self.observer: Any | None = None
 
         self.vcr_dir.mkdir(parents=True, exist_ok=True)
 
@@ -169,7 +170,7 @@ class VCRServer:
         self._setup_routes()
 
     @asynccontextmanager
-    async def _lifespan(self, app: FastAPI):
+    async def _lifespan(self, app: FastAPI) -> AsyncGenerator[None, None]:
         """Manage server lifespan."""
         # Store the event loop so watchdog threads can schedule async work
         self.watcher.set_event_loop(asyncio.get_running_loop())
@@ -190,7 +191,7 @@ class VCRServer:
         """Setup API routes."""
 
         @self.app.get("/")
-        async def root():
+        async def root() -> dict[str, Any]:
             return {
                 "name": "Agent VCR API",
                 "version": "0.1.0",
@@ -202,7 +203,7 @@ class VCRServer:
             }
 
         @self.app.get("/api/sessions", response_model=SessionListResponse)
-        async def list_sessions():
+        async def list_sessions() -> SessionListResponse:
             """List all recorded sessions."""
             sessions = []
             manifest_path = self.vcr_dir / "manifest.json"
@@ -227,7 +228,7 @@ class VCRServer:
             return SessionListResponse(sessions=sessions, total=len(sessions))
 
         @self.app.get("/api/sessions/{session_id}", response_model=SessionDetailResponse)
-        async def get_session(session_id: str):
+        async def get_session(session_id: str) -> SessionDetailResponse:
             """Get details of a specific session."""
             vcr_file = self.vcr_dir / f"{session_id}.vcr"
 
@@ -255,7 +256,7 @@ class VCRServer:
             )
 
         @self.app.get("/api/sessions/{session_id}/frames/{frame_index}")
-        async def get_frame(session_id: str, frame_index: int):
+        async def get_frame(session_id: str, frame_index: int) -> dict[str, Any]:
             """Get a specific frame from a session."""
             vcr_file = self.vcr_dir / f"{session_id}.vcr"
 
@@ -276,7 +277,7 @@ class VCRServer:
                 raise HTTPException(status_code=500, detail=str(e))  # noqa: B904
 
         @self.app.post("/api/sessions/{session_id}/resume")
-        async def resume_session(session_id: str, request: ResumeRequest):
+        async def resume_session(session_id: str, request: ResumeRequest) -> dict[str, Any]:
             """Resume execution from a specific frame."""
             vcr_file = self.vcr_dir / f"{session_id}.vcr"
 
@@ -301,7 +302,7 @@ class VCRServer:
                 raise HTTPException(status_code=500, detail=str(e))  # noqa: B904
 
         @self.app.get("/api/sessions/{session_id}/export")
-        async def export_session(session_id: str, format: str = "json"):
+        async def export_session(session_id: str, format: str = "json") -> dict[str, Any]:
             """Export a session in various formats."""
             vcr_file = self.vcr_dir / f"{session_id}.vcr"
 
@@ -321,7 +322,7 @@ class VCRServer:
                 raise HTTPException(status_code=500, detail=str(e))  # noqa: B904
 
         @self.app.websocket("/ws/live")
-        async def websocket_endpoint(websocket: WebSocket):
+        async def websocket_endpoint(websocket: WebSocket) -> None:
             """WebSocket endpoint for live updates."""
             await websocket.accept()
             await self.watcher.connect(websocket)
@@ -374,7 +375,7 @@ class VCRServer:
         uvicorn.run(self.app, host=self.host, port=self.port)
 
 
-def main():
+def main() -> None:
     """CLI entry point."""
     import argparse
 

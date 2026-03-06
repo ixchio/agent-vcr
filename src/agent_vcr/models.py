@@ -146,7 +146,7 @@ class StateSerializer:
 class VCRCache:
     """In-memory cache for VCR sessions."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._sessions: dict[str, Session] = {}
         self._frames: dict[str, list[Frame]] = {}
 
@@ -165,7 +165,3 @@ class VCRCache:
 
     def get_frames(self, session_id: str) -> list[Frame]:
         return self._frames.get(session_id, [])
-
-    def clear(self) -> None:
-        self._sessions.clear()
-        self._frames.clear()

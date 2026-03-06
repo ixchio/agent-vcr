@@ -195,12 +195,12 @@ class LangGraphCallback:
 def vcr_record(
     recorder: VCRRecorder,
     node_name: str | None = None,
-):
+) -> Callable:
     """Decorator to record a function execution."""
 
     def decorator(func: Callable) -> Callable:
         @functools.wraps(func)
-        def wrapper(*args, **kwargs):
+        def wrapper(*args: Any, **kwargs: Any) -> Any:
             input_state = {"args": args, "kwargs": kwargs}
             start_time = time.perf_counter()
             effective_name = node_name or func.__name__

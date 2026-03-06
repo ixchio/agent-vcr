@@ -249,7 +249,7 @@ class VCRRecorder:
             forked_state.update(state_overrides)
 
         new_recorder = VCRRecorder(
-            output_dir=self.output_dir,
+            output_dir=str(self.output_dir),
             buffer_size=self.buffer_size,
             auto_save=self.auto_save,
             diff_mode=self.diff_mode,

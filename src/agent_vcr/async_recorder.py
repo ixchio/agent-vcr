@@ -105,7 +105,6 @@ class AsyncVCRRecorder:
 
             frame = Frame(
                 session_id=self._session.session_id,
-                frame_index=len(self._frames),
                 node_name=node_name,
                 input_state=serialized_input,
                 output_state=serialized_output,

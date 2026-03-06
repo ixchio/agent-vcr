@@ -1,5 +1,7 @@
 """Terminal UI for Agent VCR - Replay agent execution locally."""
 
+from __future__ import annotations
+
 import argparse
 import json
 import sys
@@ -172,7 +174,7 @@ class VCRApp(App):
         self.query_one(StateViewer).view_mode = "diff"
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description="Agent VCR Terminal UI")
     parser.add_argument("file", help="Path to the .vcr file to replay")
     args = parser.parse_args()

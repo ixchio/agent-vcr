@@ -63,10 +63,12 @@ class VCRCrewAI:
             logger.debug("Crew kickoff completed in %.2fms", latency_ms)
             return result
         except Exception as e:
+            latency_ms = (time.perf_counter() - start) * 1000
             self.recorder.record_error(
                 node_name="crew.kickoff",
-                input_state=inputs or {},
+                input_state={"inputs": inputs},
                 error=e,
+                latency_ms=latency_ms,
             )
             raise
         finally:
@@ -254,11 +256,13 @@ class VCRCrewCallback:
     ) -> None:
         """Called when a CrewAI task raises an exception."""
         key = f"{agent_role}::{task_description}"
-        self._task_start_times.pop(key, None)
+        start = self._task_start_times.pop(key, time.perf_counter())
+        latency_ms = (time.perf_counter() - start) * 1000
         self.recorder.record_error(
             node_name=task_description,
             input_state={"agent_role": agent_role},
             error=error,
+            latency_ms=latency_ms,
         )
 
     def _extract_state(self, state: Any) -> dict[str, Any]:

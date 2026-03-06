@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 
 from agent_vcr.models import (  # noqa: E402
     Frame,
+    FrameMetadata,
     ResumeConfig,
     ResumeMode,
     Session,
@@ -267,7 +268,7 @@ class VCRPlayer:
                 node_name="resumed_execution",
                 input_state=initial_state,
                 output_state=result,
-                metadata={"latency_ms": latency_ms},
+                metadata=FrameMetadata(latency_ms=latency_ms),
             )
 
             return result

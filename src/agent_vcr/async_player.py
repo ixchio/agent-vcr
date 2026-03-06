@@ -117,18 +117,24 @@ class AsyncVCRPlayer:
 
     def get_total_latency(self) -> float:
         """Get total latency across all frames."""
-        return sum(
-            f.metadata.latency_ms for f in self.frames if f.metadata and f.metadata.latency_ms
-        )
+        total = 0.0
+        for f in self.frames:
+            if f.metadata and f.metadata.latency_ms:
+                total += f.metadata.latency_ms
+        return total
 
     def get_total_tokens(self) -> int:
         """Get total tokens across all frames."""
-        return sum(
-            f.metadata.tokens_used for f in self.frames if f.metadata and f.metadata.tokens_used
-        )
+        total = 0
+        for f in self.frames:
+            if f.metadata and f.metadata.tokens_used:
+                total += f.metadata.tokens_used
+        return total
 
     def get_total_cost(self) -> float:
         """Get total cost across all frames."""
-        return sum(
-            f.metadata.cost_usd for f in self.frames if f.metadata and f.metadata.cost_usd
-        )
+        total = 0.0
+        for f in self.frames:
+            if f.metadata and f.metadata.cost_usd:
+                total += f.metadata.cost_usd
+        return total
