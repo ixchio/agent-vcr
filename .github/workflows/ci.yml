@@ -85,12 +85,18 @@ jobs:
         tool: pytest
         output-file-path: benchmark_results.json
         github-token: ${{ secrets.GITHUB_TOKEN }}
-        auto-push: true
-        gh-pages-branch: main
+        auto-push: false
         benchmark-data-dir-path: docs/dev/bench
         # Alert if performance regresses by more than 20%
         alert-threshold: "120%"
         comment-on-alert: true
         fail-on-alert: false
         alert-comment-cc-users: "@ruzvad"
+
+    - name: Commit and push benchmark results
+      run: |
+        git config --global user.name 'github-actions[bot]'
+        git config --global user.email '41898282+github-actions[bot]@users.noreply.github.com'
+        git add docs/dev/bench/
+        git diff --quiet && git diff --staged --quiet || (git commit -m "chore: update benchmarks [skip ci]" && git push)
 
