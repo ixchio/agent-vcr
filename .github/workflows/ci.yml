@@ -86,6 +86,8 @@ jobs:
         output-file-path: benchmark_results.json
         github-token: ${{ secrets.GITHUB_TOKEN }}
         auto-push: true
+        gh-pages-branch: main
+        benchmark-data-dir-path: docs/dev/bench
         # Alert if performance regresses by more than 20%
         alert-threshold: "120%"
         comment-on-alert: true
