@@ -33,7 +33,13 @@ def make_mock_task(description: str = "test_task") -> MagicMock:
 def make_mock_crew(tasks: list[MagicMock]) -> MagicMock:
     crew = MagicMock()
     crew.tasks = tasks
-    crew.kickoff = MagicMock(return_value="crew_output")
+
+    def mock_kickoff(*args: Any, **kwargs: Any) -> str:
+        for task in tasks:
+            task.execute(context={})
+        return "crew_output"
+
+    crew.kickoff = MagicMock(side_effect=mock_kickoff)
     return crew
 
 class TestVCRCrewAI:

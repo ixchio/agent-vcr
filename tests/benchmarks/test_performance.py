@@ -104,9 +104,10 @@ class TestPerformanceBenchmarks:
 
     def test_benchmark_goto_performance(self, benchmark, large_session: Path) -> None:
         """Random-access goto_frame must average <1ms across the session."""
+        import itertools
         player = VCRPlayer.load(large_session)
         access_indices = [0, 100, 1000, 5000, 9999]
-        idx_iter = iter(access_indices * 200)  # 1 000 iterations across all indices
+        idx_iter = itertools.cycle(access_indices)
 
         def goto_one() -> dict:
             return player.goto_frame(next(idx_iter) % 10000)
@@ -118,7 +119,8 @@ class TestPerformanceBenchmarks:
 
     def test_benchmark_file_size_diff_mode(self, tmp_path: Path) -> None:
         """Diff mode must save ≥30% storage vs full mode (not a time benchmark)."""
-        state = {"base": "value", "counter": 0}
+        base_padding = "x" * 1024
+        state = {"base": base_padding, "counter": 0}
 
         # Diff mode
         r_diff = VCRRecorder(output_dir=str(tmp_path), auto_save=False, diff_mode=True)
@@ -130,7 +132,7 @@ class TestPerformanceBenchmarks:
         size_diff = r_diff.save().stat().st_size
 
         # Full mode
-        state = {"base": "value", "counter": 0}
+        state = {"base": base_padding, "counter": 0}
         r_full = VCRRecorder(output_dir=str(tmp_path), auto_save=False, diff_mode=False)
         r_full.start_session("full")
         for i in range(1000):
