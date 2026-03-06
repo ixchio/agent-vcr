@@ -1,7 +1,7 @@
-# �� Agent VCR
+# 📼 Agent VCR
 
-[![CI](https://github.com/ruzvad/agent-vcr/actions/workflows/ci.yml/badge.svg)](https://github.com/ruzvad/agent-vcr/actions)
-[![codecov](https://codecov.io/gh/ruzvad/agent-vcr/branch/main/graph/badge.svg)](https://codecov.io/gh/ruzvad/agent-vcr)
+[![CI](https://github.com/ixchio/agent-vcr/actions/workflows/ci.yml/badge.svg)](https://github.com/ixchio/agent-vcr/actions)
+[![codecov](https://codecov.io/gh/ixchio/agent-vcr/branch/main/graph/badge.svg)](https://codecov.io/gh/ixchio/agent-vcr)
 [![PyPI version](https://badge.fury.io/py/agent-vcr.svg)](https://badge.fury.io/py/agent-vcr)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
