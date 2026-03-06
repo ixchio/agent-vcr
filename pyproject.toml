@@ -45,11 +45,13 @@ dependencies = [
 [project.optional-dependencies]
 langgraph = ["langgraph>=0.0.20"]
 langchain = ["langchain>=0.1.0"]
+crewai = ["crewai>=0.28.0"]
 tui = ["rich>=13.0.0", "textual>=0.40.0"]
 dev = [
     "pytest>=7.4.0",
     "pytest-asyncio>=0.21.0",
     "pytest-cov>=4.1.0",
+    "pytest-benchmark>=4.0.0",
     "httpx>=0.25.0",
     "black>=23.0.0",
     "ruff>=0.1.0",
@@ -59,6 +61,7 @@ dev = [
 all = [
     "langgraph>=0.0.20",
     "langchain>=0.1.0",
+    "crewai>=0.28.0",
     "pytest>=7.4.0",
     "pytest-asyncio>=0.21.0",
     "pytest-cov>=4.1.0",

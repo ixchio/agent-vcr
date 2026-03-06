@@ -46,3 +46,46 @@ jobs:
         flags: unittests
         name: codecov-umbrella
         fail_ci_if_error: false
+
+  benchmark:
+    name: Performance Benchmarks
+    needs: build
+    runs-on: ubuntu-latest
+    # Only run on pushes to main (not on PRs) so gh-pages history stays clean
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Set up Python 3.11
+      uses: actions/setup-python@v4
+      with:
+        python-version: "3.11"
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -e ".[dev]" pytest-benchmark
+
+    - name: Run benchmarks
+      run: |
+        pytest tests/benchmarks/ -v --benchmark-only \
+          --benchmark-json=benchmark_results.json \
+          --benchmark-name=short \
+          --benchmark-columns="min,max,mean,stddev,rounds" \
+          --tb=short
+
+    - name: Store benchmark results
+      uses: benchmark-action/github-action-benchmark@v1
+      with:
+        name: Agent VCR Benchmarks
+        tool: pytest
+        output-file-path: benchmark_results.json
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        auto-push: true
+        # Alert if performance regresses by more than 20%
+        alert-threshold: "120%"
+        comment-on-alert: true
+        fail-on-alert: false
+        alert-comment-cc-users: "@ruzvad"
+

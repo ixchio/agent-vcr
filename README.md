@@ -1,6 +1,7 @@
 # 📼 Agent VCR
 
 [![CI](https://github.com/ixchio/agent-vcr/actions/workflows/ci.yml/badge.svg)](https://github.com/ixchio/agent-vcr/actions)
+[![Benchmarks](https://img.shields.io/badge/benchmarks-view%20chart-blue)](https://ixchio.github.io/agent-vcr/dev/bench/)
 [![codecov](https://codecov.io/gh/ixchio/agent-vcr/branch/main/graph/badge.svg)](https://codecov.io/gh/ixchio/agent-vcr)
 [![PyPI version](https://badge.fury.io/py/agent-vcr.svg)](https://badge.fury.io/py/agent-vcr)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -130,11 +131,41 @@ recorder = VCRRecorder()
 
 @vcr_record(recorder, node_name="my_function")
 def my_function(data):
-return process(data)
+    return process(data)
 
 # Each call is automatically recorded
 result = my_function({"key": "value"})
 ```
+
+### CrewAI
+
+```python
+from crewai import Crew, Agent, Task
+from agent_vcr import VCRRecorder
+from agent_vcr.integrations.crewai import VCRCrewAI, vcr_task
+
+recorder = VCRRecorder()
+recorder.start_session("crew_debug_run")
+
+# Option 1: Wrap the whole crew (auto-records every task)
+crew = Crew(agents=[researcher, writer], tasks=[research_task, write_task])
+vcr_crew = VCRCrewAI(recorder)
+result = vcr_crew.kickoff(crew)
+
+recorder.save()
+
+# Option 2: Decorate individual task functions
+@vcr_task(recorder, task_name="research_step")
+def research(context: dict) -> str:
+    return "findings..."
+```
+
+Install with:
+```bash
+pip install agent-vcr[crewai]
+```
+
+See [`examples/crewai_integration.py`](examples/crewai_integration.py) for a full runnable demo.
 
 ---
 
@@ -287,7 +318,7 @@ pytest --cov=agent_vcr --cov-report=html
 - [x] Terminal TUI debugger (`vcr-tui`)
 - [x] CI/CD integrations
 - [ ] React dashboard
-- [ ] CrewAI integration
+- [x] CrewAI integration
 - [ ] AutoGen integration
 - [ ] Cloud storage backend
 - [ ] Collaborative debugging

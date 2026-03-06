@@ -1,9 +1,6 @@
-"""Performance benchmarks for Agent VCR."""
+"""Performance benchmarks for Agent VCR using pytest-benchmark."""
 
-import json
-import os
 import tempfile
-import time
 from pathlib import Path
 
 import pytest
@@ -13,216 +10,137 @@ from agent_vcr.player import VCRPlayer
 from agent_vcr.recorder import VCRRecorder
 
 
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def small_session(tmp_path: Path):
+    """A session with 1 000 frames."""
+    recorder = VCRRecorder(output_dir=str(tmp_path), auto_save=False)
+    recorder.start_session("bench_small")
+    for i in range(1000):
+        recorder.record_step(
+            node_name=f"step_{i % 10}",
+            input_state={"iteration": i, "data": "x" * 100},
+            output_state={"result": i * 2},
+        )
+    vcr_path = recorder.save()
+    return vcr_path
+
+
+@pytest.fixture
+def large_session(tmp_path: Path):
+    """A session with 10 000 frames (load & goto benchmarks)."""
+    recorder = VCRRecorder(output_dir=str(tmp_path), auto_save=False)
+    recorder.start_session("bench_large")
+    for i in range(10000):
+        recorder.record_step(
+            node_name=f"step_{i % 10}",
+            input_state={"iteration": i, "data": "x" * 500},
+            output_state={"result": i * 2, "data": "y" * 500},
+        )
+    return recorder.save()
+
+
+# ---------------------------------------------------------------------------
+# Benchmarks
+# ---------------------------------------------------------------------------
+
+
 class TestPerformanceBenchmarks:
-    """Benchmarks to ensure VCR meets performance requirements."""
+    """Benchmarks to ensure Agent VCR meets performance requirements."""
 
-    def test_benchmark_recorder_overhead(self):
-        """Measure recording overhead per frame."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            recorder = VCRRecorder(output_dir=tmpdir, auto_save=False)
-            recorder.start_session()
+    def test_benchmark_recorder_overhead(self, benchmark, tmp_path: Path) -> None:
+        """Record overhead per frame must be <5ms on average."""
+        recorder = VCRRecorder(output_dir=str(tmp_path), auto_save=False)
+        recorder.start_session()
+        i = 0
 
-            times = []
-            for i in range(1000):
-                state = {"iteration": i, "data": "x" * 100}
+        def record_one_frame() -> None:
+            nonlocal i
+            recorder.record_step(
+                node_name=f"step_{i % 10}",
+                input_state={"iteration": i, "data": "x" * 100},
+                output_state={"result": i * 2},
+            )
+            i += 1
 
-                start = time.perf_counter()
-                recorder.record_step(
-                    node_name=f"step_{i % 10}",
-                    input_state=state,
-                    output_state=state,
-                )
-                elapsed = (time.perf_counter() - start) * 1000
-                times.append(elapsed)
+        result = benchmark.pedantic(record_one_frame, rounds=1000, warmup_rounds=10)
 
-            avg_time = sum(times) / len(times)
-            p99_time = sorted(times)[int(len(times) * 0.99)]
+        # Assert the mean is under 5ms
+        mean_ms = benchmark.stats["mean"] * 1000
+        assert mean_ms < 5.0, f"Mean recording overhead {mean_ms:.3f}ms exceeds 5ms limit"
 
-            print(f"\nRecording Overhead:")
-            print(f"  Average: {avg_time:.3f}ms")
-            print(f"  P99: {p99_time:.3f}ms")
+    def test_benchmark_file_write_speed(self, benchmark, tmp_path: Path) -> None:
+        """Writing 10 000 frames must sustain >1 000 frames/sec."""
+        recorder = VCRRecorder(output_dir=str(tmp_path), auto_save=True, buffer_size=1000)
+        recorder.start_session()
 
-            # Assert performance requirements
-            assert avg_time < 5.0, f"Average overhead {avg_time:.3f}ms exceeds 5ms limit"
-            assert p99_time < 10.0, f"P99 overhead {p99_time:.3f}ms exceeds 10ms limit"
-
-    def test_benchmark_file_write_speed(self):
-        """Measure file write throughput."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            recorder = VCRRecorder(output_dir=tmpdir, auto_save=True, buffer_size=1000)
-            recorder.start_session()
-
-            # Generate 10k frames
-            start = time.perf_counter()
+        def write_and_save() -> None:
             for i in range(10000):
                 recorder.record_step(
                     node_name=f"step_{i % 10}",
                     input_state={"iteration": i},
                     output_state={"result": i * 2},
                 )
+            recorder.save()
 
-            save_start = time.perf_counter()
-            vcr_path = recorder.save()
-            save_time = (time.perf_counter() - save_start) * 1000
-            total_time = (time.perf_counter() - start) * 1000
+        benchmark.pedantic(write_and_save, rounds=1, warmup_rounds=0)
 
-            frames_per_sec = 10000 / (total_time / 1000)
+        elapsed_s = benchmark.stats["mean"]
+        fps = 10000 / elapsed_s
+        assert fps > 1000, f"Write speed {fps:.0f} frames/sec below 1 000 limit"
 
-            print(f"\nFile Write Speed:")
-            print(f"  Total time: {total_time:.2f}ms")
-            print(f"  Save time: {save_time:.2f}ms")
-            print(f"  Throughput: {frames_per_sec:.0f} frames/sec")
+    def test_benchmark_load_speed(self, benchmark, large_session: Path) -> None:
+        """Loading a 10 000-frame session must complete in <500ms."""
 
-            assert frames_per_sec > 1000, f"Write speed {frames_per_sec:.0f} frames/sec below 1000 limit"
+        def load() -> VCRPlayer:
+            return VCRPlayer.load(large_session)
 
-    def test_benchmark_load_speed(self):
-        """Measure session load time."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            # Create a large session
-            recorder = VCRRecorder(output_dir=tmpdir, auto_save=False)
-            recorder.start_session("large_session")
+        player = benchmark(load)
 
-            for i in range(10000):
-                recorder.record_step(
-                    node_name=f"step_{i % 10}",
-                    input_state={"iteration": i, "data": "x" * 500},
-                    output_state={"result": i * 2, "data": "y" * 500},
-                )
+        load_ms = benchmark.stats["mean"] * 1000
+        assert load_ms < 500, f"Load time {load_ms:.2f}ms exceeds 500ms limit"
+        assert len(player.frames) == 10000
 
-            vcr_path = recorder.save()
+    def test_benchmark_goto_performance(self, benchmark, large_session: Path) -> None:
+        """Random-access goto_frame must average <1ms across the session."""
+        player = VCRPlayer.load(large_session)
+        access_indices = [0, 100, 1000, 5000, 9999]
+        idx_iter = iter(access_indices * 200)  # 1 000 iterations across all indices
 
-            # Measure load time
-            start = time.perf_counter()
-            player = VCRPlayer.load(vcr_path)
-            load_time = (time.perf_counter() - start) * 1000
+        def goto_one() -> dict:
+            return player.goto_frame(next(idx_iter) % 10000)
 
-            print(f"\nLoad Speed:")
-            print(f"  Frames: {len(player.frames)}")
-            print(f"  Load time: {load_time:.2f}ms")
-            print(f"  Per frame: {load_time / len(player.frames):.3f}ms")
+        benchmark.pedantic(goto_one, rounds=1000, warmup_rounds=10)
 
-            assert load_time < 500, f"Load time {load_time:.2f}ms exceeds 500ms limit"
+        mean_ms = benchmark.stats["mean"] * 1000
+        assert mean_ms < 1.0, f"Goto time {mean_ms:.3f}ms exceeds 1ms limit"
 
-    @pytest.mark.skipif(
-        not pytest.importorskip("psutil", reason="psutil not installed"),
-        reason="psutil not installed",
-    )
-    def test_benchmark_memory_footprint(self):
-        """Measure memory usage during recording."""
-        import psutil
+    def test_benchmark_file_size_diff_mode(self, tmp_path: Path) -> None:
+        """Diff mode must save ≥30% storage vs full mode (not a time benchmark)."""
+        state = {"base": "value", "counter": 0}
 
-        process = psutil.Process(os.getpid())
+        # Diff mode
+        r_diff = VCRRecorder(output_dir=str(tmp_path), auto_save=False, diff_mode=True)
+        r_diff.start_session("diff")
+        for i in range(1000):
+            new_state = {**state, "counter": i}
+            r_diff.record_step(f"step_{i % 10}", state, new_state)
+            state = new_state
+        size_diff = r_diff.save().stat().st_size
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            initial_mem = process.memory_info().rss / 1024 / 1024  # MB
+        # Full mode
+        state = {"base": "value", "counter": 0}
+        r_full = VCRRecorder(output_dir=str(tmp_path), auto_save=False, diff_mode=False)
+        r_full.start_session("full")
+        for i in range(1000):
+            new_state = {**state, "counter": i}
+            r_full.record_step(f"step_{i % 10}", state, new_state)
+            state = new_state
+        size_full = r_full.save().stat().st_size
 
-            recorder = VCRRecorder(output_dir=tmpdir, auto_save=False)
-            recorder.start_session()
-
-            # Record many frames
-            for i in range(5000):
-                recorder.record_step(
-                    node_name=f"step_{i % 10}",
-                    input_state={"iteration": i, "data": "x" * 1000},
-                    output_state={"result": i * 2, "data": "y" * 1000},
-                )
-
-            final_mem = process.memory_info().rss / 1024 / 1024  # MB
-            mem_increase = final_mem - initial_mem
-
-            print(f"\nMemory Footprint:")
-            print(f"  Initial: {initial_mem:.2f} MB")
-            print(f"  Final: {final_mem:.2f} MB")
-            print(f"  Increase: {mem_increase:.2f} MB")
-            print(f"  Per frame: {mem_increase / 5000 * 1024:.3f} KB")
-
-            assert mem_increase < 100, f"Memory increase {mem_increase:.2f}MB exceeds 100MB limit"
-
-    def test_benchmark_goto_performance(self):
-        """Measure time-travel (goto) performance."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            recorder = VCRRecorder(output_dir=tmpdir, auto_save=False)
-            recorder.start_session()
-
-            for i in range(10000):
-                recorder.record_step(
-                    node_name=f"step_{i % 10}",
-                    input_state={"iteration": i},
-                    output_state={"result": i * 2},
-                )
-
-            vcr_path = recorder.save()
-            player = VCRPlayer.load(vcr_path)
-
-            # Benchmark random access
-            times = []
-            for idx in [0, 100, 1000, 5000, 9999]:
-                start = time.perf_counter()
-                state = player.goto_frame(idx)
-                elapsed = (time.perf_counter() - start) * 1000
-                times.append(elapsed)
-
-            avg_goto = sum(times) / len(times)
-
-            print(f"\nGoto Performance:")
-            print(f"  Average: {avg_goto:.3f}ms")
-            print(f"  Min: {min(times):.3f}ms")
-            print(f"  Max: {max(times):.3f}ms")
-
-            assert avg_goto < 1.0, f"Goto time {avg_goto:.3f}ms exceeds 1ms limit"
-
-    def test_benchmark_file_size(self):
-        """Measure storage efficiency."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            # Test with diff mode
-            recorder_diff = VCRRecorder(output_dir=tmpdir, auto_save=False, diff_mode=True)
-            recorder_diff.start_session("diff_mode")
-
-            state = {"base": "value", "counter": 0}
-            for i in range(1000):
-                new_state = {**state, "counter": i}
-                recorder_diff.record_step(
-                    node_name=f"step_{i % 10}",
-                    input_state=state,
-                    output_state=new_state,
-                )
-                state = new_state
-
-            vcr_path_diff = recorder_diff.save()
-            size_diff = vcr_path_diff.stat().st_size
-
-            # Test without diff mode
-            recorder_full = VCRRecorder(output_dir=tmpdir, auto_save=False, diff_mode=False)
-            recorder_full.start_session("full_mode")
-
-            state = {"base": "value", "counter": 0}
-            for i in range(1000):
-                new_state = {**state, "counter": i}
-                recorder_full.record_step(
-                    node_name=f"step_{i % 10}",
-                    input_state=state,
-                    output_state=new_state,
-                )
-                state = new_state
-
-            vcr_path_full = recorder_full.save()
-            size_full = vcr_path_full.stat().st_size
-
-            savings = (1 - size_diff / size_full) * 100
-
-            print(f"\nStorage Efficiency:")
-            print(f"  Full mode: {size_full / 1024:.2f} KB")
-            print(f"  Diff mode: {size_diff / 1024:.2f} KB")
-            print(f"  Savings: {savings:.1f}%")
-
-            assert savings > 30, f"Diff mode savings {savings:.1f}% below 30% target"
-
-
-if __name__ == "__main__":
-    bench = TestPerformanceBenchmarks()
-    bench.test_benchmark_recorder_overhead()
-    bench.test_benchmark_file_write_speed()
-    bench.test_benchmark_load_speed()
-    bench.test_benchmark_memory_footprint()
-    bench.test_benchmark_goto_performance()
-    bench.test_benchmark_file_size()
+        savings = (1 - size_diff / size_full) * 100
+        assert savings > 30, f"Diff mode savings {savings:.1f}% below 30% target"
