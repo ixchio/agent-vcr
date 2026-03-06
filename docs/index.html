@@ -1,15 +1,20 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Agent VCR — Time-Travel Debugging for AI Agents</title>
-    <meta name="description" content="Record your AI agent's execution, rewind to any step, edit the state, and resume — without re-running the entire chain.">
+    <meta name="description"
+        content="Record your AI agent's execution, rewind to any step, edit the state, and resume — without re-running the entire chain.">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,300;0,14..32,400;0,14..32,500;0,14..32,600;0,14..32,700;1,14..32,400&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,300;0,14..32,400;0,14..32,500;0,14..32,600;0,14..32,700;1,14..32,400&family=JetBrains+Mono:wght@400;500&display=swap"
+        rel="stylesheet">
     <link rel="stylesheet" href="styles.css">
 </head>
+
 <body>
 
     <!-- NAV -->
@@ -24,7 +29,7 @@
                 <a href="#compare">Compare</a>
             </nav>
             <div class="nav-actions">
-                <a href="https://github.com/ruzvad/agent-vcr" class="btn-ghost" target="_blank">GitHub ↗</a>
+                <a href="https://github.com/ixchio/agent-vcr" class="btn-ghost" target="_blank">GitHub ↗</a>
                 <a href="#quick-start" class="btn-solid">Get Started</a>
             </div>
         </div>
@@ -44,7 +49,8 @@
             </p>
             <div class="hero-cta">
                 <a href="#quick-start" class="btn-solid large">Install in 30 seconds</a>
-                <a href="https://github.com/ruzvad/agent-vcr" class="btn-ghost large" target="_blank">Star on GitHub ↗</a>
+                <a href="https://github.com/ixchio/agent-vcr" class="btn-ghost large" target="_blank">Star on GitHub
+                    ↗</a>
             </div>
             <div class="hero-metrics">
                 <div class="metric">
@@ -77,8 +83,11 @@
                 <div class="col-block problem-block">
                     <div class="block-tag red">The Problem</div>
                     <h2>Debugging agents is a nightmare.</h2>
-                    <p>When your LangGraph or CrewAI agent fails on step 8 out of 10, existing tools only tell you <em>what</em> went wrong. To fix it, you re-run all 10 steps from scratch.</p>
-                    <p>Every logic error costs minutes of wall time and dollars in wasted LLM tokens. At scale, this kills iteration speed entirely.</p>
+                    <p>When your LangGraph or CrewAI agent fails on step 8 out of 10, existing tools only tell you
+                        <em>what</em> went wrong. To fix it, you re-run all 10 steps from scratch.
+                    </p>
+                    <p>Every logic error costs minutes of wall time and dollars in wasted LLM tokens. At scale, this
+                        kills iteration speed entirely.</p>
                     <ul class="pain-list">
                         <li>Re-run entire chain for every small fix</li>
                         <li>Can't inspect intermediate state without breakpoints</li>
@@ -89,8 +98,10 @@
                 <div class="col-block solution-block">
                     <div class="block-tag">The Solution</div>
                     <h2>Rewind. Fix. Resume.</h2>
-                    <p>Agent VCR records your agent's complete state at every step into a local JSONL file. When something breaks, you jump straight to the failing frame.</p>
-                    <p>Edit the state — fix a bad prompt, inject corrected context, patch a tool output — then resume execution forward from that exact point.</p>
+                    <p>Agent VCR records your agent's complete state at every step into a local JSONL file. When
+                        something breaks, you jump straight to the failing frame.</p>
+                    <p>Edit the state — fix a bad prompt, inject corrected context, patch a tool output — then resume
+                        execution forward from that exact point.</p>
                     <ul class="solution-list">
                         <li>Jump to any frame instantly</li>
                         <li>Full state snapshot at every step</li>
@@ -192,22 +203,26 @@ player.resume(agent_callable, from_frame=<span class="num">7</span>)</code></pre
                 <div class="feature-item">
                     <div class="feature-icon-wrap">✏</div>
                     <h3>State Injection</h3>
-                    <p>Mutate the state at any frame — fix a prompt, patch tool output, inject context — then resume.</p>
+                    <p>Mutate the state at any frame — fix a prompt, patch tool output, inject context — then resume.
+                    </p>
                 </div>
                 <div class="feature-item">
                     <div class="feature-icon-wrap">🌿</div>
                     <h3>Session Forking</h3>
-                    <p>Fork from any frame to create parallel runs. Compare how different fixes change downstream behavior.</p>
+                    <p>Fork from any frame to create parallel runs. Compare how different fixes change downstream
+                        behavior.</p>
                 </div>
                 <div class="feature-item">
                     <div class="feature-icon-wrap">📡</div>
                     <h3>Live WebSocket Feed</h3>
-                    <p>Stream agent execution in real-time via the built-in FastAPI server. Watch every step as it happens.</p>
+                    <p>Stream agent execution in real-time via the built-in FastAPI server. Watch every step as it
+                        happens.</p>
                 </div>
                 <div class="feature-item">
                     <div class="feature-icon-wrap">🗂</div>
                     <h3>JSONL Storage</h3>
-                    <p>Sessions stored as plain JSONL. Human-readable, git-diffable, append-only, parseable line-by-line.</p>
+                    <p>Sessions stored as plain JSONL. Human-readable, git-diffable, append-only, parseable
+                        line-by-line.</p>
                 </div>
                 <div class="feature-item">
                     <div class="feature-icon-wrap">⚡</div>
@@ -222,12 +237,14 @@ player.resume(agent_callable, from_frame=<span class="num">7</span>)</code></pre
                 <div class="feature-item">
                     <div class="feature-icon-wrap">🖥</div>
                     <h3>Terminal TUI</h3>
-                    <p>Ship with a Textual TUI debugger. Run <code>vcr</code> in your terminal to browse sessions interactively.</p>
+                    <p>Ship with a Textual TUI debugger. Run <code>vcr</code> in your terminal to browse sessions
+                        interactively.</p>
                 </div>
                 <div class="feature-item">
                     <div class="feature-icon-wrap">🔌</div>
                     <h3>Framework Agnostic</h3>
-                    <p>Native integrations for LangGraph and CrewAI. Decorator API for raw Python — no framework required.</p>
+                    <p>Native integrations for LangGraph and CrewAI. Decorator API for raw Python — no framework
+                        required.</p>
                 </div>
             </div>
         </div>
@@ -529,8 +546,10 @@ ResumeConfig(
                     <pre><code>pip install agent-vcr</code></pre>
                 </div>
                 <div class="cta-links">
-                    <a href="https://github.com/ruzvad/agent-vcr" class="btn-solid large" target="_blank">View on GitHub</a>
-                    <a href="https://github.com/ruzvad/agent-vcr/issues" class="btn-ghost large" target="_blank">Report a bug</a>
+                    <a href="https://github.com/ixchio/agent-vcr" class="btn-solid large" target="_blank">View on
+                        GitHub</a>
+                    <a href="https://github.com/ixchio/agent-vcr/issues" class="btn-ghost large" target="_blank">Report
+                        a bug</a>
                 </div>
                 <p class="cta-note">MIT License · No signup required · Works offline</p>
             </div>
@@ -545,14 +564,15 @@ ResumeConfig(
                 <span class="footer-tagline">Time-travel debugging for AI agents</span>
             </div>
             <div class="footer-links">
-                <a href="https://github.com/ruzvad/agent-vcr" target="_blank">GitHub</a>
+                <a href="https://github.com/ixchio/agent-vcr" target="_blank">GitHub</a>
                 <a href="https://pypi.org/project/agent-vcr/" target="_blank">PyPI</a>
-                <a href="https://github.com/ruzvad/agent-vcr/issues" target="_blank">Issues</a>
-                <a href="https://github.com/ruzvad/agent-vcr/blob/main/CONTRIBUTING.md" target="_blank">Contributing</a>
+                <a href="https://github.com/ixchio/agent-vcr/issues" target="_blank">Issues</a>
+                <a href="https://github.com/ixchio/agent-vcr/blob/main/CONTRIBUTING.md" target="_blank">Contributing</a>
             </div>
         </div>
     </footer>
 
     <script src="script.js"></script>
 </body>
+
 </html>
