@@ -233,6 +233,11 @@ class VCRRecorder:
         """Get all recorded frames."""
         return self._frames.copy()
 
+    @property
+    def frames(self) -> list[Frame]:
+        """Get all recorded frames as a property."""
+        return self._frames.copy()
+
     def fork(
         self,
         from_frame: int,

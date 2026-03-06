@@ -216,6 +216,11 @@ class AsyncVCRRecorder:
     def get_frames(self) -> list[Frame]:
         return list(self._frames)
 
+    @property
+    def frames(self) -> list[Frame]:
+        """Get all recorded frames as a property."""
+        return list(self._frames)
+
     async def fork(self, from_frame: int) -> AsyncVCRRecorder:
         """Fork a new recorder from a specific frame."""
         if self._session is None:
