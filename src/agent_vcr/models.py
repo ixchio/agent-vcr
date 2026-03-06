@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Callable, ClassVar, Optional
+from typing import Any, ClassVar
 
 from pydantic import BaseModel, Field, field_serializer
 
@@ -31,14 +31,14 @@ class ResumeMode(str, Enum):
 class FrameMetadata(BaseModel):
     """Metadata associated with a frame."""
 
-    model: Optional[str] = None
+    model: str | None = None
     latency_ms: float = 0.0
-    tokens_used: Optional[int] = None
-    tokens_input: Optional[int] = None
-    tokens_output: Optional[int] = None
-    cost_usd: Optional[float] = None
-    error_type: Optional[str] = None
-    error_message: Optional[str] = None
+    tokens_used: int | None = None
+    tokens_input: int | None = None
+    tokens_output: int | None = None
+    cost_usd: float | None = None
+    error_type: str | None = None
+    error_message: str | None = None
     custom: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -47,14 +47,14 @@ class Frame(BaseModel):
 
     frame_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     session_id: str
-    parent_frame_id: Optional[str] = None
+    parent_frame_id: str | None = None
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     frame_type: FrameType = FrameType.NODE_EXECUTION
     node_name: str
     input_state: dict[str, Any]
     output_state: dict[str, Any]
     metadata: FrameMetadata = Field(default_factory=FrameMetadata)
-    state_diff: Optional[list[dict]] = None
+    state_diff: list[dict] | None = None
 
     @field_serializer("timestamp")
     def serialize_timestamp(self, value: datetime) -> str:
@@ -65,8 +65,8 @@ class Session(BaseModel):
     """A VCR recording session."""
 
     session_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    parent_session_id: Optional[str] = None
-    forked_from_frame: Optional[int] = None
+    parent_session_id: str | None = None
+    forked_from_frame: int | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -84,7 +84,7 @@ class ResumeConfig(BaseModel):
     """Configuration for resuming execution from a frame."""
 
     from_frame: int
-    new_session_id: Optional[str] = None
+    new_session_id: str | None = None
     state_overrides: dict[str, Any] = Field(default_factory=dict)
     mode: ResumeMode = ResumeMode.FORK
     skip_nodes: list[str] = Field(default_factory=list)
@@ -160,7 +160,7 @@ class VCRCache:
         self._frames[session_id].append(frame)
         self._sessions[session_id].frame_count += 1
 
-    def get_session(self, session_id: str) -> Optional[Session]:
+    def get_session(self, session_id: str) -> Session | None:
         return self._sessions.get(session_id)
 
     def get_frames(self, session_id: str) -> list[Frame]:

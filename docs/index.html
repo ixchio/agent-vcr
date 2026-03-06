@@ -3,225 +3,556 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Agent VCR | Documentation</title>
-    <!-- Fonts -->
+    <title>Agent VCR — Time-Travel Debugging for AI Agents</title>
+    <meta name="description" content="Record your AI agent's execution, rewind to any step, edit the state, and resume — without re-running the entire chain.">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-    <!-- Highlight.js -->
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/atom-one-dark.min.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,300;0,14..32,400;0,14..32,500;0,14..32,600;0,14..32,700;1,14..32,400&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-    <div class="background-effects">
-        <div class="glow-orb primary"></div>
-        <div class="glow-orb secondary"></div>
-        <div class="grid-overlay"></div>
-    </div>
 
-    <nav class="sidebar">
-        <div class="logo">
-            <span class="vcr-icon">📼</span>
-            <span class="logo-text">Agent VCR</span>
+    <!-- NAV -->
+    <header class="nav">
+        <div class="nav-inner">
+            <a href="#" class="nav-logo">📼 Agent VCR</a>
+            <nav class="nav-links">
+                <a href="#how-it-works">How it works</a>
+                <a href="#features">Features</a>
+                <a href="#integrations">Integrations</a>
+                <a href="#api">API</a>
+                <a href="#compare">Compare</a>
+            </nav>
+            <div class="nav-actions">
+                <a href="https://github.com/ruzvad/agent-vcr" class="btn-ghost" target="_blank">GitHub ↗</a>
+                <a href="#quick-start" class="btn-solid">Get Started</a>
+            </div>
         </div>
-        <ul class="nav-links">
-            <li><a href="#introduction" class="active">Introduction</a></li>
-            <li><a href="#quick-start">Quick Start</a></li>
-            <li><a href="#features">Features</a></li>
-            <li><a href="#api-reference">API Reference</a></li>
-        </ul>
-        <div class="sidebar-footer">
-            <a href="https://github.com/ruzvad/agent-vcr" class="github-link">
-                View on GitHub
-            </a>
+    </header>
+
+    <!-- HERO -->
+    <section class="hero" id="hero">
+        <div class="hero-inner">
+            <div class="hero-pill">v0.1.0 · Open Source · MIT License</div>
+            <h1 class="hero-title">
+                Time-travel debugging<br>
+                <span class="hero-title-accent">for AI agents.</span>
+            </h1>
+            <p class="hero-sub">
+                Your agent failed on step 8 of 10. LangSmith shows you what happened.<br>
+                <strong>Agent VCR lets you rewind, fix it, and resume from step 8.</strong>
+            </p>
+            <div class="hero-cta">
+                <a href="#quick-start" class="btn-solid large">Install in 30 seconds</a>
+                <a href="https://github.com/ruzvad/agent-vcr" class="btn-ghost large" target="_blank">Star on GitHub ↗</a>
+            </div>
+            <div class="hero-metrics">
+                <div class="metric">
+                    <span class="metric-val">&lt;5ms</span>
+                    <span class="metric-label">overhead per step</span>
+                </div>
+                <div class="metric-divider"></div>
+                <div class="metric">
+                    <span class="metric-val">JSONL</span>
+                    <span class="metric-label">git-friendly format</span>
+                </div>
+                <div class="metric-divider"></div>
+                <div class="metric">
+                    <span class="metric-val">0</span>
+                    <span class="metric-label">vendor lock-in</span>
+                </div>
+                <div class="metric-divider"></div>
+                <div class="metric">
+                    <span class="metric-val">3</span>
+                    <span class="metric-label">lines to integrate</span>
+                </div>
+            </div>
         </div>
-    </nav>
+    </section>
 
-    <main class="content">
-        <section id="introduction">
-            <div class="hero">
-                <div class="hero-badge">v1.2.0 is live</div>
-                <h1>Time-travel debugging<br>for AI agents.</h1>
-                <p class="subtitle">Agent VCR lets you record your agent's execution, find the exact step where it failed, edit the state, and resume—without re-running the entire prompt chain.</p>
-                <div class="hero-actions">
-                    <a href="#quick-start" class="btn btn-primary">Get Started</a>
-                    <a href="https://github.com/ruzvad/agent-vcr" class="btn btn-secondary">Star on GitHub</a>
+    <!-- PROBLEM / SOLUTION -->
+    <section class="two-col-section" id="how-it-works">
+        <div class="section-inner">
+            <div class="two-col">
+                <div class="col-block problem-block">
+                    <div class="block-tag red">The Problem</div>
+                    <h2>Debugging agents is a nightmare.</h2>
+                    <p>When your LangGraph or CrewAI agent fails on step 8 out of 10, existing tools only tell you <em>what</em> went wrong. To fix it, you re-run all 10 steps from scratch.</p>
+                    <p>Every logic error costs minutes of wall time and dollars in wasted LLM tokens. At scale, this kills iteration speed entirely.</p>
+                    <ul class="pain-list">
+                        <li>Re-run entire chain for every small fix</li>
+                        <li>Can't inspect intermediate state without breakpoints</li>
+                        <li>LangSmith / LangFuse are read-only observers</li>
+                        <li>No way to test prompt changes mid-chain</li>
+                    </ul>
+                </div>
+                <div class="col-block solution-block">
+                    <div class="block-tag">The Solution</div>
+                    <h2>Rewind. Fix. Resume.</h2>
+                    <p>Agent VCR records your agent's complete state at every step into a local JSONL file. When something breaks, you jump straight to the failing frame.</p>
+                    <p>Edit the state — fix a bad prompt, inject corrected context, patch a tool output — then resume execution forward from that exact point.</p>
+                    <ul class="solution-list">
+                        <li>Jump to any frame instantly</li>
+                        <li>Full state snapshot at every step</li>
+                        <li>Edit state and resume mid-chain</li>
+                        <li>Fork runs to compare variants</li>
+                    </ul>
                 </div>
             </div>
-            
-            <div class="callout problem">
-                <h3>🛑 The Problem</h3>
-                <p>Building multi-step AI agents (like LangGraph or CrewAI) is painfully slow. When your agent fails on step 8 out of 10, traditional observability tools only tell you what went wrong. To fix it, you have to patch the prompt or code and <strong>re-run all 10 steps from the beginning</strong>.</p>
-                <p>Every typo or logic error costs you minutes of waiting and dollars in wasted LLM tokens.</p>
+        </div>
+    </section>
+
+    <!-- QUICK START -->
+    <section class="quickstart-section" id="quick-start">
+        <div class="section-inner">
+            <div class="section-header">
+                <h2>Quick Start</h2>
+                <p>From zero to time-travel in under a minute.</p>
             </div>
 
-            <div class="callout solution">
-                <h3>💡 The Solution</h3>
-                <p><strong>Agent VCR makes debugging instant.</strong></p>
-                <p>We record your agent's state at every step. When a failure happens, you simply <strong>rewind</strong> to the failing step, <strong>edit</strong> the state to fix the bug, and <strong>resume</strong> execution from that exact point.</p>
-                <p>LangSmith and LangFuse show you what happened. <strong>Agent VCR lets you change it.</strong></p>
-            </div>
-        </section>
-
-        <section id="quick-start">
-            <h2>Quick Start</h2>
-            <p>Get up and running with Agent VCR in under a minute.</p>
-            <div class="code-window">
-                <div class="code-header">
-                    <div class="mac-dot close"></div>
-                    <div class="mac-dot minimize"></div>
-                    <div class="mac-dot maximize"></div>
-                    <span class="file-name">terminal</span>
+            <div class="steps">
+                <div class="step">
+                    <div class="step-num">01</div>
+                    <div class="step-content">
+                        <h3>Install</h3>
+                        <div class="code-block">
+                            <div class="code-bar">
+                                <span class="dots"><span></span><span></span><span></span></span>
+                                <span class="code-label">terminal</span>
+                            </div>
+                            <pre><code>pip install agent-vcr</code></pre>
+                        </div>
+                    </div>
                 </div>
-<pre><code class="language-bash">pip install agent-vcr</code></pre>
-            </div>
 
-            <p>Add a few lines of code to enable complete time-travel support for your agents.</p>
+                <div class="step">
+                    <div class="step-num">02</div>
+                    <div class="step-content">
+                        <h3>Record your agent</h3>
+                        <div class="code-block">
+                            <div class="code-bar">
+                                <span class="dots"><span></span><span></span><span></span></span>
+                                <span class="code-label">agent.py</span>
+                            </div>
+                            <pre><code><span class="kw">from</span> agent_vcr <span class="kw">import</span> VCRRecorder
 
-            <div class="code-window">
-                <div class="code-header">
-                    <div class="mac-dot close"></div>
-                    <div class="mac-dot minimize"></div>
-                    <div class="mac-dot maximize"></div>
-                    <span class="file-name">agent.py</span>
-                </div>
-<pre><code class="language-python">from agent_vcr import VCRRecorder, VCRPlayer
-
-# 1. Record your agent (One-time setup)
 recorder = VCRRecorder()
-recorder.start_session("bug_hunt")
-# ... your agent code runs here ...
-recorder.save()
+recorder.start_session(<span class="str">"debug_run"</span>)
 
-# 2. Time-Travel & Fix (The magic part)
-player = VCRPlayer.load(".vcr/bug_hunt.vcr")
+<span class="cm"># Your existing agent code — unchanged</span>
+result = my_agent.run(query)
 
-state = player.goto_frame(2)    # Jump back to step 2
-state["prompt"] = "Fixed!"      # Fix the bad state
-player.resume(from_frame=2)     # Resume execution from step 2</code></pre>
-            </div>
-        </section>
+recorder.save()  <span class="cm"># → .vcr/debug_run.vcr</span></code></pre>
+                        </div>
+                    </div>
+                </div>
 
-        <section id="features">
-            <h2>Features</h2>
-            <div class="feature-grid">
-                <div class="feature-card">
-                    <span class="feature-icon">🔌</span>
-                    <div class="content">
-                        <h3>Plug & Play</h3>
-                        <p>1-line integration with LangGraph, CrewAI, and other popular agent frameworks.</p>
-                    </div>
-                </div>
-                <div class="feature-card">
-                    <span class="feature-icon">🚀</span>
-                    <div class="content">
-                        <h3>Zero Overhead</h3>
-                        <p>&lt;5ms latency penalty per step. Built for production performance.</p>
-                    </div>
-                </div>
-                <div class="feature-card">
-                    <span class="feature-icon">📁</span>
-                    <div class="content">
-                        <h3>No Vendor Lock-in</h3>
-                        <p>Stores runs locally as pure JSONL files. Git-friendly and easily parsable.</p>
-                    </div>
-                </div>
-                <div class="feature-card">
-                    <span class="feature-icon">🔄</span>
-                    <div class="content">
-                        <h3>Async Native</h3>
-                        <p>Built from the ground up to fully support modern asyncio Python agents.</p>
-                    </div>
-                </div>
-                <div class="feature-card">
-                    <span class="feature-icon">✏️</span>
-                    <div class="content">
-                        <h3>State Injection</h3>
-                        <p>Edit the internal state at any frame and seamlessly resume execution.</p>
-                    </div>
-                </div>
-                <div class="feature-card">
-                    <span class="feature-icon">🌳</span>
-                    <div class="content">
-                        <h3>DAG Visualization</h3>
-                        <p>View parallel execution branches and understand exactly how your agent reasons.</p>
+                <div class="step">
+                    <div class="step-num">03</div>
+                    <div class="step-content">
+                        <h3>Time-travel & fix</h3>
+                        <div class="code-block">
+                            <div class="code-bar">
+                                <span class="dots"><span></span><span></span><span></span></span>
+                                <span class="code-label">debug.py</span>
+                            </div>
+                            <pre><code><span class="kw">from</span> agent_vcr <span class="kw">import</span> VCRPlayer
+
+player = VCRPlayer.load(<span class="str">".vcr/debug_run.vcr"</span>)
+
+<span class="cm"># Jump to the failing step</span>
+state = player.goto_frame(<span class="num">7</span>)
+<span class="kw">print</span>(state)          <span class="cm"># Inspect full state</span>
+
+<span class="cm"># Fix the bad state</span>
+state[<span class="str">"prompt"</span>] = <span class="str">"Corrected prompt"</span>
+
+<span class="cm"># Resume from step 7 forward</span>
+player.resume(agent_callable, from_frame=<span class="num">7</span>)</code></pre>
+                        </div>
                     </div>
                 </div>
             </div>
-        </section>
+        </div>
+    </section>
 
-        <section id="api-reference">
-            <h2>API Reference</h2>
-            
-            <div class="api-block">
-                <h3>VCRRecorder</h3>
-                <p>The core class used to record an agent's session and individual steps.</p>
-                <div class="code-window">
-                    <div class="code-header">
-                        <div class="mac-dot close"></div>
-                        <div class="mac-dot minimize"></div>
-                        <div class="mac-dot maximize"></div>
-                        <span class="file-name">agent_vcr/recorder.py</span>
+    <!-- FEATURES -->
+    <section class="features-section" id="features">
+        <div class="section-inner">
+            <div class="section-header">
+                <h2>Everything you need to debug agents.</h2>
+                <p>Built for the reality of multi-step agentic systems.</p>
+            </div>
+            <div class="features-grid">
+                <div class="feature-item">
+                    <div class="feature-icon-wrap">⏮</div>
+                    <h3>Time Travel</h3>
+                    <p>Jump to any frame in a session instantly. Full input/output state snapshot at every node.</p>
+                </div>
+                <div class="feature-item">
+                    <div class="feature-icon-wrap">✏</div>
+                    <h3>State Injection</h3>
+                    <p>Mutate the state at any frame — fix a prompt, patch tool output, inject context — then resume.</p>
+                </div>
+                <div class="feature-item">
+                    <div class="feature-icon-wrap">🌿</div>
+                    <h3>Session Forking</h3>
+                    <p>Fork from any frame to create parallel runs. Compare how different fixes change downstream behavior.</p>
+                </div>
+                <div class="feature-item">
+                    <div class="feature-icon-wrap">📡</div>
+                    <h3>Live WebSocket Feed</h3>
+                    <p>Stream agent execution in real-time via the built-in FastAPI server. Watch every step as it happens.</p>
+                </div>
+                <div class="feature-item">
+                    <div class="feature-icon-wrap">🗂</div>
+                    <h3>JSONL Storage</h3>
+                    <p>Sessions stored as plain JSONL. Human-readable, git-diffable, append-only, parseable line-by-line.</p>
+                </div>
+                <div class="feature-item">
+                    <div class="feature-icon-wrap">⚡</div>
+                    <h3>&lt;5ms Overhead</h3>
+                    <p>P99 recording latency under 5ms. Benchmarked continuously in CI. Safe for production use.</p>
+                </div>
+                <div class="feature-item">
+                    <div class="feature-icon-wrap">🔄</div>
+                    <h3>Async Native</h3>
+                    <p>Full AsyncVCRRecorder and AsyncVCRPlayer. Zero blocking I/O, built for modern asyncio agents.</p>
+                </div>
+                <div class="feature-item">
+                    <div class="feature-icon-wrap">🖥</div>
+                    <h3>Terminal TUI</h3>
+                    <p>Ship with a Textual TUI debugger. Run <code>vcr</code> in your terminal to browse sessions interactively.</p>
+                </div>
+                <div class="feature-item">
+                    <div class="feature-icon-wrap">🔌</div>
+                    <h3>Framework Agnostic</h3>
+                    <p>Native integrations for LangGraph and CrewAI. Decorator API for raw Python — no framework required.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- INTEGRATIONS -->
+    <section class="integrations-section" id="integrations">
+        <div class="section-inner">
+            <div class="section-header">
+                <h2>Integrations</h2>
+                <p>Drop into any framework in one line.</p>
+            </div>
+
+            <div class="tab-group">
+                <div class="tab-bar">
+                    <button class="tab active" data-tab="langgraph">LangGraph</button>
+                    <button class="tab" data-tab="crewai">CrewAI</button>
+                    <button class="tab" data-tab="raw">Raw Python</button>
+                    <button class="tab" data-tab="async">Async</button>
+                </div>
+
+                <div class="tab-panel active" id="tab-langgraph">
+                    <div class="code-block">
+                        <div class="code-bar">
+                            <span class="dots"><span></span><span></span><span></span></span>
+                            <span class="code-label">langgraph_agent.py</span>
+                        </div>
+                        <pre><code><span class="kw">from</span> langgraph.graph <span class="kw">import</span> StateGraph
+<span class="kw">from</span> agent_vcr <span class="kw">import</span> VCRRecorder
+<span class="kw">from</span> agent_vcr.integrations.langgraph <span class="kw">import</span> VCRLangGraph
+
+graph = StateGraph()
+graph.add_node(<span class="str">"planner"</span>, planner_node)
+graph.add_node(<span class="str">"coder"</span>, coder_node)
+
+<span class="cm"># Add VCR in one line</span>
+recorder = VCRRecorder()
+graph = VCRLangGraph(recorder).wrap_graph(graph)
+
+result = graph.invoke({<span class="str">"query"</span>: <span class="str">"Build a todo app"</span>})
+recorder.save()</code></pre>
                     </div>
-<pre><code class="language-python">class VCRRecorder:
-    def start_session(
-        self,
-        session_id: str = None,
-        parent_session_id: str = None,
-        forked_from_frame: int = None,
-        metadata: dict = None,
-        tags: list[str] = None,
-    ) -> Session
-
-    def record_step(
-        self,
-        node_name: str,
-        input_state: dict,
-        output_state: dict,
-        metadata: FrameMetadata = None,
-        frame_type: FrameType = FrameType.NODE_EXECUTION,
-    ) -> Frame
-
-    def save(self) -> Path
-    def fork(self, from_frame: int) -> VCRRecorder</code></pre>
                 </div>
-            </div>
 
-            <div class="api-block">
-                <h3>VCRPlayer</h3>
-                <p>Used for loading saved <code>.vcr</code> files, time-traveling, and resuming execution.</p>
-                <div class="code-window">
-                    <div class="code-header">
-                        <div class="mac-dot close"></div>
-                        <div class="mac-dot minimize"></div>
-                        <div class="mac-dot maximize"></div>
-                        <span class="file-name">agent_vcr/player.py</span>
+                <div class="tab-panel" id="tab-crewai">
+                    <div class="code-block">
+                        <div class="code-bar">
+                            <span class="dots"><span></span><span></span><span></span></span>
+                            <span class="code-label">crew_agent.py</span>
+                        </div>
+                        <pre><code><span class="kw">from</span> crewai <span class="kw">import</span> Crew
+<span class="kw">from</span> agent_vcr <span class="kw">import</span> VCRRecorder
+<span class="kw">from</span> agent_vcr.integrations.crewai <span class="kw">import</span> VCRCrewAI
+
+recorder = VCRRecorder()
+recorder.start_session(<span class="str">"crew_run"</span>)
+
+crew = Crew(agents=[researcher, writer], tasks=[...])
+
+<span class="cm"># Wrap and run — recording is automatic</span>
+vcr_crew = VCRCrewAI(recorder)
+result = vcr_crew.kickoff(crew)
+
+recorder.save()</code></pre>
                     </div>
-<pre><code class="language-python">class VCRPlayer:
-    @classmethod
-    def load(cls, filepath: str) -> VCRPlayer
-    
-    def goto_frame(self, index: int) -> dict
-    def get_frame(self, index: int) -> Frame
-    def list_nodes(self) -> list[str]
-    def compare_frames(self, a: int, b: int) -> dict
-    def resume(self, agent_callable: Callable, config: ResumeConfig) -> str</code></pre>
                 </div>
-            </div>
-            
-            <div class="cta-banner">
-                <div class="cta-content">
-                    <h2>Ready to supercharge your debugging?</h2>
-                    <p>Stop wasting tokens and time re-running identical prompts.</p>
-                </div>
-                <a href="#quick-start" class="btn btn-primary">Install Agent VCR</a>
-            </div>
-        </section>
-    </main>
 
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/languages/python.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/languages/bash.min.js"></script>
+                <div class="tab-panel" id="tab-raw">
+                    <div class="code-block">
+                        <div class="code-bar">
+                            <span class="dots"><span></span><span></span><span></span></span>
+                            <span class="code-label">agent.py</span>
+                        </div>
+                        <pre><code><span class="kw">from</span> agent_vcr <span class="kw">import</span> VCRRecorder
+<span class="kw">from</span> agent_vcr.integrations.langgraph <span class="kw">import</span> vcr_record
+
+recorder = VCRRecorder()
+
+<span class="cm"># Decorate any function</span>
+<span class="dec">@vcr_record</span>(recorder, node_name=<span class="str">"my_step"</span>)
+<span class="kw">def</span> my_step(data: dict) -> dict:
+    <span class="kw">return</span> process(data)
+
+<span class="cm"># Each call is automatically recorded</span>
+result = my_step({<span class="str">"key"</span>: <span class="str">"value"</span>})</code></pre>
+                    </div>
+                </div>
+
+                <div class="tab-panel" id="tab-async">
+                    <div class="code-block">
+                        <div class="code-bar">
+                            <span class="dots"><span></span><span></span><span></span></span>
+                            <span class="code-label">async_agent.py</span>
+                        </div>
+                        <pre><code><span class="kw">from</span> agent_vcr <span class="kw">import</span> AsyncVCRRecorder, AsyncVCRPlayer
+
+recorder = AsyncVCRRecorder()
+<span class="kw">await</span> recorder.start_session(<span class="str">"async_run"</span>)
+
+<span class="cm"># Fully non-blocking recording</span>
+<span class="kw">await</span> recorder.record_step(
+    node_name=<span class="str">"fetch_context"</span>,
+    input_state=query_state,
+    output_state=result_state,
+)
+
+path = <span class="kw">await</span> recorder.save()
+
+<span class="cm"># Async time-travel</span>
+player = <span class="kw">await</span> AsyncVCRPlayer.load(path)
+state = <span class="kw">await</span> player.goto_frame(<span class="num">3</span>)</code></pre>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- COMPARE -->
+    <section class="compare-section" id="compare">
+        <div class="section-inner">
+            <div class="section-header">
+                <h2>How does it compare?</h2>
+                <p>Agent VCR is the only tool that lets you <em>change</em> what happened.</p>
+            </div>
+            <div class="compare-table-wrap">
+                <table class="compare-table">
+                    <thead>
+                        <tr>
+                            <th>Feature</th>
+                            <th class="highlight-col">Agent VCR</th>
+                            <th>LangSmith</th>
+                            <th>LangFuse</th>
+                            <th>Arize Phoenix</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td>Record execution traces</td>
+                            <td class="highlight-col"><span class="yes">✓</span></td>
+                            <td><span class="yes">✓</span></td>
+                            <td><span class="yes">✓</span></td>
+                            <td><span class="yes">✓</span></td>
+                        </tr>
+                        <tr>
+                            <td>Time-travel to any step</td>
+                            <td class="highlight-col"><span class="yes">✓</span></td>
+                            <td><span class="no">✗</span></td>
+                            <td><span class="no">✗</span></td>
+                            <td><span class="no">✗</span></td>
+                        </tr>
+                        <tr>
+                            <td><strong>Edit state &amp; resume</strong></td>
+                            <td class="highlight-col"><span class="yes">✓</span></td>
+                            <td><span class="no">✗</span></td>
+                            <td><span class="no">✗</span></td>
+                            <td><span class="no">✗</span></td>
+                        </tr>
+                        <tr>
+                            <td>Fork from any frame</td>
+                            <td class="highlight-col"><span class="yes">✓</span></td>
+                            <td><span class="no">✗</span></td>
+                            <td><span class="no">✗</span></td>
+                            <td><span class="no">✗</span></td>
+                        </tr>
+                        <tr>
+                            <td>Self-hosted / local-first</td>
+                            <td class="highlight-col"><span class="yes">✓</span></td>
+                            <td><span class="no">Cloud only</span></td>
+                            <td><span class="yes">✓</span></td>
+                            <td><span class="yes">✓</span></td>
+                        </tr>
+                        <tr>
+                            <td>Git-friendly format</td>
+                            <td class="highlight-col"><span class="yes">✓ JSONL</span></td>
+                            <td><span class="no">✗</span></td>
+                            <td><span class="no">✗</span></td>
+                            <td><span class="no">✗</span></td>
+                        </tr>
+                        <tr>
+                            <td>Setup lines of code</td>
+                            <td class="highlight-col"><span class="yes">3</span></td>
+                            <td>~15</td>
+                            <td>~10</td>
+                            <td>~10</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </section>
+
+    <!-- API REFERENCE -->
+    <section class="api-section" id="api">
+        <div class="section-inner">
+            <div class="section-header">
+                <h2>API Reference</h2>
+                <p>Minimal, predictable interfaces.</p>
+            </div>
+
+            <div class="api-grid">
+                <div class="api-card">
+                    <div class="api-card-header">
+                        <span class="api-class">VCRRecorder</span>
+                        <span class="api-tag">Core</span>
+                    </div>
+                    <div class="code-block compact">
+                        <pre><code><span class="cm"># Start a recording session</span>
+recorder.start_session(
+    session_id: str = <span class="kw">None</span>,
+    metadata: dict = <span class="kw">None</span>,
+    tags: list[str] = <span class="kw">None</span>,
+) -> Session
+
+<span class="cm"># Record one agent step</span>
+recorder.record_step(
+    node_name: str,
+    input_state: dict,
+    output_state: dict,
+    metadata: FrameMetadata = <span class="kw">None</span>,
+) -> Frame
+
+<span class="cm"># Convenience recorders</span>
+recorder.record_llm_call(...)
+recorder.record_tool_call(...)
+recorder.record_error(...)
+
+<span class="cm"># Save & fork</span>
+recorder.save() -> Path
+recorder.fork(from_frame: int) -> VCRRecorder</code></pre>
+                    </div>
+                </div>
+
+                <div class="api-card">
+                    <div class="api-card-header">
+                        <span class="api-class">VCRPlayer</span>
+                        <span class="api-tag">Core</span>
+                    </div>
+                    <div class="code-block compact">
+                        <pre><code><span class="cm"># Load a saved session</span>
+player = VCRPlayer.load(filepath: str)
+
+<span class="cm"># Time-travel</span>
+player.goto_frame(index: int) -> dict
+player.get_frame(index: int) -> Frame
+
+<span class="cm"># Inspect</span>
+player.list_nodes() -> list[str]
+player.get_errors() -> list[Frame]
+player.compare_frames(a: int, b: int) -> dict
+
+<span class="cm"># Resume execution</span>
+player.resume(
+    agent_callable: Callable,
+    config: ResumeConfig,
+) -> str
+
+<span class="cm"># Export</span>
+player.export_state(frame_index: int) -> dict</code></pre>
+                    </div>
+                </div>
+
+                <div class="api-card">
+                    <div class="api-card-header">
+                        <span class="api-class">ResumeConfig</span>
+                        <span class="api-tag">Config</span>
+                    </div>
+                    <div class="code-block compact">
+                        <pre><code><span class="cm"># Configure how replay works</span>
+ResumeConfig(
+    from_frame: int,
+
+    <span class="cm"># Optional: override state before resume</span>
+    state_overrides: dict = {},
+
+    <span class="cm"># FORK: new session from this point</span>
+    <span class="cm"># REPLAY: re-run same inputs</span>
+    <span class="cm"># MOCK: use injected mock values</span>
+    mode: ResumeMode = FORK,
+
+    <span class="cm"># Skip specific nodes</span>
+    skip_nodes: list[str] = [],
+
+    <span class="cm"># Inject mocks for tool calls</span>
+    inject_mocks: dict = {},
+)</code></pre>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- CTA -->
+    <section class="cta-section">
+        <div class="section-inner">
+            <div class="cta-inner">
+                <h2>Stop re-running your whole chain.</h2>
+                <p>Install Agent VCR and start debugging from the exact frame that broke.</p>
+                <div class="code-block inline-install">
+                    <pre><code>pip install agent-vcr</code></pre>
+                </div>
+                <div class="cta-links">
+                    <a href="https://github.com/ruzvad/agent-vcr" class="btn-solid large" target="_blank">View on GitHub</a>
+                    <a href="https://github.com/ruzvad/agent-vcr/issues" class="btn-ghost large" target="_blank">Report a bug</a>
+                </div>
+                <p class="cta-note">MIT License · No signup required · Works offline</p>
+            </div>
+        </div>
+    </section>
+
+    <!-- FOOTER -->
+    <footer class="footer">
+        <div class="footer-inner">
+            <div class="footer-left">
+                <span class="footer-logo">📼 Agent VCR</span>
+                <span class="footer-tagline">Time-travel debugging for AI agents</span>
+            </div>
+            <div class="footer-links">
+                <a href="https://github.com/ruzvad/agent-vcr" target="_blank">GitHub</a>
+                <a href="https://pypi.org/project/agent-vcr/" target="_blank">PyPI</a>
+                <a href="https://github.com/ruzvad/agent-vcr/issues" target="_blank">Issues</a>
+                <a href="https://github.com/ruzvad/agent-vcr/blob/main/CONTRIBUTING.md" target="_blank">Contributing</a>
+            </div>
+        </div>
+    </footer>
+
     <script src="script.js"></script>
 </body>
 </html>

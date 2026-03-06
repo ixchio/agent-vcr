@@ -2,8 +2,8 @@
 
 import asyncio
 
-from agent_vcr.async_recorder import AsyncVCRRecorder
 from agent_vcr.async_player import AsyncVCRPlayer
+from agent_vcr.async_recorder import AsyncVCRRecorder
 from agent_vcr.models import FrameMetadata
 
 

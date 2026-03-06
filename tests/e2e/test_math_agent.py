@@ -1,11 +1,8 @@
 """End-to-end test with a toy math agent."""
 
 import tempfile
-from pathlib import Path
 
-import pytest
-
-from agent_vcr.models import ResumeConfig, ResumeMode
+from agent_vcr.models import ResumeConfig
 from agent_vcr.player import VCRPlayer
 from agent_vcr.recorder import VCRRecorder
 
@@ -236,16 +233,16 @@ class TestMathAgentE2E:
 
             # Compare
             player_a = VCRPlayer.load(vcr_path_a)
-            player_b = VCRPlayer.load(vcr_path_b)
+            VCRPlayer.load(vcr_path_b)
 
             diff = player_a.compare_frames(0, 0)
-            
+
             # Since compare_frames compares states of frame 0 in player_a with frame 0 in player_a
             # Wait, compare_frames compares two frames IN THE SAME PLAYER!
             # player_a.compare_frames(0, 1) compares frame 0 and frame 1 in player_a!
             # The test intended to compare player_a's frame 0 with player_b's frame 0? No:
             # player_a.compare_frames(0, 0) compares player_a frame 0 with itself!
-            
+
             # Let's fix test to compare frame 0 and frame 1 in player_a
             diff = player_a.compare_frames(0, 1)
 

@@ -7,18 +7,18 @@ import logging
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
 
-from agent_vcr.models import (
+from agent_vcr.models import (  # noqa: E402
     Frame,
     ResumeConfig,
     ResumeMode,
     Session,
     StateSerializer,
 )
-from agent_vcr.recorder import VCRRecorder
+from agent_vcr.recorder import VCRRecorder  # noqa: E402
 
 
 class VCRPlayer:
@@ -38,7 +38,7 @@ class VCRPlayer:
             raise FileNotFoundError(f"VCR file not found: {filepath}")
 
         logger.info("Loading VCR file: %s", filepath)
-        session: Optional[Session] = None
+        session: Session | None = None
         frames: list[Frame] = []
 
         with open(filepath) as f:
@@ -94,10 +94,7 @@ class VCRPlayer:
         Returns:
             The output state at the closest frame.
         """
-        if isinstance(timestamp, str):
-            target_time = datetime.fromisoformat(timestamp)
-        else:
-            target_time = timestamp
+        target_time = datetime.fromisoformat(timestamp) if isinstance(timestamp, str) else timestamp
 
         # Ensure timezone-aware comparison
         if target_time.tzinfo is None:
@@ -140,7 +137,7 @@ class VCRPlayer:
         frame = self.get_frame(index)
         return StateSerializer.deserialize(frame.output_state)
 
-    def get_state_at_node(self, node_name: str) -> Optional[dict[str, Any]]:
+    def get_state_at_node(self, node_name: str) -> dict[str, Any] | None:
         """Get the state after a specific node execution."""
         for frame in self.frames:
             if frame.node_name == node_name:
@@ -181,8 +178,8 @@ class VCRPlayer:
     def resume(
         self,
         agent_callable: Callable[[dict[str, Any]], dict[str, Any]],
-        config: Optional[ResumeConfig] = None,
-        recorder: Optional[VCRRecorder] = None,
+        config: ResumeConfig | None = None,
+        recorder: VCRRecorder | None = None,
     ) -> str:
         """Resume execution from a specific frame."""
         config = config or ResumeConfig(from_frame=self._current_index)
@@ -213,15 +210,15 @@ class VCRPlayer:
         )
 
         if config.mode == ResumeMode.MOCK:
-            result = self._execute_with_mocks(
+            self._execute_with_mocks(
                 agent_callable, base_state, config.inject_mocks, recorder
             )
         elif config.mode == ResumeMode.REPLAY:
-            result = self._execute_replay(
+            self._execute_replay(
                 agent_callable, config.from_frame, recorder
             )
         else:
-            result = self._execute_fresh(agent_callable, base_state, recorder)
+            self._execute_fresh(agent_callable, base_state, recorder)
 
         recorder.save()
 
@@ -234,7 +231,7 @@ class VCRPlayer:
 
         return self._compute_state_diff(state_a, state_b)
 
-    def export_state(self, frame_index: Optional[int] = None) -> dict[str, Any]:
+    def export_state(self, frame_index: int | None = None) -> dict[str, Any]:
         """Export state at a frame as a clean dictionary."""
         idx = frame_index if frame_index is not None else self._current_index
         return self.get_output_state(idx)

@@ -1,7 +1,6 @@
 """Basic usage example for Agent VCR."""
 
 from agent_vcr import VCRPlayer, VCRRecorder
-from agent_vcr.models import ResumeConfig
 
 
 def simple_agent(state: dict) -> dict:
@@ -43,7 +42,7 @@ def main():
     print(f"State at frame 0: {state_at_frame}")
 
     # Get statistics
-    print(f"\nSession Statistics:")
+    print("\nSession Statistics:")
     print(f"  Total latency: {player.get_total_latency():.2f}ms")
     print(f"  Nodes executed: {player.list_nodes()}")
 

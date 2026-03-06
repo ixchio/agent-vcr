@@ -1,14 +1,11 @@
 """Performance benchmarks for Agent VCR using pytest-benchmark."""
 
-import tempfile
 from pathlib import Path
 
 import pytest
 
-from agent_vcr.models import FrameMetadata
 from agent_vcr.player import VCRPlayer
 from agent_vcr.recorder import VCRRecorder
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -67,7 +64,7 @@ class TestPerformanceBenchmarks:
             )
             i += 1
 
-        result = benchmark.pedantic(record_one_frame, rounds=1000, warmup_rounds=10)
+        benchmark.pedantic(record_one_frame, rounds=1000, warmup_rounds=10)
 
         # Assert the mean is under 5ms
         mean_ms = benchmark.stats["mean"] * 1000

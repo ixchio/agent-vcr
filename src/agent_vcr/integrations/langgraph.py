@@ -5,9 +5,9 @@ from __future__ import annotations
 import functools
 import logging
 import time
-from typing import Any, Callable, Optional
+from typing import Any, Callable
 
-from agent_vcr.models import FrameMetadata, FrameType
+from agent_vcr.models import FrameMetadata
 from agent_vcr.recorder import VCRRecorder
 
 logger = logging.getLogger(__name__)
@@ -31,9 +31,9 @@ class VCRLangGraph:
     def wrap_graph(self, graph: Any) -> Any:
         """Wrap all nodes in a LangGraph with VCR recording."""
         try:
-            from langgraph.graph import StateGraph
+            from langgraph.graph import StateGraph  # noqa: F401
         except ImportError:
-            raise ImportError("langgraph is required. Install with: pip install langgraph")
+            raise ImportError("langgraph is required. Install with: pip install langgraph")  # noqa: B904
 
         if not hasattr(graph, "nodes"):
             raise ValueError("Graph must have a 'nodes' attribute")
@@ -59,7 +59,7 @@ class VCRLangGraph:
             logger.debug("Recording node: %s", node_name)
 
             start_time = time.perf_counter()
-            error: Optional[Exception] = None
+            error: Exception | None = None
             output_state: Any = None
 
             try:
@@ -168,7 +168,7 @@ class LangGraphCallback:
         tool_input: dict,
         tool_output: Any,
         latency_ms: float,
-        error: Optional[str] = None,
+        error: str | None = None,
     ) -> None:
         """Called when a tool call ends."""
         self.recorder.record_tool_call(
@@ -194,7 +194,7 @@ class LangGraphCallback:
 
 def vcr_record(
     recorder: VCRRecorder,
-    node_name: Optional[str] = None,
+    node_name: str | None = None,
 ):
     """Decorator to record a function execution."""
 

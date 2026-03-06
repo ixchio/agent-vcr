@@ -10,11 +10,13 @@ import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
-from agent_vcr.models import (
+import contextlib  # noqa: E402
+
+from agent_vcr.models import (  # noqa: E402
     Frame,
     FrameMetadata,
     FrameType,
@@ -39,9 +41,9 @@ class VCRRecorder:
         self.auto_save = auto_save
         self.diff_mode = diff_mode
 
-        self._session: Optional[Session] = None
+        self._session: Session | None = None
         self._frames: list[Frame] = []
-        self._previous_state: Optional[dict] = None
+        self._previous_state: dict | None = None
         self._lock = threading.RLock()
         self._cache = VCRCache()
 
@@ -49,11 +51,11 @@ class VCRRecorder:
 
     def start_session(
         self,
-        session_id: Optional[str] = None,
-        parent_session_id: Optional[str] = None,
-        forked_from_frame: Optional[int] = None,
-        metadata: Optional[dict] = None,
-        tags: Optional[list[str]] = None,
+        session_id: str | None = None,
+        parent_session_id: str | None = None,
+        forked_from_frame: int | None = None,
+        metadata: dict | None = None,
+        tags: list[str] | None = None,
     ) -> Session:
         """Start a new recording session."""
         with self._lock:
@@ -80,9 +82,9 @@ class VCRRecorder:
         node_name: str,
         input_state: dict[str, Any],
         output_state: dict[str, Any],
-        metadata: Optional[FrameMetadata] = None,
+        metadata: FrameMetadata | None = None,
         frame_type: FrameType = FrameType.NODE_EXECUTION,
-        parent_frame_id: Optional[str] = None,
+        parent_frame_id: str | None = None,
     ) -> Frame:
         """Record a single execution step."""
         with self._lock:
@@ -142,7 +144,7 @@ class VCRRecorder:
         tokens_input: int,
         tokens_output: int,
         latency_ms: float,
-        cost_usd: Optional[float] = None,
+        cost_usd: float | None = None,
     ) -> Frame:
         """Record an LLM API call."""
         metadata = FrameMetadata(
@@ -168,7 +170,7 @@ class VCRRecorder:
         tool_input: dict,
         tool_output: Any,
         latency_ms: float,
-        error: Optional[str] = None,
+        error: str | None = None,
     ) -> Frame:
         """Record a tool execution."""
         metadata = FrameMetadata(
@@ -223,7 +225,7 @@ class VCRRecorder:
             logger.info("Saved session %s to %s", self._session.session_id, path)
             return path
 
-    def get_session(self) -> Optional[Session]:
+    def get_session(self) -> Session | None:
         """Get the current session."""
         return self._session
 
@@ -234,8 +236,8 @@ class VCRRecorder:
     def fork(
         self,
         from_frame: int,
-        new_session_id: Optional[str] = None,
-        state_overrides: Optional[dict] = None,
+        new_session_id: str | None = None,
+        state_overrides: dict | None = None,
     ) -> VCRRecorder:
         """Create a forked recorder starting from a specific frame."""
         if from_frame >= len(self._frames):
@@ -345,10 +347,8 @@ class VCRRecorder:
             os.replace(tmp_path, str(manifest_path))
         except Exception:
             # Clean up temp file on failure
-            try:
+            with contextlib.suppress(OSError):
                 os.unlink(tmp_path)
-            except OSError:
-                pass
             raise
 
     def _compute_diff(self, before: dict, after: dict) -> list[dict]:

@@ -3,14 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
 import tempfile
-import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import aiofiles
 
@@ -46,19 +46,19 @@ class AsyncVCRRecorder:
         self.buffer_size = buffer_size
         self.diff_mode = diff_mode
 
-        self._session: Optional[Session] = None
+        self._session: Session | None = None
         self._frames: list[Frame] = []
-        self._previous_state: Optional[dict] = None
+        self._previous_state: dict | None = None
         self._lock = asyncio.Lock()
         self._cache = VCRCache()
 
     async def start_session(
         self,
-        session_id: Optional[str] = None,
-        parent_session_id: Optional[str] = None,
-        forked_from_frame: Optional[int] = None,
-        metadata: Optional[dict] = None,
-        tags: Optional[list[str]] = None,
+        session_id: str | None = None,
+        parent_session_id: str | None = None,
+        forked_from_frame: int | None = None,
+        metadata: dict | None = None,
+        tags: list[str] | None = None,
     ) -> Session:
         """Start a new recording session."""
         async with self._lock:
@@ -85,7 +85,7 @@ class AsyncVCRRecorder:
         node_name: str,
         input_state: dict[str, Any],
         output_state: dict[str, Any],
-        metadata: Optional[FrameMetadata] = None,
+        metadata: FrameMetadata | None = None,
         frame_type: FrameType = FrameType.NODE_EXECUTION,
     ) -> Frame:
         """Record a single execution step."""
@@ -211,13 +211,13 @@ class AsyncVCRRecorder:
             logger.info("Saved async session %s to %s", self._session.session_id, path)
             return path
 
-    def get_session(self) -> Optional[Session]:
+    def get_session(self) -> Session | None:
         return self._session
 
     def get_frames(self) -> list[Frame]:
         return list(self._frames)
 
-    async def fork(self, from_frame: int) -> "AsyncVCRRecorder":
+    async def fork(self, from_frame: int) -> AsyncVCRRecorder:
         """Fork a new recorder from a specific frame."""
         if self._session is None:
             raise RuntimeError("No active session to fork from.")
@@ -313,10 +313,8 @@ class AsyncVCRRecorder:
             os.close(fd)
             os.replace(tmp_path, str(manifest_path))
         except Exception:
-            try:
+            with contextlib.suppress(OSError):
                 os.unlink(tmp_path)
-            except OSError:
-                pass
             raise
 
     def _compute_diff(self, before: dict, after: dict) -> list[dict]:

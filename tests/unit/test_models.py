@@ -1,9 +1,6 @@
 """Unit tests for VCR models."""
 
-import json
 from datetime import datetime, timezone
-
-import pytest
 
 from agent_vcr.models import (
     Frame,

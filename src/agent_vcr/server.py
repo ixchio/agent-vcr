@@ -8,11 +8,9 @@ import logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
@@ -44,7 +42,7 @@ class ResumeRequest(BaseModel):
     from_frame: int
     state_overrides: dict = {}
     mode: str = "fork"
-    new_session_id: Optional[str] = None
+    new_session_id: str | None = None
 
 
 class VCRFileWatcher(FileSystemEventHandler):
@@ -54,7 +52,7 @@ class VCRFileWatcher(FileSystemEventHandler):
         self.vcr_dir = vcr_dir
         self.connections: list[WebSocket] = []
         self._lock = asyncio.Lock()
-        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._loop: asyncio.AbstractEventLoop | None = None
 
     def set_event_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         """Store the running event loop for thread-safe async scheduling."""
@@ -149,7 +147,7 @@ class VCRServer:
         self.host = host
         self.port = port
         self.watcher = VCRFileWatcher(self.vcr_dir)
-        self.observer: Optional[Observer] = None
+        self.observer: Observer | None = None
 
         self.vcr_dir.mkdir(parents=True, exist_ok=True)
 
@@ -239,7 +237,7 @@ class VCRServer:
             try:
                 player = VCRPlayer.load(vcr_file)
             except Exception as e:
-                raise HTTPException(status_code=500, detail=f"Failed to load session: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to load session: {e}")  # noqa: B904
 
             statistics = {
                 "total_frames": len(player.frames),
@@ -273,9 +271,9 @@ class VCRServer:
                     "output_state": player.get_output_state(frame_index),
                 }
             except IndexError:
-                raise HTTPException(status_code=404, detail="Frame not found")
+                raise HTTPException(status_code=404, detail="Frame not found")  # noqa: B904
             except Exception as e:
-                raise HTTPException(status_code=500, detail=str(e))
+                raise HTTPException(status_code=500, detail=str(e))  # noqa: B904
 
         @self.app.post("/api/sessions/{session_id}/resume")
         async def resume_session(session_id: str, request: ResumeRequest):
@@ -300,7 +298,7 @@ class VCRServer:
                     "message": "To complete resume, use the Python SDK with this state",
                 }
             except Exception as e:
-                raise HTTPException(status_code=500, detail=str(e))
+                raise HTTPException(status_code=500, detail=str(e))  # noqa: B904
 
         @self.app.get("/api/sessions/{session_id}/export")
         async def export_session(session_id: str, format: str = "json"):
@@ -320,7 +318,7 @@ class VCRServer:
                 else:
                     raise HTTPException(status_code=400, detail=f"Unsupported format: {format}")
             except Exception as e:
-                raise HTTPException(status_code=500, detail=str(e))
+                raise HTTPException(status_code=500, detail=str(e))  # noqa: B904
 
         @self.app.websocket("/ws/live")
         async def websocket_endpoint(websocket: WebSocket):

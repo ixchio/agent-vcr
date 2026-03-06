@@ -8,13 +8,11 @@ and tasks are fully mocked so you can run this script offline.
 from __future__ import annotations
 
 import tempfile
-from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
 
 from agent_vcr import VCRPlayer, VCRRecorder
 from agent_vcr.integrations.crewai import VCRCrewAI, VCRCrewCallback, vcr_task
-
 
 # ---------------------------------------------------------------------------
 # Simulate CrewAI objects (replace with real crewai imports in production)

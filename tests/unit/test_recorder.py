@@ -1,11 +1,6 @@
 """Unit tests for VCR Recorder."""
 
-import json
-import os
 import tempfile
-from pathlib import Path
-
-import pytest
 
 from agent_vcr.models import FrameMetadata, FrameType
 from agent_vcr.recorder import VCRRecorder
@@ -60,7 +55,7 @@ class TestVCRRecorder:
     def test_save_creates_file(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             recorder = VCRRecorder(output_dir=tmpdir, auto_save=False)
-            session = recorder.start_session(session_id="test-save")
+            recorder.start_session(session_id="test-save")
 
             recorder.record_step("node1", {"a": 1}, {"b": 2})
             recorder.record_step("node2", {"b": 2}, {"c": 3})

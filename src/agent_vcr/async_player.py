@@ -6,17 +6,15 @@ import json
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any
 
 import aiofiles
 
 from agent_vcr.models import (
     Frame,
-    ResumeConfig,
     Session,
     StateSerializer,
 )
-from agent_vcr.recorder import VCRRecorder
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +36,7 @@ class AsyncVCRPlayer:
             raise FileNotFoundError(f"VCR file not found: {filepath}")
 
         logger.info("Async loading VCR file: %s", filepath)
-        session: Optional[Session] = None
+        session: Session | None = None
         frames: list[Frame] = []
 
         async with aiofiles.open(filepath) as f:
@@ -82,10 +80,7 @@ class AsyncVCRPlayer:
 
     def goto_time(self, timestamp: str | datetime) -> dict[str, Any]:
         """Jump to the frame closest to a timestamp."""
-        if isinstance(timestamp, str):
-            target_time = datetime.fromisoformat(timestamp)
-        else:
-            target_time = timestamp
+        target_time = datetime.fromisoformat(timestamp) if isinstance(timestamp, str) else timestamp
 
         if target_time.tzinfo is None:
             target_time = target_time.replace(tzinfo=timezone.utc)

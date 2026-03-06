@@ -1,18 +1,16 @@
 """Terminal UI for Agent VCR - Replay agent execution locally."""
 
 import argparse
-import asyncio
 import json
 import sys
 from pathlib import Path
 
 from rich.console import RenderableType
-from rich.json import JSON
 from rich.panel import Panel
 from rich.syntax import Syntax
 from rich.text import Text
 from textual.app import App, ComposeResult
-from textual.containers import Horizontal, Vertical
+from textual.containers import Horizontal
 from textual.reactive import reactive
 from textual.widgets import Footer, Header, Static
 

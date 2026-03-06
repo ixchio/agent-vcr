@@ -1,11 +1,10 @@
 """Shared test fixtures for Agent VCR tests."""
 
 import tempfile
-from pathlib import Path
 
 import pytest
 
-from agent_vcr.models import FrameMetadata, FrameType
+from agent_vcr.models import FrameMetadata
 from agent_vcr.player import VCRPlayer
 from agent_vcr.recorder import VCRRecorder
 

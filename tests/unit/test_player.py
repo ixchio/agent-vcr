@@ -1,12 +1,9 @@
 """Unit tests for VCR Player."""
 
-import json
 import tempfile
 from pathlib import Path
 
-import pytest
-
-from agent_vcr.models import Frame, FrameMetadata, FrameType, ResumeConfig, ResumeMode
+from agent_vcr.models import FrameMetadata, ResumeConfig
 from agent_vcr.player import VCRPlayer
 from agent_vcr.recorder import VCRRecorder
 

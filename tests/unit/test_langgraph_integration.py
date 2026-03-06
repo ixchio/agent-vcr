@@ -10,7 +10,7 @@ from agent_vcr.integrations.langgraph import (
     VCRLangGraph,
     vcr_record,
 )
-from agent_vcr.models import FrameMetadata, FrameType
+from agent_vcr.models import FrameType
 from agent_vcr.recorder import VCRRecorder
 
 

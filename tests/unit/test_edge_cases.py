@@ -7,7 +7,6 @@ from pathlib import Path
 
 import pytest
 
-from agent_vcr.models import FrameMetadata
 from agent_vcr.player import VCRPlayer
 from agent_vcr.recorder import VCRRecorder
 
@@ -194,7 +193,6 @@ class TestGotoTime:
             assert state["v"] == 2
 
     def test_goto_time_with_datetime(self):
-        from datetime import datetime, timezone
 
         with tempfile.TemporaryDirectory() as tmpdir:
             recorder = VCRRecorder(output_dir=tmpdir, auto_save=False)
