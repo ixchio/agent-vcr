@@ -51,6 +51,9 @@ jobs:
     name: Performance Benchmarks
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      deployments: write
     # Only run on pushes to main (not on PRs) so gh-pages history stays clean
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
 
