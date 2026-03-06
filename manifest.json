@@ -1,0 +1,17 @@
+{
+  "sessions": [
+    {
+      "session_id": "test",
+      "parent_session_id": null,
+      "forked_from_frame": null,
+      "created_at": "2026-03-05T20:37:00.681956+00:00",
+      "updated_at": "2026-03-05T20:37:00.681967+00:00",
+      "metadata": {},
+      "tags": [],
+      "frame_count": 1,
+      "total_tokens": 0,
+      "total_cost_usd": 0.0
+    }
+  ],
+  "updated_at": "2026-03-05T20:37:00.682241+00:00"
+}

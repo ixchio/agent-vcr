@@ -1,0 +1,101 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "agent-vcr"
+version = "0.1.0"
+description = "The DVR for AI Agents - Record, visualize, and time-travel through agent execution"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.9"
+authors = [
+    {name = "Agent VCR Contributors"},
+]
+keywords = [
+    "ai",
+    "agents",
+    "debugging",
+    "langchain",
+    "langgraph",
+    "observability",
+    "time-travel",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Debuggers",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dependencies = [
+    "pydantic>=2.0.0",
+    "fastapi>=0.104.0",
+    "uvicorn>=0.24.0",
+    "websockets>=12.0",
+    "watchdog>=3.0.0",
+    "aiofiles>=23.0.0",
+]
+
+[project.optional-dependencies]
+langgraph = ["langgraph>=0.0.20"]
+langchain = ["langchain>=0.1.0"]
+tui = ["rich>=13.0.0", "textual>=0.40.0"]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-cov>=4.1.0",
+    "httpx>=0.25.0",
+    "black>=23.0.0",
+    "ruff>=0.1.0",
+    "mypy>=1.6.0",
+    "pre-commit>=3.5.0",
+]
+all = [
+    "langgraph>=0.0.20",
+    "langchain>=0.1.0",
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-cov>=4.1.0",
+]
+
+[project.scripts]
+vcr-server = "agent_vcr.server:main"
+vcr = "agent_vcr.tui:main"
+
+[project.urls]
+Homepage = "https://github.com/ruzvad/agent-vcr"
+Documentation = "https://github.com/ruzvad/agent-vcr#readme"
+Repository = "https://github.com/ruzvad/agent-vcr"
+Issues = "https://github.com/ruzvad/agent-vcr/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/agent_vcr"]
+
+[tool.black]
+line-length = 100
+target-version = ["py39", "py310", "py311", "py312"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+select = ["E", "F", "I", "W", "UP", "B", "C4", "SIM"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.9"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --cov=agent_vcr --cov-report=term-missing"
