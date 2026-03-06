@@ -3,7 +3,7 @@
 [![CI](https://github.com/ixchio/agent-vcr/actions/workflows/ci.yml/badge.svg)](https://github.com/ixchio/agent-vcr/actions)
 [![Benchmarks](https://img.shields.io/badge/benchmarks-view%20chart-blue)](https://ixchio.github.io/agent-vcr/dev/bench/)
 [![codecov](https://codecov.io/gh/ixchio/agent-vcr/branch/main/graph/badge.svg)](https://codecov.io/gh/ixchio/agent-vcr)
-[![PyPI version](https://badge.fury.io/py/agent-vcr.svg)](https://badge.fury.io/py/agent-vcr)
+[![PyPI version](https://badge.fury.io/py/ai-agent-vcr.svg)](https://badge.fury.io/py/ai-agent-vcr)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 **Time-travel debugging for AI agents.**
@@ -38,7 +38,7 @@ LangSmith and LangFuse show you what happened. **Agent VCR lets you change it.**
 ## 🔥 Quick Start
 
 ```bash
-pip install agent-vcr
+pip install ai-agent-vcr
 ```
 
 ```python
@@ -162,7 +162,7 @@ def research(context: dict) -> str:
 
 Install with:
 ```bash
-pip install agent-vcr[crewai]
+pip install ai-agent-vcr[crewai]
 ```
 
 See [`examples/crewai_integration.py`](examples/crewai_integration.py) for a full runnable demo.
