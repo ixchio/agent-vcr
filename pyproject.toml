@@ -103,6 +103,7 @@ disallow_untyped_defs = true
 module = ["_pytest.*", "pytest.*", "langgraph.*"]
 ignore_errors = true
 ignore_missing_imports = true
+follow_imports = "skip"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
