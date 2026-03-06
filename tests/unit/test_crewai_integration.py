@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import tempfile
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
