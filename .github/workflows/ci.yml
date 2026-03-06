@@ -69,7 +69,7 @@ jobs:
 
     - name: Run benchmarks
       run: |
-        pytest tests/benchmarks/ -v --benchmark-only \
+        pytest tests/benchmarks/ -v --benchmark-only --no-cov \
           --benchmark-json=benchmark_results.json \
           --benchmark-name=short \
           --benchmark-columns="min,max,mean,stddev,rounds" \
