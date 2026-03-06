@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1772830083449,
+  "lastUpdate": 1772831035415,
   "repoUrl": "https://github.com/ixchio/agent-vcr",
   "entries": {
     "Agent VCR Benchmarks": [
@@ -156,6 +156,58 @@ window.BENCHMARK_DATA = {
             "unit": "iter/sec",
             "range": "stddev: 6.106183761796327e-7",
             "extra": "mean: 1.3390340003240908 usec\nrounds: 1000"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "priyankapandeykum@gmail.com",
+            "name": "amankumarpandeyin",
+            "username": "ixchio"
+          },
+          "committer": {
+            "email": "priyankapandeykum@gmail.com",
+            "name": "amankumarpandeyin",
+            "username": "ixchio"
+          },
+          "distinct": true,
+          "id": "78011537c3105b88838eaeddcee64946db509e08",
+          "message": "chore: bump version to 0.1.1 and rename package to ai-agent-vcr",
+          "timestamp": "2026-03-07T02:32:24+05:30",
+          "tree_id": "7ed23090a0a1300a4969f7729d29a20f78ed5482",
+          "url": "https://github.com/ixchio/agent-vcr/commit/78011537c3105b88838eaeddcee64946db509e08"
+        },
+        "date": 1772831035061,
+        "tool": "pytest",
+        "benches": [
+          {
+            "name": "tests/benchmarks/test_performance.py::TestPerformanceBenchmarks::test_benchmark_recorder_overhead",
+            "value": 58361.94478795874,
+            "unit": "iter/sec",
+            "range": "stddev: 0.000015329064238801583",
+            "extra": "mean: 17.134453000721805 usec\nrounds: 1000"
+          },
+          {
+            "name": "tests/benchmarks/test_performance.py::TestPerformanceBenchmarks::test_benchmark_file_write_speed",
+            "value": 3.131178588364234,
+            "unit": "iter/sec",
+            "range": "stddev: 0",
+            "extra": "mean: 319.36856100003297 msec\nrounds: 1"
+          },
+          {
+            "name": "tests/benchmarks/test_performance.py::TestPerformanceBenchmarks::test_benchmark_load_speed",
+            "value": 5.856201219167917,
+            "unit": "iter/sec",
+            "range": "stddev: 0.014401258717938603",
+            "extra": "mean: 170.7591598333238 msec\nrounds: 6"
+          },
+          {
+            "name": "tests/benchmarks/test_performance.py::TestPerformanceBenchmarks::test_benchmark_goto_performance",
+            "value": 757827.2182016155,
+            "unit": "iter/sec",
+            "range": "stddev: 6.506267547426018e-7",
+            "extra": "mean: 1.3195620003898512 usec\nrounds: 1000"
           }
         ]
       }
