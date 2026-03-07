@@ -14,7 +14,6 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from typing import Optional
 
 from rich.console import RenderableType
 from rich.panel import Panel
@@ -453,7 +452,7 @@ class VCRApp(App):
         """Open search/filter modal."""
         timeline = self.query_one(FrameList)
 
-        def on_search_result(result: Optional[str]) -> None:
+        def on_search_result(result: str | None) -> None:
             if result is None:
                 return
             timeline.filter_text = result
