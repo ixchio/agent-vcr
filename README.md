@@ -8,7 +8,7 @@
 
 **Time-travel debugging for AI agents.**
 
-[📖 Documentation](docs/index.html) • [🚀 Examples](#examples)
+[📖 Documentation](https://ixchio.github.io/agent-vcr/) • [🚀 Examples](#examples)
 
 ---
 
