@@ -322,6 +322,22 @@ class VCRServer:
             except Exception as e:
                 raise HTTPException(status_code=500, detail=str(e))  # noqa: B904
 
+        @self.app.post("/api/push")
+        async def push_frame(frame_data: dict[str, Any]) -> dict[str, str]:
+            """Push a frame directly for real-time WebSocket broadcast.
+
+            Recorders can call this endpoint to broadcast frames immediately
+            without relying on file-watcher based detection.
+            """
+            message = {
+                "type": "frame_push",
+                "session_id": frame_data.get("session_id", "unknown"),
+                "frame": frame_data,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
+            await self.watcher.broadcast(message)
+            return {"status": "pushed"}
+
         @self.app.websocket("/ws/live")
         async def websocket_endpoint(websocket: WebSocket) -> None:
             """WebSocket endpoint for live updates."""

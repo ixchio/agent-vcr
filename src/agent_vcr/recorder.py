@@ -35,11 +35,13 @@ class VCRRecorder:
         buffer_size: int = 100,
         auto_save: bool = True,
         diff_mode: bool = False,
+        on_frame_recorded: Any | None = None,
     ):
         self.output_dir = Path(output_dir)
         self.buffer_size = buffer_size
         self.auto_save = auto_save
         self.diff_mode = diff_mode
+        self._on_frame_recorded = on_frame_recorded
 
         self._session: Session | None = None
         self._frames: list[Frame] = []
@@ -133,6 +135,13 @@ class VCRRecorder:
             if self.auto_save and len(self._frames) % self.buffer_size == 0:
                 logger.debug("Auto-flushing %d frames to disk", len(self._frames))
                 self._flush_frames()
+
+            # Fire live-push callback if registered
+            if self._on_frame_recorded is not None:
+                try:
+                    self._on_frame_recorded(frame)
+                except Exception:
+                    logger.debug("on_frame_recorded callback error", exc_info=True)
 
             return frame
 

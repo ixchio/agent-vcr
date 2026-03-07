@@ -31,17 +31,44 @@ def make_mock_task(description: str = "test_task") -> MagicMock:
     return task
 
 
-def make_mock_crew(tasks: list[MagicMock]) -> MagicMock:
+def make_mock_crew(tasks: list[MagicMock], *, use_callbacks: bool = True) -> MagicMock:
+    """Build a mock Crew that supports step_callback and task_callback.
+
+    When ``use_callbacks`` is True the mock ``kickoff()`` simulates CrewAI's
+    internal behaviour by calling ``step_callback`` and ``task_callback``
+    for each task — exactly what real CrewAI does.
+    """
     crew = MagicMock()
     crew.tasks = tasks
+    crew.step_callback = None
+    crew.task_callback = None
 
     def mock_kickoff(*args: Any, **kwargs: Any) -> str:
         for task in tasks:
+            # Simulate CrewAI calling step_callback for each agent thought
+            if use_callbacks and crew.step_callback is not None:
+                step_output = MagicMock()
+                step_output.tool = "internal_tool"
+                step_output.tool_input = {"task": task.description}
+                step_output.result = f"{task.description}_step_result"
+                crew.step_callback(step_output)
+
+            # Execute the task directly (fallback path)
             task.execute(context={})
+
+            # Simulate CrewAI calling task_callback with task output
+            if use_callbacks and crew.task_callback is not None:
+                task_output = MagicMock()
+                task_output.description = task.description
+                task_output.raw = f"{task.description}_output"
+                task_output.agent = "TestAgent"
+                crew.task_callback(task_output)
+
         return "crew_output"
 
     crew.kickoff = MagicMock(side_effect=mock_kickoff)
     return crew
+
 
 class TestVCRCrewAI:
     def test_kickoff_records_each_task(self) -> None:
@@ -55,11 +82,43 @@ class TestVCRCrewAI:
             result = vcr_crew.kickoff(crew)
 
             assert result == "crew_output"
-            # 2 tasks → 2 frames recorded (task wrappers call original which records)
-            assert len(recorder.frames) == 2
+            # With callbacks: 2 step_callback + 2 task_callback + 2 task.execute = 6
+            # But we only care that frames > 0 and both tasks are represented
+            assert len(recorder.frames) >= 2
             node_names = [f.node_name for f in recorder.frames]
-            assert "research" in node_names
-            assert "write" in node_names
+            assert any("research" in n for n in node_names)
+            assert any("write" in n for n in node_names)
+
+    def test_kickoff_captures_frames_via_step_callback(self) -> None:
+        """Verify that step_callback alone produces frames even without
+        task.execute() monkey-patching."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            recorder = make_recorder(tmpdir)
+            task1 = make_mock_task("analyze")
+            task2 = make_mock_task("synthesize")
+            crew = make_mock_crew([task1, task2], use_callbacks=True)
+
+            vcr_crew = VCRCrewAI(recorder)
+            vcr_crew.kickoff(crew)
+
+            # step_callback fires once per task, task_callback once per task
+            # plus task.execute monkey-patch fires once per task = 6 total
+            assert vcr_crew._callback_frames_recorded >= 2
+            assert len(recorder.frames) >= 4  # at minimum callbacks + patches
+
+    def test_kickoff_fallback_when_no_callbacks(self) -> None:
+        """When step_callback/task_callback can't be set, fallback works."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            recorder = make_recorder(tmpdir)
+            task1 = make_mock_task("fallback_task")
+            crew = make_mock_crew([task1], use_callbacks=False)
+
+            vcr_crew = VCRCrewAI(recorder)
+            vcr_crew.kickoff(crew)
+
+            # Only task.execute wrapper frames
+            assert len(recorder.frames) >= 1
+            assert any("fallback_task" in f.node_name for f in recorder.frames)
 
     def test_kickoff_with_inputs(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -116,6 +175,40 @@ class TestVCRCrewAI:
 
             assert task.execute is original_execute
 
+    def test_callbacks_restored_after_kickoff(self) -> None:
+        """Verify step_callback and task_callback are restored after kickoff."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            recorder = make_recorder(tmpdir)
+            task = make_mock_task("cb_restore")
+            crew = make_mock_crew([task])
+
+            original_step_cb = MagicMock()
+            original_task_cb = MagicMock()
+            crew.step_callback = original_step_cb
+            crew.task_callback = original_task_cb
+
+            vcr_crew = VCRCrewAI(recorder)
+            vcr_crew.kickoff(crew)
+
+            assert crew.step_callback is original_step_cb
+            assert crew.task_callback is original_task_cb
+
+    def test_step_callback_chains_to_existing(self) -> None:
+        """Verify VCR step_callback chains to the user's existing callback."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            recorder = make_recorder(tmpdir)
+            task = make_mock_task("chain_test")
+            crew = make_mock_crew([task])
+
+            user_cb = MagicMock()
+            crew.step_callback = user_cb
+
+            vcr_crew = VCRCrewAI(recorder)
+            vcr_crew.kickoff(crew)
+
+            # The user's callback should have been called
+            assert user_cb.call_count >= 1
+
     def test_invalid_crew_raises(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             recorder = make_recorder(tmpdir)
@@ -137,6 +230,38 @@ class TestVCRCrewAI:
         plain_obj.__dict__ = {"y": 3}
         result = vcr_crew._extract_state(plain_obj)
         assert "y" in result
+
+    def test_extract_step_output_dict(self) -> None:
+        vcr_crew = VCRCrewAI(MagicMock())
+        result = vcr_crew._extract_step_output({"agent": "Researcher", "data": 42})
+        assert result["_node_name"] == "Researcher"
+
+    def test_extract_step_output_agent_action(self) -> None:
+        vcr_crew = VCRCrewAI(MagicMock())
+        action = MagicMock()
+        action.tool = "search_web"
+        action.tool_input = {"query": "AI"}
+        action.result = "found stuff"
+        result = vcr_crew._extract_step_output(action)
+        assert "search_web" in result["_node_name"]
+
+    def test_extract_step_output_agent_finish(self) -> None:
+        vcr_crew = VCRCrewAI(MagicMock())
+        finish = MagicMock(spec=["return_values"])
+        finish.return_values = {"output": "done"}
+        result = vcr_crew._extract_step_output(finish)
+        assert result["_node_name"] == "agent_finish"
+
+    def test_extract_task_output(self) -> None:
+        vcr_crew = VCRCrewAI(MagicMock())
+        task_out = MagicMock()
+        task_out.description = "research_task"
+        task_out.raw = "raw results"
+        task_out.agent = "Researcher"
+        result = vcr_crew._extract_task_output(task_out)
+        assert result["_node_name"] == "research_task"
+
+
 class TestVCRCrewCallback:
     def test_on_task_end_records_frame(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

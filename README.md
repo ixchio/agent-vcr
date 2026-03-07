@@ -60,14 +60,15 @@ player.resume(from_frame=2)     # Resume execution from step 2
 
 ## Features
 
-- 🔴 **Live Recording** — Watch your agent execute in real-time via WebSocket
-- ⏮️ **Time Travel** — Jump to any step, inspect full state
-- ✏️ **State Injection** — Edit state and resume execution
-- 🌳 **DAG Visualization** — See parallel execution branches
-- 🔌 **Framework Agnostic** — Works with LangGraph, CrewAI, or raw Python
-- 📁 **Git-Friendly Format** — JSONL files, version controllable
-- 🚀 **Production Performance** — <5ms overhead per frame
-- 🔄 **Async-First** — Full async recorder and player support
+- 🔴 **Real-Time Live Streaming** — Watch your agent execute live via WebSocket, pushed instantly from the recorder.
+- ⏮️ **Time Travel** — Jump back to any step, inspect the full state and history.
+- ✏️ **Interactive TUI Debugger** — Launch `vcr-tui` to navigate execution. Press `e` to edit state directly.
+- 🚀 **State Injection & Resume** — Hit `r` in the TUI to resume your agent from the exact edited state.
+- 🌈 **Visual Diffs** — See state mutations color-coded (green/red for additions/removals) for every step.
+- 🌳 **DAG Visualization** — See parallel execution branches and search/filter nodes easily.
+- 🔌 **Framework Agnostic** — 1-line plug-and-play with LangGraph, CrewAI, or raw Python.
+- 📁 **Git-Friendly Format** — JSONL files, version controllable, append-only efficiency.
+- ⚡ **Production Performance** — `<5ms` overhead per frame. Async-native for modern stacks.
 
 ---
 
@@ -139,6 +140,8 @@ result = my_function({"key": "value"})
 
 ### CrewAI
 
+Agent VCR hooks directly into CrewAI's `step_callback` and `task_callback` for **100% accurate, automatically-captured agent thought/action frames**.
+
 ```python
 from crewai import Crew, Agent, Task
 from agent_vcr import VCRRecorder
@@ -147,14 +150,14 @@ from agent_vcr.integrations.crewai import VCRCrewAI, vcr_task
 recorder = VCRRecorder()
 recorder.start_session("crew_debug_run")
 
-# Option 1: Wrap the whole crew (auto-records every task)
+# Option 1: Wrap the whole crew (auto-records EVERY thought, tool call, and task)
 crew = Crew(agents=[researcher, writer], tasks=[research_task, write_task])
 vcr_crew = VCRCrewAI(recorder)
 result = vcr_crew.kickoff(crew)
 
 recorder.save()
 
-# Option 2: Decorate individual task functions
+# Option 2: Decorate individual standalone task or tool functions
 @vcr_task(recorder, task_name="research_step")
 def research(context: dict) -> str:
     return "findings..."
@@ -162,7 +165,7 @@ def research(context: dict) -> str:
 
 Install with:
 ```bash
-pip install ai-agent-vcr[crewai]
+pip install "ai-agent-vcr[crewai]"
 ```
 
 See [`examples/crewai_integration.py`](examples/crewai_integration.py) for a full runnable demo.

@@ -167,3 +167,19 @@ class TestWebSocket:
             response = ws.receive_json()
             assert response["type"] == "subscribed"
             assert response["session_id"] == "test-session"
+
+
+class TestPushEndpoint:
+    def test_push_frame(self, client):
+        """Test the /api/push endpoint for real-time frame broadcasting."""
+        response = client.post(
+            "/api/push",
+            json={
+                "session_id": "test-session",
+                "node_name": "live_step",
+                "output_state": {"result": "pushed"},
+            },
+        )
+        assert response.status_code == 200
+        assert response.json()["status"] == "pushed"
+
