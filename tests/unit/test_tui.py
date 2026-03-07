@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_vcr.tui import VCRApp, FrameList, StateViewer
+from agent_vcr.tui import StateViewer, VCRApp
 
 pytestmark = pytest.mark.asyncio
 

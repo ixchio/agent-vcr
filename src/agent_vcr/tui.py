@@ -24,11 +24,10 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.reactive import reactive
 from textual.screen import ModalScreen
-from textual.widgets import Footer, Header, Static, TextArea, Input, Button
+from textual.widgets import Button, Footer, Header, Input, Static, TextArea
 
 from agent_vcr.async_player import AsyncVCRPlayer
 from agent_vcr.models import Frame, FrameType
-
 
 # ---------------------------------------------------------------------------
 # Widgets
@@ -441,11 +440,7 @@ class VCRApp(App):
         if not self.player:
             return
 
-        state = self._edited_state or (
-            self.player.frames[self.current_index].output_state
-            if self.player.frames
-            else {}
-        )
+
 
         self.notify(
             f"Resume from frame {self.current_index} "
