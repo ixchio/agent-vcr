@@ -14,6 +14,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from typing import Optional
 
 from rich.console import RenderableType
 from rich.panel import Panel
@@ -123,10 +124,8 @@ class StateViewer(Static):
             content = json.dumps(self.frame.input_state, indent=2)
             title = "Input State"
         elif self.view_mode == "diff":
-            content = self._render_diff()
-            title = "State Diff"
             # Return Rich Text for coloured diff
-            return Panel(content, title=title, border_style="cyan")
+            return Panel(self._render_diff(), title="State Diff", border_style="cyan")
         else:
             content = "{}"
             title = "Unknown"
@@ -200,7 +199,7 @@ class StateViewer(Static):
 # ---------------------------------------------------------------------------
 
 
-class EditStateScreen(ModalScreen[str | None]):
+class EditStateScreen(ModalScreen):
     """Modal screen for editing a frame's state JSON."""
 
     CSS = """
@@ -255,7 +254,7 @@ class EditStateScreen(ModalScreen[str | None]):
         self.dismiss(None)
 
 
-class SearchScreen(ModalScreen[str]):
+class SearchScreen(ModalScreen):
     """Modal screen for searching/filtering frames."""
 
     CSS = """
@@ -454,7 +453,9 @@ class VCRApp(App):
         """Open search/filter modal."""
         timeline = self.query_one(FrameList)
 
-        def on_search_result(result: str) -> None:
+        def on_search_result(result: Optional[str]) -> None:
+            if result is None:
+                return
             timeline.filter_text = result
             if result:
                 self.notify(f"Filter: '{result}'", severity="information")
