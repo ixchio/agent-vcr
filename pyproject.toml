@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "ai-agent-vcr"
-version = "0.2.0"
+version = "0.3.0"
 description = "The DVR for AI Agents - Record, visualize, and time-travel through agent execution"
 readme = "README.md"
 license = {text = "MIT"}
