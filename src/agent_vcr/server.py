@@ -17,6 +17,7 @@ from pydantic import BaseModel
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 
+from agent_vcr import __version__
 from agent_vcr.models import Frame, Session
 from agent_vcr.player import VCRPlayer
 
@@ -156,7 +157,7 @@ class VCRServer:
         self.app = FastAPI(
             title="Agent VCR API",
             description="API for Agent VCR - The DVR for AI Agents",
-            version="0.1.0",
+            version=__version__,
             lifespan=self._lifespan,
         )
 
@@ -195,7 +196,7 @@ class VCRServer:
         async def root() -> dict[str, Any]:
             return {
                 "name": "Agent VCR API",
-                "version": "0.1.0",
+                "version": __version__,
                 "endpoints": {
                     "sessions": "/api/sessions",
                     "session_detail": "/api/sessions/{session_id}",
@@ -210,16 +211,16 @@ class VCRServer:
             manifest_path = self.vcr_dir / "manifest.json"
 
             if manifest_path.exists():
-                with open(manifest_path) as f:
-                    manifest = json.load(f)
-                    for session_data in manifest.get("sessions", []):
-                        sessions.append(Session(**session_data))
+                content = await asyncio.to_thread(manifest_path.read_text)
+                manifest = json.loads(content)
+                for session_data in manifest.get("sessions", []):
+                    sessions.append(Session(**session_data))
 
             for vcr_file in self.vcr_dir.glob("*.vcr"):
                 session_id = vcr_file.stem
                 if not any(s.session_id == session_id for s in sessions):
                     try:
-                        player = VCRPlayer.load(vcr_file)
+                        player = await asyncio.to_thread(VCRPlayer.load, vcr_file)
                         sessions.append(player.session)
                     except Exception:
                         continue
@@ -237,7 +238,7 @@ class VCRServer:
                 raise HTTPException(status_code=404, detail="Session not found")
 
             try:
-                player = VCRPlayer.load(vcr_file)
+                player = await asyncio.to_thread(VCRPlayer.load, vcr_file)
             except Exception as e:
                 raise HTTPException(status_code=500, detail=f"Failed to load session: {e}")  # noqa: B904
 
@@ -265,7 +266,7 @@ class VCRServer:
                 raise HTTPException(status_code=404, detail="Session not found")
 
             try:
-                player = VCRPlayer.load(vcr_file)
+                player = await asyncio.to_thread(VCRPlayer.load, vcr_file)
                 frame = player.get_frame(frame_index)
                 return {
                     "frame": frame.model_dump(),
@@ -286,7 +287,7 @@ class VCRServer:
                 raise HTTPException(status_code=404, detail="Session not found")
 
             try:
-                player = VCRPlayer.load(vcr_file)
+                player = await asyncio.to_thread(VCRPlayer.load, vcr_file)
                 state = player.goto_frame(request.from_frame)
 
                 if request.state_overrides:
@@ -303,7 +304,7 @@ class VCRServer:
                 raise HTTPException(status_code=500, detail=str(e))  # noqa: B904
 
         @self.app.get("/api/sessions/{session_id}/export")
-        async def export_session(session_id: str, format: str = "json") -> dict[str, Any]:
+        async def export_session(session_id: str, export_format: str = "json") -> dict[str, Any]:
             """Export a session in various formats."""
             vcr_file = self.vcr_dir / f"{session_id}.vcr"
 
@@ -311,14 +312,14 @@ class VCRServer:
                 raise HTTPException(status_code=404, detail="Session not found")
 
             try:
-                player = VCRPlayer.load(vcr_file)
+                player = await asyncio.to_thread(VCRPlayer.load, vcr_file)
 
-                if format == "json":
+                if export_format == "json":
                     return player.to_dict()
-                elif format == "mermaid":
+                elif export_format == "mermaid":
                     return {"mermaid": self._to_mermaid(player)}
                 else:
-                    raise HTTPException(status_code=400, detail=f"Unsupported format: {format}")
+                    raise HTTPException(status_code=400, detail=f"Unsupported format: {export_format}")
             except Exception as e:
                 raise HTTPException(status_code=500, detail=str(e))  # noqa: B904
 

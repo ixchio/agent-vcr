@@ -150,7 +150,6 @@ class VCRCrewAI:
         vcr_crew = self  # capture self for counter
 
         def step_callback(step_output: Any) -> Any:
-            start = time.perf_counter()
             try:
                 # Extract useful info from CrewAI's AgentAction / step output
                 step_data = vcr_crew._extract_step_output(step_output)
@@ -160,9 +159,7 @@ class VCRCrewAI:
                     node_name=node_name,
                     input_state=step_data.get("input", {}),
                     output_state=step_data.get("output", step_data),
-                    metadata=FrameMetadata(
-                        latency_ms=(time.perf_counter() - start) * 1000,
-                    ),
+                    metadata=FrameMetadata(),
                 )
                 vcr_crew._callback_frames_recorded += 1
             except Exception:
@@ -181,7 +178,6 @@ class VCRCrewAI:
         vcr_crew = self
 
         def task_callback(task_output: Any) -> Any:
-            start = time.perf_counter()
             try:
                 task_data = vcr_crew._extract_task_output(task_output)
                 node_name = task_data.pop("_node_name", "task_complete")
@@ -190,9 +186,7 @@ class VCRCrewAI:
                     node_name=node_name,
                     input_state=task_data.get("input", {}),
                     output_state=task_data.get("output", task_data),
-                    metadata=FrameMetadata(
-                        latency_ms=(time.perf_counter() - start) * 1000,
-                    ),
+                    metadata=FrameMetadata(),
                 )
                 vcr_crew._callback_frames_recorded += 1
             except Exception:

@@ -109,7 +109,9 @@ class VCRRecorder:
             elif metadata is None:
                 metadata = FrameMetadata()
 
-            metadata.latency_ms = (time.perf_counter() - start_time) * 1000
+            # Only auto-set latency if the caller did not already supply one
+            if metadata.latency_ms == 0.0:
+                metadata.latency_ms = (time.perf_counter() - start_time) * 1000
 
             frame = Frame(
                 session_id=self._session.session_id,
@@ -185,7 +187,7 @@ class VCRRecorder:
         metadata = FrameMetadata(
             latency_ms=latency_ms,
             error_message=error,
-            error_type=type(error).__name__ if error else None,
+            error_type="ToolError" if error else None,
         )
 
         return self.record_step(
@@ -239,13 +241,15 @@ class VCRRecorder:
         return self._session
 
     def get_frames(self) -> list[Frame]:
-        """Get all recorded frames."""
+        """Get all recorded frames (including already-flushed ones)."""
+        if self._session:
+            return self._cache.get_frames(self._session.session_id)
         return self._frames.copy()
 
     @property
     def frames(self) -> list[Frame]:
         """Get all recorded frames as a property."""
-        return self._frames.copy()
+        return self.get_frames()
 
     def fork(
         self,

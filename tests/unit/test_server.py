@@ -131,7 +131,7 @@ class TestResumeEndpoint:
 
 class TestExportEndpoint:
     def test_export_json(self, client):
-        response = client.get("/api/sessions/test-session/export?format=json")
+        response = client.get("/api/sessions/test-session/export?export_format=json")
         assert response.status_code == 200
         data = response.json()
         assert "session" in data
@@ -139,18 +139,18 @@ class TestExportEndpoint:
         assert "statistics" in data
 
     def test_export_mermaid(self, client):
-        response = client.get("/api/sessions/test-session/export?format=mermaid")
+        response = client.get("/api/sessions/test-session/export?export_format=mermaid")
         assert response.status_code == 200
         data = response.json()
         assert "mermaid" in data
         assert "graph TD" in data["mermaid"]
 
     def test_export_unsupported_format(self, client):
-        response = client.get("/api/sessions/test-session/export?format=csv")
+        response = client.get("/api/sessions/test-session/export?export_format=csv")
         assert response.status_code == 500  # Wrapped in generic exception handler
 
     def test_export_session_not_found(self, client):
-        response = client.get("/api/sessions/nonexistent/export?format=json")
+        response = client.get("/api/sessions/nonexistent/export?export_format=json")
         assert response.status_code == 404
 
 

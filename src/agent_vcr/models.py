@@ -158,7 +158,6 @@ class VCRCache:
         if session_id not in self._frames:
             raise ValueError(f"Session {session_id} not found")
         self._frames[session_id].append(frame)
-        self._sessions[session_id].frame_count += 1
 
     def get_session(self, session_id: str) -> Session | None:
         return self._sessions.get(session_id)

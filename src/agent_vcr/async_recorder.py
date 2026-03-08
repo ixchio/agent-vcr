@@ -38,6 +38,7 @@ class AsyncVCRRecorder:
         auto_save: bool = True,
         buffer_size: int = 100,
         diff_mode: bool = False,
+        on_frame_recorded: Any | None = None,
     ):
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -45,6 +46,7 @@ class AsyncVCRRecorder:
         self.auto_save = auto_save
         self.buffer_size = buffer_size
         self.diff_mode = diff_mode
+        self._on_frame_recorded = on_frame_recorded
 
         self._session: Session | None = None
         self._frames: list[Frame] = []
@@ -114,6 +116,7 @@ class AsyncVCRRecorder:
             )
 
             self._frames.append(frame)
+            self._cache.add_frame(self._session.session_id, frame)
             self._previous_state = serialized_output
 
             # Update session statistics
@@ -126,6 +129,16 @@ class AsyncVCRRecorder:
             if self.auto_save and len(self._frames) % self.buffer_size == 0:
                 logger.debug("Auto-flushing %d frames to disk", len(self._frames))
                 await self._flush_frames()
+
+            # Fire live-push callback if registered
+            if self._on_frame_recorded is not None:
+                try:
+                    result = self._on_frame_recorded(frame)
+                    # Support both sync and async callbacks
+                    if asyncio.iscoroutine(result):
+                        await result
+                except Exception:
+                    logger.debug("on_frame_recorded callback error", exc_info=True)
 
             return frame
 
@@ -149,7 +162,7 @@ class AsyncVCRRecorder:
             latency_ms=latency_ms,
         )
         return await self.record_step(
-            node_name=f"llm_{model}",
+            node_name=f"llm:{model}",
             input_state={"messages": messages},
             output_state={"response": str(response)},
             metadata=metadata,
@@ -166,7 +179,7 @@ class AsyncVCRRecorder:
         """Record a tool call."""
         metadata = FrameMetadata(latency_ms=latency_ms)
         return await self.record_step(
-            node_name=f"tool_{tool_name}",
+            node_name=f"tool:{tool_name}",
             input_state={"tool_input": StateSerializer.serialize(tool_input)},
             output_state={"tool_output": StateSerializer.serialize(tool_output)},
             metadata=metadata,
@@ -214,12 +227,15 @@ class AsyncVCRRecorder:
         return self._session
 
     def get_frames(self) -> list[Frame]:
+        """Get all recorded frames (including already-flushed ones)."""
+        if self._session:
+            return self._cache.get_frames(self._session.session_id)
         return list(self._frames)
 
     @property
     def frames(self) -> list[Frame]:
         """Get all recorded frames as a property."""
-        return list(self._frames)
+        return self.get_frames()
 
     async def fork(self, from_frame: int) -> AsyncVCRRecorder:
         """Fork a new recorder from a specific frame."""
@@ -312,9 +328,9 @@ class AsyncVCRRecorder:
             dir=str(self.output_dir), suffix=".tmp", prefix="manifest_"
         )
         try:
+            os.close(fd)  # close the fd from mkstemp; aiofiles will open by path
             async with aiofiles.open(tmp_path, "w") as f:
                 await f.write(json.dumps(manifest, indent=2))
-            os.close(fd)
             os.replace(tmp_path, str(manifest_path))
         except Exception:
             with contextlib.suppress(OSError):

@@ -7,3 +7,5 @@ __pycache__/
 *.so
 .venv/
 dist/
+.coverage
+.vcr/
