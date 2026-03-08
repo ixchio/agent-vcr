@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "ai-agent-vcr"
-version = "0.3.1"
+version = "0.3.2"
 description = "The DVR for AI Agents - Record, visualize, and time-travel through agent execution"
 readme = "README.md"
 license = {text = "MIT"}
@@ -74,10 +74,10 @@ vcr-server = "agent_vcr.server:main"
 vcr = "agent_vcr.tui:main"
 
 [project.urls]
-Homepage = "https://github.com/ruzvad/agent-vcr"
-Documentation = "https://github.com/ruzvad/agent-vcr#readme"
-Repository = "https://github.com/ruzvad/agent-vcr"
-Issues = "https://github.com/ruzvad/agent-vcr/issues"
+Homepage = "https://github.com/ixchio/agent-vcr"
+Documentation = "https://ixchio.github.io/agent-vcr/"
+Repository = "https://github.com/ixchio/agent-vcr"
+Issues = "https://github.com/ixchio/agent-vcr/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/agent_vcr"]
