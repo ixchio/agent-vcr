@@ -60,12 +60,12 @@ player.resume(from_frame=2)     # Resume execution from step 2
 
 ## Features
 
-- 🔴 **Real-Time Live Streaming** — Watch your agent execute live via WebSocket, pushed instantly from the recorder.
+- 🖥️ **Legit React Dashboard** — Forget cloud lock-in. Just run `vcr-server`, open `localhost:8000`, and you get a stunning, glassmorphism-style React UI to inspect execution states, view JSON diffs, and watch live WebSocket streaming of your agent runs.
 - ⏮️ **Time Travel** — Jump back to any step, inspect the full state and history.
-- ✏️ **Interactive TUI Debugger** — Launch `vcr-tui` to navigate execution. Press `e` to edit state directly.
-- 🚀 **State Injection & Resume** — Hit `r` in the TUI to resume your agent from the exact edited state.
-- 🌈 **Visual Diffs** — See state mutations color-coded (green/red for additions/removals) for every step.
-- 🌳 **DAG Visualization** — See parallel execution branches and search/filter nodes easily.
+- ✏️ **Interactive TUI Debugger** — Launch `vcr-tui` to navigate execution straight from the terminal. Press `e` to edit state directly.
+- 🚀 **State Injection & Resume** — Hit `r` in the TUI (or use the API) to resume your agent from the exact edited state. No need to restart the entire run.
+- 🌈 **Visual Diffs** — Track state mutations visually within the Dashboard or TUI, color-coded for fast debugging.
+- 🌳 **DAG Visualization** — See parallel execution branches and easily search/filter past sessions via tags.
 - 🔌 **Framework Agnostic** — 1-line plug-and-play with LangGraph, CrewAI, or raw Python.
 - 📁 **Git-Friendly Format** — JSONL files, version controllable, append-only efficiency.
 - ⚡ **Production Performance** — `<5ms` overhead per frame. Async-native for modern stacks.

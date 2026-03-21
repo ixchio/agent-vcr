@@ -45,11 +45,14 @@ def client(vcr_server):
 
 class TestRootEndpoint:
     def test_root(self, client):
-        response = client.get("/")
-        assert response.status_code == 200
-        data = response.json()
-        assert data["name"] == "Agent VCR API"
-        assert "endpoints" in data
+        response = client.get("/", follow_redirects=False)
+        if response.status_code == 307:
+            assert response.headers["location"] == "/dashboard/"
+        else:
+            assert response.status_code == 200
+            data = response.json()
+            assert data["name"] == "Agent VCR API"
+            assert "endpoints" in data
 
 
 class TestSessionsEndpoint:

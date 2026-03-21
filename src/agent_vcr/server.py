@@ -13,6 +13,8 @@ from typing import Any
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
@@ -169,6 +171,14 @@ class VCRServer:
             allow_headers=["*"],
         )
 
+        # Serve the built React dashboard if it exists
+        dashboard_dir = Path(__file__).parent / "dashboard"
+        if dashboard_dir.is_dir() and any(dashboard_dir.iterdir()):
+            self.app.mount("/dashboard", StaticFiles(directory=str(dashboard_dir), html=True), name="dashboard")
+            self._has_dashboard = True
+        else:
+            self._has_dashboard = False
+
         self._setup_routes()
 
     @asynccontextmanager
@@ -192,11 +202,14 @@ class VCRServer:
     def _setup_routes(self) -> None:
         """Setup API routes."""
 
-        @self.app.get("/")
-        async def root() -> dict[str, Any]:
+        @self.app.get("/", response_class=RedirectResponse)
+        async def root() -> Any:
+            if self._has_dashboard:
+                return RedirectResponse(url="/dashboard/")
             return {
                 "name": "Agent VCR API",
                 "version": __version__,
+                "dashboard": "Not built — run: cd app/vcr-dashboard && npm run build",
                 "endpoints": {
                     "sessions": "/api/sessions",
                     "session_detail": "/api/sessions/{session_id}",
@@ -205,7 +218,10 @@ class VCRServer:
             }
 
         @self.app.get("/api/sessions", response_model=SessionListResponse)
-        async def list_sessions() -> SessionListResponse:
+        async def list_sessions(
+            search: str | None = None,
+            tags: str | None = None,
+        ) -> SessionListResponse:
             """List all recorded sessions."""
             sessions = []
             manifest_path = self.vcr_dir / "manifest.json"
@@ -227,7 +243,29 @@ class VCRServer:
 
             sessions.sort(key=lambda s: s.created_at, reverse=True)
 
+            # Apply search / tag filters
+            if search:
+                q = search.lower()
+                sessions = [s for s in sessions if q in s.session_id.lower() or
+                            any(q in t.lower() for t in s.tags) or
+                            q in str(s.metadata).lower()]
+            if tags:
+                wanted = {t.strip() for t in tags.split(",") if t.strip()}
+                sessions = [s for s in sessions if wanted.issubset(set(s.tags))]
+
             return SessionListResponse(sessions=sessions, total=len(sessions))
+
+        @self.app.get("/api/tags")
+        async def list_tags() -> dict[str, Any]:
+            """List all unique tags across all sessions."""
+            all_tags: set[str] = set()
+            for vcr_file in self.vcr_dir.glob("*.vcr"):
+                try:
+                    player = await asyncio.to_thread(VCRPlayer.load, vcr_file)
+                    all_tags.update(player.session.tags)
+                except Exception:
+                    continue
+            return {"tags": sorted(all_tags)}
 
         @self.app.get("/api/sessions/{session_id}", response_model=SessionDetailResponse)
         async def get_session(session_id: str) -> SessionDetailResponse:

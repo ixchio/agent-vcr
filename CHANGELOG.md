@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-03-21
+
+### Added
+- **Legit React Dashboard** — We built a stunning, glassmorphism-themed React dashboard right into the package. Fire up `vcr-server`, pop open `localhost:8000`, and you get a beautiful UI to visualize live frame streaming, track token usage/latency, and inspect state changes with dedicated JSON diffing tabs. 100% local. No cloud bullshit.
+- **Search & Filter Support** — Added `GET /api/tags` and search queries to easily track down specific sessions in the dashboard.
+- **`[dashboard]` Extra** — We kept the core lightweight. Run `pip install "ai-agent-vcr[dashboard]"` if you want the FastAPI server and UI bundled in.
+
 ## [0.3.1] - 2026-03-09
 
 ### Fixed
