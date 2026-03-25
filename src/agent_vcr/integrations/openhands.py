@@ -32,6 +32,8 @@ class ACIDWorkspace:
         # Git initialize workspace if not already
         if not (self.workspace_dir / ".git").exists():
             subprocess.run(["git", "init"], cwd=self.workspace_dir, check=True)
+            subprocess.run(["git", "config", "user.name", "Agent VCR"], cwd=self.workspace_dir, check=True)
+            subprocess.run(["git", "config", "user.email", "vcr@example.com"], cwd=self.workspace_dir, check=True)
             subprocess.run(["git", "branch", "-m", "main"], cwd=self.workspace_dir, check=True)
 
             # Initial baseline commit
