@@ -1,7 +1,9 @@
 import logging
 import subprocess
 from pathlib import Path
+from typing import Optional
 
+from agent_vcr.models import Frame, Session
 from agent_vcr.recorder import VCRRecorder
 
 logger = logging.getLogger(__name__)
@@ -12,18 +14,20 @@ class ACIDWorkspace:
     Combines Agent VCR state snapshotting with git-backed filesystem freezing to allow
     full-world rollbacks.
     """
-    def __init__(self, workspace_dir: str, recorder: VCRRecorder = None):
+    def __init__(self, workspace_dir: str, recorder: Optional[VCRRecorder] = None) -> None:
         self.workspace_dir = Path(workspace_dir).resolve()
         self.recorder = recorder or VCRRecorder(auto_save=True)
-        self.session = None
+        self.session: Optional[Session] = None
+        self.branch_name: Optional[str] = None
 
         self.workspace_dir.mkdir(parents=True, exist_ok=True)
 
-    def begin(self, session_id: str | None = None):
+    def begin(self, session_id: Optional[str] = None) -> Session:
         """
         BEGIN - Starts a session and git stashes the workspace state as a snapshot.
         """
         self.session = self.recorder.start_session(session_id)
+        assert self.session is not None, "Session failed to start"
 
         # Git initialize workspace if not already
         if not (self.workspace_dir / ".git").exists():
@@ -44,7 +48,7 @@ class ACIDWorkspace:
         logger.info(f"ACID BEGIN: Session {self.session.session_id} started on branch {self.branch_name}")
         return self.session
 
-    def savepoint(self, step_data: dict, node_name: str = "openhands_action"):
+    def savepoint(self, step_data: dict, node_name: str = "openhands_action") -> Frame:
         """
         SAVEPOINT - every frame is a savepoint, filesystem + memory state together
         """
@@ -64,7 +68,7 @@ class ACIDWorkspace:
 
         return frame
 
-    def rollback(self, to_frame_index: int):
+    def rollback(self, to_frame_index: int) -> None:
         """
         ROLLBACK - actually reverts the files on disk via git + restores agent-vcr state.
         The world rewinds, not just the object.
@@ -103,12 +107,13 @@ class ACIDWorkspace:
 
         logger.info("ACID ROLLBACK SUCCESS: Filesystem and memory correctly rewound.")
 
-    def commit(self):
+    def commit(self) -> None:
         """
         COMMIT - successful path gets locked in, checkpointed permanently to main branch.
         """
         if not self.session:
             raise RuntimeError("No active session to commit.")
+        assert self.branch_name is not None, "Branch name not set."
 
         # Save any final memory states
         self.recorder.save()

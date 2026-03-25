@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 class CostLedger:
     """Tracks cost savings from golden run replays vs fresh LLM execution."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.original_tokens: int = 0
         self.original_cost_usd: float = 0.0
         self.original_latency_ms: float = 0.0
