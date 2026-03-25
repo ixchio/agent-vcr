@@ -1,11 +1,40 @@
-venv/
-.idea/
-
+# Python
 __pycache__/
 *.py[cod]
-*.class
+*.pyo
 *.so
-.venv/
+*.egg-info/
+*.egg
 dist/
+build/
+*.whl
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Testing
 .coverage
+.pytest_cache/
+htmlcov/
+.tox/
+
+# Agent VCR runtime
 .vcr/
+*.vcr
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Misc
+*.log
+.env

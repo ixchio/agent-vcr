@@ -24,6 +24,8 @@
             <nav class="nav-links">
                 <a href="#how-it-works">How it works</a>
                 <a href="#features">Features</a>
+                <a href="#acid">ACID</a>
+                <a href="#golden-cache">Golden Cache</a>
                 <a href="#integrations">Integrations</a>
                 <a href="#api">API</a>
                 <a href="#compare">Compare</a>
@@ -38,7 +40,7 @@
     <!-- HERO -->
     <section class="hero" id="hero">
         <div class="hero-inner">
-            <div class="hero-pill">v0.3.1 · Open Source · MIT License</div>
+            <div class="hero-pill">v0.5.0 · Open Source · MIT License</div>
             <h1 class="hero-title">
                 Time-travel debugging<br>
                 <span class="hero-title-accent">for AI agents.</span>
@@ -246,6 +248,16 @@ player.resume(agent_callable, from_frame=<span class="num">7</span>)</code></pre
                     <p>Native integrations for LangGraph and CrewAI. Decorator API for raw Python — no framework
                         required.</p>
                 </div>
+                <div class="feature-item">
+                    <div class="feature-icon-wrap">🔒</div>
+                    <h3>ACID Transactions</h3>
+                    <p>BEGIN, SAVEPOINT, ROLLBACK, COMMIT — backed by git. Rollback physically reverts files on disk, not just in-memory state.</p>
+                </div>
+                <div class="feature-item">
+                    <div class="feature-icon-wrap">⭐</div>
+                    <h3>Golden Run Cache</h3>
+                    <p>Save successful runs as replayable golden paths. Same task next time? Zero tokens, zero cost, instant.</p>
+                </div>
             </div>
         </div>
     </section>
@@ -410,6 +422,20 @@ state = <span class="kw">await</span> player.goto_frame(<span class="num">3</spa
                             <td><span class="no">✗</span></td>
                         </tr>
                         <tr>
+                            <td><strong>ACID transactions</strong></td>
+                            <td class="highlight-col"><span class="yes">✓</span></td>
+                            <td><span class="no">✗</span></td>
+                            <td><span class="no">✗</span></td>
+                            <td><span class="no">✗</span></td>
+                        </tr>
+                        <tr>
+                            <td><strong>Golden Run Cache</strong></td>
+                            <td class="highlight-col"><span class="yes">✓</span></td>
+                            <td><span class="no">✗</span></td>
+                            <td><span class="no">✗</span></td>
+                            <td><span class="no">✗</span></td>
+                        </tr>
+                        <tr>
                             <td>Self-hosted / local-first</td>
                             <td class="highlight-col"><span class="yes">✓</span></td>
                             <td><span class="no">Cloud only</span></td>
@@ -531,6 +557,96 @@ ResumeConfig(
     inject_mocks: dict = {},
 )</code></pre>
                     </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ACID TRANSACTIONS -->
+    <section class="two-col-section" id="acid">
+        <div class="section-inner">
+            <div class="section-header">
+                <h2>ACID Transactions for Agents</h2>
+                <p>Databases solved partial failure 40 years ago. Agents have the same problem.</p>
+            </div>
+            <div class="two-col">
+                <div class="col-block problem-block">
+                    <div class="block-tag red">Without ACID</div>
+                    <h2>Agent fails, filesystem is polluted.</h2>
+                    <p>Your agent hallucinated bad code on step 5. You roll back the state object, but the files are still on disk. Half-written modules, bad imports, broken configs — all still there.</p>
+                    <ul class="pain-list">
+                        <li>State rolled back, but files remain</li>
+                        <li>Parallel agents clobber each other's work</li>
+                        <li>No atomic "undo" for the filesystem</li>
+                    </ul>
+                </div>
+                <div class="col-block solution-block">
+                    <div class="block-tag">With ACID</div>
+                    <h2>Rollback reverts everything.</h2>
+                    <p>Each agent session runs on an isolated git branch. SAVEPOINT checkpoints both state and filesystem together. ROLLBACK runs <code>git reset --hard</code> — files are gone from disk, not just hidden.</p>
+                    <ul class="solution-list">
+                        <li>BEGIN creates an isolated branch</li>
+                        <li>SAVEPOINT = state + filesystem checkpoint</li>
+                        <li>ROLLBACK = physical file revert</li>
+                        <li>COMMIT = clean merge into main</li>
+                    </ul>
+                </div>
+            </div>
+            <div class="code-block" style="max-width: 720px; margin: 2rem auto 0;">
+                <div class="code-bar">
+                    <span class="dots"><span></span><span></span><span></span></span>
+                    <span class="code-label">acid_demo.py</span>
+                </div>
+                <pre><code><span class="kw">from</span> agent_vcr <span class="kw">import</span> VCRRecorder
+<span class="kw">from</span> agent_vcr.integrations.openhands <span class="kw">import</span> ACIDWorkspace
+
+recorder = VCRRecorder()
+acid = ACIDWorkspace(<span class="str">"/my/workspace"</span>, recorder=recorder)
+
+acid.begin(session_id=<span class="str">"task-001"</span>)
+acid.savepoint(state, node_name=<span class="str">"coder"</span>)
+acid.rollback(to_frame_index=<span class="num">3</span>)  <span class="cm"># files physically reverted</span>
+acid.commit()                        <span class="cm"># clean merge</span></code></pre>
+            </div>
+        </div>
+    </section>
+
+    <!-- GOLDEN RUN CACHE -->
+    <section class="features-section" id="golden-cache">
+        <div class="section-inner">
+            <div class="section-header">
+                <h2>Golden Run Cache — Never Pay Twice</h2>
+                <p>When your agent succeeds, save the run. Next time, replay it at zero LLM cost.</p>
+            </div>
+            <div class="code-block" style="max-width: 720px; margin: 0 auto;">
+                <div class="code-bar">
+                    <span class="dots"><span></span><span></span><span></span></span>
+                    <span class="code-label">golden_cache.py</span>
+                </div>
+                <pre><code><span class="kw">from</span> agent_vcr.golden_cache <span class="kw">import</span> GoldenRunCache
+
+cache = GoldenRunCache()
+
+<span class="cm"># After a successful run</span>
+cache.save_golden_run(<span class="str">"Build a REST API"</span>, recorder)
+
+<span class="cm"># Next time — instant, $0.00</span>
+outputs, ledger = cache.replay(<span class="str">"Build a REST API"</span>)
+print(ledger)
+<span class="cm"># CostLedger(saved=100% | $0.0123 | 4100 tokens | 2349ms)</span></code></pre>
+            </div>
+            <div class="features-grid" style="margin-top: 2rem;">
+                <div class="feature-item">
+                    <h3>Deterministic Fingerprinting</h3>
+                    <p>Tasks are hashed with SHA-256 for reliable cache lookups. Same task string always maps to the same golden run.</p>
+                </div>
+                <div class="feature-item">
+                    <h3>Cost Ledger</h3>
+                    <p>Tracks original tokens vs replay tokens, dollars saved, milliseconds saved, and percentage reduction.</p>
+                </div>
+                <div class="feature-item">
+                    <h3>Cache Invalidation</h3>
+                    <p>Call <code>cache.invalidate(task)</code> when the underlying codebase changes and the golden path is no longer valid.</p>
                 </div>
             </div>
         </div>

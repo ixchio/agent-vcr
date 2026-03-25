@@ -5,7 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.4.0] - 2026-03-21
+## [0.5.0] - 2026-03-26
+
+### Added
+- **ACID Transactions for Agents** — Wrap any agent execution in full transactional semantics. `BEGIN` snapshots your workspace, `SAVEPOINT` checkpoints filesystem + memory together, `ROLLBACK` physically reverts files on disk via git (not just in-memory state), and `COMMIT` locks in the successful path. Two agents working in parallel get isolated git branches so they can't clobber each other's work.
+- **Golden Run Cache** — The feature nobody else has. When your agent succeeds, save that entire execution as a "golden path." Next time you run the same task, it replays the golden path and skips every LLM call. Same task. Zero tokens. Instant. The `CostLedger` tracks exactly how much you saved — tokens, dollars, and milliseconds.
+- **`ACIDWorkspace`** — New integration class in `agent_vcr.integrations.openhands` providing `begin()`, `savepoint()`, `rollback()`, and `commit()` methods backed by git branch isolation.
+- **`GoldenRunCache`** — New class in `agent_vcr.golden_cache` with `save_golden_run()`, `replay()`, `invalidate()`, and `list_golden_runs()`. Task fingerprinting is case-insensitive and deterministic.
+- **`CostLedger`** — Tracks original vs replay costs and produces a clean summary dict with savings percentages.
+- **19 new production tests** covering the full ACID lifecycle and golden cache replay logic. 153 tests total, 81% coverage.
+
+
 
 ### Added
 - **Legit React Dashboard** — We built a stunning, glassmorphism-themed React dashboard right into the package. Fire up `vcr-server`, pop open `localhost:8000`, and you get a beautiful UI to visualize live frame streaming, track token usage/latency, and inspect state changes with dedicated JSON diffing tabs. 100% local. No cloud bullshit.

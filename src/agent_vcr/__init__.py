@@ -2,6 +2,7 @@
 
 from agent_vcr.async_player import AsyncVCRPlayer
 from agent_vcr.async_recorder import AsyncVCRRecorder
+from agent_vcr.golden_cache import CostLedger, GoldenRunCache
 from agent_vcr.models import (
     Frame,
     FrameMetadata,
@@ -14,10 +15,12 @@ from agent_vcr.models import (
 from agent_vcr.player import VCRPlayer
 from agent_vcr.recorder import VCRRecorder
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 __all__ = [
     "AsyncVCRPlayer",
     "AsyncVCRRecorder",
+    "CostLedger",
+    "GoldenRunCache",
     "VCRRecorder",
     "VCRPlayer",
     "Frame",
@@ -28,3 +31,4 @@ __all__ = [
     "ResumeMode",
     "StateSerializer",
 ]
+

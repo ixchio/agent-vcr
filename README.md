@@ -1,4 +1,4 @@
-# 📼 Agent VCR
+# Agent VCR
 
 [![CI](https://github.com/ixchio/agent-vcr/actions/workflows/ci.yml/badge.svg)](https://github.com/ixchio/agent-vcr/actions)
 [![Benchmarks](https://img.shields.io/badge/benchmarks-view%20chart-blue)](https://ixchio.github.io/agent-vcr/dev/bench/)
@@ -8,34 +8,25 @@
 
 **Time-travel debugging for AI agents.**
 
-[📖 Documentation](https://ixchio.github.io/agent-vcr/) • [🚀 Examples](#examples)
+[Documentation](https://ixchio.github.io/agent-vcr/) · [Examples](#examples)
 
 ---
 
-## 🛑 The Problem
+## The Problem
 
-Building multi-step AI agents (like LangGraph or CrewAI) is painfully slow.
+Building multi-step AI agents (LangGraph, CrewAI, OpenHands) is painfully slow to debug.
 
-When your agent fails on step 8 out of 10, traditional observability tools only tell you what went wrong. To fix it, you have to patch the prompt or code and **re-run all 10 steps from the beginning**.
+When your agent fails on step 8 out of 10, observability tools like LangSmith or LangFuse only show you what went wrong. To fix it, you patch the code and re-run all 10 steps from scratch. Every typo costs minutes of wall time and dollars in wasted tokens.
 
-Every typo or logic error costs you minutes of waiting and dollars in wasted LLM tokens.
+## The Solution
 
-## 💡 The Solution
+Agent VCR records your agent's complete state at every step. When something breaks, you rewind to the failing step, edit the state, and resume execution from that exact point. No re-running the whole chain.
 
-**Agent VCR makes debugging instant.**
-
-We record your agent's state at every step. When a failure happens, you simply **rewind** to the failing step, **edit** the state to fix the bug, and **resume** execution from that exact point.
-
-LangSmith and LangFuse show you what happened. **Agent VCR lets you change it.**
-
-- 🔌 **Plug & Play**: 1-line integration with LangGraph and others.
-- 🚀 **Zero Overhead**: `<5ms` latency penalty per step.
-- 📁 **No Vendor Lock-in**: Stores runs locally as git-friendly JSONL.
-- 🔄 **Async Native**: Built from the ground up for modern `asyncio` agents.
+LangSmith shows you what happened. **Agent VCR lets you change it.**
 
 ---
 
-## 🔥 Quick Start
+## Quick Start
 
 ```bash
 pip install ai-agent-vcr
@@ -44,63 +35,116 @@ pip install ai-agent-vcr
 ```python
 from agent_vcr import VCRRecorder, VCRPlayer
 
-# 1. Record your agent (One-time setup)
+# Record your agent
 recorder = VCRRecorder()
 recorder.start_session("bug_hunt")
-# ... your agent code runs here ...
+# ... your agent code ...
 recorder.save()
 
-# 2. Time-Travel & Fix (The magic part)
+# Time-travel and fix
 player = VCRPlayer.load(".vcr/bug_hunt.vcr")
-
-state = player.goto_frame(2)    # Jump back to step 2
-state["prompt"] = "Fixed!"      # Fix the bad state
-player.resume(from_frame=2)     # Resume execution from step 2
+state = player.goto_frame(2)      # jump to step 2
+state["prompt"] = "Fixed prompt"   # fix the state
+player.resume(from_frame=2)        # continue from there
 ```
 
-## Features
+---
 
-- 🖥️ **Legit React Dashboard** — Forget cloud lock-in. Just run `vcr-server`, open `localhost:8000`, and you get a stunning, glassmorphism-style React UI to inspect execution states, view JSON diffs, and watch live WebSocket streaming of your agent runs.
-- ⏮️ **Time Travel** — Jump back to any step, inspect the full state and history.
-- ✏️ **Interactive TUI Debugger** — Launch `vcr-tui` to navigate execution straight from the terminal. Press `e` to edit state directly.
-- 🚀 **State Injection & Resume** — Hit `r` in the TUI (or use the API) to resume your agent from the exact edited state. No need to restart the entire run.
-- 🌈 **Visual Diffs** — Track state mutations visually within the Dashboard or TUI, color-coded for fast debugging.
-- 🌳 **DAG Visualization** — See parallel execution branches and easily search/filter past sessions via tags.
-- 🔌 **Framework Agnostic** — 1-line plug-and-play with LangGraph, CrewAI, or raw Python.
-- 📁 **Git-Friendly Format** — JSONL files, version controllable, append-only efficiency.
-- ⚡ **Production Performance** — `<5ms` overhead per frame. Async-native for modern stacks.
+## What It Does
+
+- **Time Travel** — Jump back to any step. Full state snapshot at every node.
+- **State Injection & Resume** — Edit the state at any frame — fix a prompt, patch tool output, inject context — then resume mid-chain.
+- **ACID Transactions** — Wrap agent execution in real database-style transactions backed by git. Rollback physically reverts files on disk, not just in-memory state.
+- **Golden Run Cache** — Save successful runs as replayable paths. Next time you hit the same task, skip all LLM calls. Same task, zero tokens, instant.
+- **React Dashboard** — Run `vcr-server`, open `localhost:8000`. Glassmorphism UI for inspecting state, viewing JSON diffs, live WebSocket streaming.
+- **TUI Debugger** — Run `vcr-tui` in your terminal. Navigate frames, press `e` to edit state, press `r` to resume.
+- **Visual Diffs** — Color-coded state mutation tracking in Dashboard and TUI.
+- **DAG Visualization** — See parallel execution branches, search/filter sessions by tags.
+- **Framework Agnostic** — 1-line integration with LangGraph, CrewAI, or raw Python.
+- **Git-Friendly Storage** — JSONL files, version controllable, append-only.
+- **Production Safe** — `<5ms` overhead per frame. Async-native.
+
+---
+
+## ACID Transactions
+
+Databases solved the partial failure problem 40 years ago with transactions. Agents have the exact same problem — when your agent fails mid-run, you don't just have bad in-memory state. You have files written to disk, commits made, half a codebase that shouldn't exist. Current tools only roll back the state object. The filesystem stays polluted.
+
+Agent VCR wraps agent execution in real transactional semantics:
+
+```python
+from agent_vcr import VCRRecorder
+from agent_vcr.integrations.openhands import ACIDWorkspace
+
+recorder = VCRRecorder()
+acid = ACIDWorkspace("/my/workspace", recorder=recorder)
+
+acid.begin(session_id="task-001")        # snapshot workspace, isolated branch
+acid.savepoint(state, node_name="coder") # checkpoint filesystem + state together
+acid.rollback(to_frame_index=3)          # git reset --hard to savepoint
+acid.commit()                            # merge clean branch into main
+```
+
+- **BEGIN** creates an isolated git branch. Parallel agents can't interfere with each other.
+- **SAVEPOINT** checkpoints both the VCR state and the filesystem. Every frame has a matching git commit.
+- **ROLLBACK** runs `git reset --hard` to a previous savepoint. Files your agent hallucinated are gone from disk — not hidden, deleted.
+- **COMMIT** merges the successful branch back into main.
+
+---
+
+## Golden Run Cache
+
+When your agent succeeds, save the entire execution as a golden path. Next time you run the same task, replay the cached outputs directly — skipping every LLM call. Only re-run steps whose inputs actually changed.
+
+```python
+from agent_vcr.golden_cache import GoldenRunCache
+
+cache = GoldenRunCache()
+
+# After a successful run
+cache.save_golden_run("Build a REST API with JWT auth", recorder)
+
+# Next time — instant, zero cost
+outputs, ledger = cache.replay("Build a REST API with JWT auth")
+print(ledger)  # CostLedger(saved=100% | $0.0123 | 4100 tokens | 2349ms)
+```
+
+The `CostLedger` tracks original vs replay tokens, dollars saved, latency saved, and percentage reduction.
 
 ---
 
 ## Who Is This For?
 
 | If you are... | Agent VCR helps you... |
-|---|---|
-| **An AI engineer** debugging LangGraph agents | Rewind to the exact failing step, fix state, and resume — no re-running the whole chain |
-| **A team lead** reviewing agent behavior | Compare two execution paths side-by-side with full state diffs |
-| **A researcher** iterating on prompts | Fork from any step, change the prompt, and see how downstream behavior changes |
-| **Building production agents** | Record every execution in JSONL for audit trails and regression testing |
+| --- | --- |
+| An AI engineer debugging LangGraph agents | Rewind to the exact failing step, fix state, resume |
+| A team lead reviewing agent behavior | Compare execution paths side-by-side with full state diffs |
+| A researcher iterating on prompts | Fork from any step, change the prompt, see how downstream behavior changes |
+| Building production agents | Record every run in JSONL for audit trails and regression testing |
+| Running agents at scale | Cache successful runs and replay them at zero cost |
 
 ---
 
-## How Does It Compare?
+## Comparison
 
 | Feature | Agent VCR | LangSmith | LangFuse | Arize Phoenix |
-|---|---|---|---|---|
-| Record execution traces | ✅ | ✅ | ✅ | ✅ |
-| Time-travel to any step | ✅ | ❌ | ❌ | ❌ |
-| **Edit state & resume** | ✅ | ❌ | ❌ | ❌ |
-| Fork from any frame | ✅ | ❌ | ❌ | ❌ |
-| Compare execution runs | ✅ | ✅ | ⚠️ | ⚠️ |
-| Self-hosted / local-first | ✅ | ❌ | ✅ | ✅ |
-| Git-friendly format (JSONL) | ✅ | ❌ | ❌ | ❌ |
-| Framework agnostic | ✅ | ⚠️ LangChain | ✅ | ✅ |
-| Zero external dependencies | ✅ | ❌ Cloud | ❌ Cloud | ✅ |
-| **Setup lines** | **3** | ~15 | ~10 | ~10 |
+| --- | --- | --- | --- | --- |
+| Record execution traces | Yes | Yes | Yes | Yes |
+| Time-travel to any step | Yes | No | No | No |
+| Edit state and resume | **Yes** | No | No | No |
+| Fork from any frame | Yes | No | No | No |
+| ACID transactions (filesystem rollback) | **Yes** | No | No | No |
+| Golden Run Cache (zero-cost replay) | **Yes** | No | No | No |
+| Compare execution runs | Yes | Yes | Partial | Partial |
+| Self-hosted, local-first | Yes | No (cloud) | Yes | Yes |
+| Git-friendly format (JSONL) | Yes | No | No | No |
+| Framework agnostic | Yes | LangChain only | Yes | Yes |
+| Zero external deps | Yes | Cloud required | Cloud required | Yes |
+| Setup lines | **3** | ~15 | ~10 | ~10 |
 
 ---
 
-## Framework Integrations
+## Integrations
 
 ### LangGraph
 
@@ -109,17 +153,15 @@ from langgraph.graph import StateGraph
 from agent_vcr import VCRRecorder
 from agent_vcr.integrations.langgraph import VCRLangGraph
 
-# Your existing LangGraph code
 graph = StateGraph()
 graph.add_node("planner", planner_node)
 graph.add_node("coder", coder_node)
 graph.add_edge("planner", "coder")
 
-# Add VCR recording with one line
+# One line to add recording
 recorder = VCRRecorder()
 graph = VCRLangGraph(recorder).wrap_graph(graph)
 
-# Run normally — recording happens automatically
 result = graph.invoke({"query": "Build a todo app"})
 ```
 
@@ -134,13 +176,12 @@ recorder = VCRRecorder()
 def my_function(data):
     return process(data)
 
-# Each call is automatically recorded
 result = my_function({"key": "value"})
 ```
 
 ### CrewAI
 
-Agent VCR hooks directly into CrewAI's `step_callback` and `task_callback` for **100% accurate, automatically-captured agent thought/action frames**.
+Agent VCR hooks into CrewAI's `step_callback` and `task_callback` for automatic frame capture.
 
 ```python
 from crewai import Crew, Agent, Task
@@ -150,20 +191,20 @@ from agent_vcr.integrations.crewai import VCRCrewAI, vcr_task
 recorder = VCRRecorder()
 recorder.start_session("crew_debug_run")
 
-# Option 1: Wrap the whole crew (auto-records EVERY thought, tool call, and task)
+# Wrap the whole crew — records every thought, tool call, and task
 crew = Crew(agents=[researcher, writer], tasks=[research_task, write_task])
 vcr_crew = VCRCrewAI(recorder)
 result = vcr_crew.kickoff(crew)
-
 recorder.save()
 
-# Option 2: Decorate individual standalone task or tool functions
+# Or decorate individual functions
 @vcr_task(recorder, task_name="research_step")
 def research(context: dict) -> str:
     return "findings..."
 ```
 
 Install with:
+
 ```bash
 pip install "ai-agent-vcr[crewai]"
 ```
@@ -174,7 +215,7 @@ See [`examples/crewai_integration.py`](examples/crewai_integration.py) for a ful
 
 ## Storage Format
 
-Agent VCR uses **JSONL** (JSON Lines) for storage:
+Agent VCR uses JSONL (JSON Lines):
 
 ```jsonl
 {"type": "session", "data": {"session_id": "abc123", "created_at": "2024-01-01T00:00:00Z", ...}}
@@ -182,19 +223,17 @@ Agent VCR uses **JSONL** (JSON Lines) for storage:
 {"type": "frame", "data": {...}}
 ```
 
-Benefits:
-- ✅ Human-readable
-- ✅ Git-diffable
-- ✅ Append-only (efficient for streaming)
-- ✅ Line-by-line parsing (no need to load entire file)
+- Human-readable
+- Git-diffable
+- Append-only (efficient for streaming)
+- Line-by-line parsing (no need to load the entire file)
 
 ---
 
 ## Performance
 
-Performance is continuously benchmarked in CI to ensure `<5ms` recording overhead.
+Recording overhead is continuously benchmarked in CI to stay under 5ms per frame.
 
-To run the reproducible benchmarks on your own hardware:
 ```bash
 pytest tests/benchmarks/ -v
 ```
@@ -248,6 +287,27 @@ def resume(self, agent_callable: Callable, config: ResumeConfig) -> str
 def export_state(self, frame_index: int) -> dict
 ```
 
+### ACIDWorkspace
+
+```python
+class ACIDWorkspace:
+def __init__(self, workspace_path: str, recorder: VCRRecorder = None)
+def begin(self, session_id: str) -> None
+def savepoint(self, state: dict, node_name: str) -> None
+def rollback(self, to_frame_index: int) -> None
+def commit(self) -> None
+```
+
+### GoldenRunCache
+
+```python
+class GoldenRunCache:
+def __init__(self, cache_dir: str = ".vcr/golden")
+def save_golden_run(self, task: str, recorder: VCRRecorder) -> str
+def replay(self, task: str) -> tuple[list[dict], CostLedger]
+def invalidate(self, task: str) -> bool
+```
+
 ### ResumeConfig
 
 ```python
@@ -264,23 +324,22 @@ inject_mocks: dict = {}      # Mock values for dependencies
 
 ## Examples
 
-See the [`examples/`](examples/) directory for:
+See the [`examples/`](examples/) directory:
 
-- [`basic_usage.py`](examples/basic_usage.py) — Simple recording and playback
+- [`basic_usage.py`](examples/basic_usage.py) — Recording and playback
 - [`time_travel_demo.py`](examples/time_travel_demo.py) — Full time-travel workflow
 - [`langgraph_integration.py`](examples/langgraph_integration.py) — LangGraph auto-instrumentation
-
-Run an example:
+- [`acid_golden_run.py`](examples/acid_golden_run.py) — ACID transactions and Golden Run Cache
 
 ```bash
-python examples/time_travel_demo.py
+python examples/acid_golden_run.py
 ```
 
 ---
 
 ## Contributing
 
-We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+Contributions welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 ### Development Setup
 
@@ -293,19 +352,10 @@ pip install -e ".[dev]"
 ### Running Tests
 
 ```bash
-# Unit tests
 pytest tests/unit/ -v
-
-# Integration tests
 pytest tests/integration/ -v
-
-# E2E tests
 pytest tests/e2e/ -v
-
-# Benchmarks
 pytest tests/benchmarks/ -v
-
-# With coverage
 pytest --cov=agent_vcr --cov-report=html
 ```
 
@@ -320,8 +370,10 @@ pytest --cov=agent_vcr --cov-report=html
 - [x] Async recorder and player
 - [x] Terminal TUI debugger (`vcr-tui`)
 - [x] CI/CD integrations
-- [ ] React dashboard
+- [x] React dashboard
 - [x] CrewAI integration
+- [x] ACID Transactions (git-backed filesystem rollback)
+- [x] Golden Run Cache (zero-cost replay of successful runs)
 - [ ] AutoGen integration
 - [ ] Cloud storage backend
 - [ ] Collaborative debugging
@@ -337,12 +389,13 @@ MIT License — see [LICENSE](LICENSE) for details.
 ## Acknowledgments
 
 Inspired by:
-- [LangSmith](https://smith.langchain.com/) — For the observability paradigm
-- [GDB](https://www.gnu.org/software/gdb/) — For the time-travel debugging concept
-- [Chrome DevTools](https://developer.chrome.com/docs/devtools/) — For the UX patterns
+
+- [LangSmith](https://smith.langchain.com/) — the observability paradigm
+- [GDB](https://www.gnu.org/software/gdb/) — the time-travel debugging concept
+- [Chrome DevTools](https://developer.chrome.com/docs/devtools/) — the UX patterns
 
 ---
 
 <p align="center">
-  Built with ❤️ by the Agent VCR community
+  Built by the Agent VCR community
 </p>
