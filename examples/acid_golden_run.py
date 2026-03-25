@@ -20,16 +20,15 @@ from __future__ import annotations
 
 import os
 import shutil
+import sys
 import time
 from pathlib import Path
-import sys
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from agent_vcr import VCRRecorder, FrameMetadata, FrameType
-from agent_vcr.golden_cache import GoldenRunCache, CostLedger
+from agent_vcr import FrameMetadata, VCRRecorder
+from agent_vcr.golden_cache import GoldenRunCache
 from agent_vcr.integrations.openhands import ACIDWorkspace
-
 
 # ── Pretty Printing ──────────────────────────────────────────────────────────
 
@@ -320,7 +319,7 @@ def run_full_demo():
 
     print()
     print(f"  {BOLD}{GREEN}┌─────────────────────────────────────────┐")
-    print(f"  │  💰 SAVINGS                              │")
+    print("  │  💰 SAVINGS                              │")
     print(f"  │  Tokens saved:  {ledger.tokens_saved:>10,}                │")
     print(f"  │  Cost saved:    ${ledger.cost_saved_usd:>9.4f}                │")
     print(f"  │  Time saved:    {ledger.time_saved_ms:>8.0f}ms                │")

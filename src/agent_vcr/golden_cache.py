@@ -19,10 +19,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from agent_vcr.models import (
-    Frame,
     FrameMetadata,
-    FrameType,
-    Session,
     StateSerializer,
 )
 from agent_vcr.player import VCRPlayer
@@ -216,7 +213,7 @@ class GoldenRunCache:
         if recorder is None:
             recorder = VCRRecorder()
 
-        replay_session = recorder.start_session(
+        recorder.start_session(
             metadata={
                 "replay_of": golden_info["session_id"],
                 "golden_fingerprint": fingerprint,

@@ -11,7 +11,6 @@ from agent_vcr.integrations.openhands import ACIDWorkspace
 from agent_vcr.models import FrameMetadata
 from agent_vcr.recorder import VCRRecorder
 
-
 # ──────────────────────────────────────────────
 #  ACIDWorkspace Tests
 # ──────────────────────────────────────────────
