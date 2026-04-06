@@ -6,9 +6,88 @@
 [![PyPI version](https://badge.fury.io/py/ai-agent-vcr.svg)](https://badge.fury.io/py/ai-agent-vcr)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-**Time-travel debugging for AI agents.**
+**Time-travel debugging for AI agents.** Now with **🛡️ OpenHands Sentinel** — real-time code quality guardian.
 
-[Documentation](https://ixchio.github.io/agent-vcr/) · [Examples](#examples)
+[Documentation](https://ixchio.github.io/agent-vcr/) · [Examples](#examples) · [Sentinel](#-openhands-sentinel)
+
+---
+
+## 🛡️ OpenHands Sentinel
+
+> *"Code is cheap now. Good code is not cheap because you need to check that it actually works."* — Graham Neubig, OpenHands Chief Scientist
+
+**OpenHands Sentinel** is a local-first code quality guardian that watches AI agents write code and stops the codebase from becoming a monster — in real time. Zero API keys. Zero cloud. Zero external dependencies.
+
+### How It Works
+
+```
+Agent writes a file
+        ↓
+Sentinel intercepts via EventStream hook
+        ↓
+Runs instant AST analysis:
+  ✗ Duplicate function detection (cross-file, trajectory-aware)
+  ✗ Function length explosion (> 50 lines)
+  ✗ Cyclomatic complexity spikes
+  ✗ File growth rate anomalies
+  ✗ Parameter bloat detection
+        ↓
+Warns the agent → Agent self-corrects
+        ↓
+Everything recorded in agent-vcr JSONL (full audit trail)
+```
+
+### Quick Start
+
+```bash
+# Scan any codebase an AI agent wrote
+sentinel scan ./my-project
+
+# Or hook into OpenHands natively (3 lines)
+```
+
+```python
+from openhands_sentinel import Sentinel
+from agent_vcr import VCRRecorder
+
+recorder = VCRRecorder()
+sentinel = Sentinel(recorder=recorder)
+sentinel.attach(runtime.event_stream)  # auto-intercepts every file write
+```
+
+### Demo
+
+```bash
+python examples/sentinel_demo.py
+```
+
+```
+STEP 1: Agent writes auth/utils.py
+🛡️ SENTINEL: auth/utils.py — CLEAN ✓
+
+STEP 2: Agent writes handlers.py (massive monolithic function)
+🛡️ SENTINEL: VIOLATIONS DETECTED!
+  CRITICAL  `hash_password()` already exists in auth/utils.py:8
+  CRITICAL  `handle_auth_request()` is 109 lines (max 40)
+  CRITICAL  Cyclomatic complexity 32 (max 8)
+  WARNING   9 parameters (max 5)
+
+STEP 3: Agent SELF-CORRECTS
+🛡️ SENTINEL: handlers.py — CLEAN ✓ All issues resolved!
+
+📼 Audit trail saved to .vcr/sentinel-demo/sentinel-demo.vcr
+```
+
+### Why This Exists
+
+| Without Sentinel | With Sentinel |
+| --- | --- |
+| Agent writes bad code | Agent writes bad code |
+| Human reviews PR | **Sentinel catches instantly** |
+| Human rejects PR | **Agent self-corrects** |
+| Agent rewrites | *(already fixed)* |
+| Human reviews again | **Zero human time** |
+| **Cost: 2× LLM + human time** | **Cost: 1 extra LLM call** |
 
 ---
 
