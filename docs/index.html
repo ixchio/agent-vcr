@@ -23,6 +23,7 @@
             <a href="#" class="nav-logo">📼 Agent VCR</a>
             <nav class="nav-links">
                 <a href="#how-it-works">How it works</a>
+                <a href="#sentinel" style="color: #00d4aa;">🛡️ Sentinel</a>
                 <a href="#features">Features</a>
                 <a href="#acid">ACID</a>
                 <a href="#golden-cache">Golden Cache</a>
@@ -40,7 +41,7 @@
     <!-- HERO -->
     <section class="hero" id="hero">
         <div class="hero-inner">
-            <div class="hero-pill">v0.5.0 · Open Source · MIT License</div>
+            <div class="hero-pill">v0.6.0 · Open Source · MIT License · 🛡️ Now with Sentinel</div>
             <h1 class="hero-title">
                 Time-travel debugging<br>
                 <span class="hero-title-accent">for AI agents.</span>
@@ -258,6 +259,11 @@ player.resume(agent_callable, from_frame=<span class="num">7</span>)</code></pre
                     <h3>Golden Run Cache</h3>
                     <p>Save successful runs as replayable golden paths. Same task next time? Zero tokens, zero cost, instant.</p>
                 </div>
+                <div class="feature-item" style="border: 1px solid rgba(0, 212, 170, 0.3); background: rgba(0, 212, 170, 0.05);">
+                    <div class="feature-icon-wrap">🛡️</div>
+                    <h3>Sentinel Guardian</h3>
+                    <p>Real-time code quality analysis. Catches duplicate functions, complexity spikes, and file bloat before the agent moves on. <a href="#sentinel" style="color: #00d4aa;">Learn more →</a></p>
+                </div>
             </div>
         </div>
     </section>
@@ -274,6 +280,7 @@ player.resume(agent_callable, from_frame=<span class="num">7</span>)</code></pre
                 <div class="tab-bar">
                     <button class="tab active" data-tab="langgraph">LangGraph</button>
                     <button class="tab" data-tab="crewai">CrewAI</button>
+                    <button class="tab" data-tab="openhands" style="color: #00d4aa; border-color: rgba(0,212,170,0.4);">🛡️ OpenHands</button>
                     <button class="tab" data-tab="raw">Raw Python</button>
                     <button class="tab" data-tab="async">Async</button>
                 </div>
@@ -298,6 +305,29 @@ graph = VCRLangGraph(recorder).wrap_graph(graph)
 
 result = graph.invoke({<span class="str">"query"</span>: <span class="str">"Build a todo app"</span>})
 recorder.save()</code></pre>
+                    </div>
+                </div>
+
+                <div class="tab-panel" id="tab-openhands">
+                    <div class="code-block">
+                        <div class="code-bar">
+                            <span class="dots"><span></span><span></span><span></span></span>
+                            <span class="code-label">openhands_sentinel.py</span>
+                        </div>
+                        <pre><code><span class="kw">from</span> openhands_sentinel <span class="kw">import</span> Sentinel
+<span class="kw">from</span> agent_vcr <span class="kw">import</span> VCRRecorder
+
+recorder = VCRRecorder()
+sentinel = Sentinel(recorder=recorder)
+
+<span class="cm"># 3 lines — auto-intercepts every file write</span>
+sentinel.attach(runtime.event_stream)
+
+<span class="cm"># Or scan any directory standalone</span>
+<span class="cm"># $ sentinel scan ./my-project</span>
+
+<span class="cm"># Every check recorded as a VCR frame</span>
+<span class="cm"># Full audit trail in .vcr/</span></code></pre>
                     </div>
                 </div>
 
@@ -431,6 +461,13 @@ state = <span class="kw">await</span> player.goto_frame(<span class="num">3</spa
                         <tr>
                             <td><strong>Golden Run Cache</strong></td>
                             <td class="highlight-col"><span class="yes">✓</span></td>
+                            <td><span class="no">✗</span></td>
+                            <td><span class="no">✗</span></td>
+                            <td><span class="no">✗</span></td>
+                        </tr>
+                        <tr>
+                            <td><strong>Real-time code guardian</strong></td>
+                            <td class="highlight-col"><span class="yes">✓ Sentinel</span></td>
                             <td><span class="no">✗</span></td>
                             <td><span class="no">✗</span></td>
                             <td><span class="no">✗</span></td>
@@ -647,6 +684,81 @@ print(ledger)
                 <div class="feature-item">
                     <h3>Cache Invalidation</h3>
                     <p>Call <code>cache.invalidate(task)</code> when the underlying codebase changes and the golden path is no longer valid.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- SENTINEL -->
+    <section class="two-col-section" id="sentinel" style="background: linear-gradient(135deg, rgba(0,212,170,0.03) 0%, rgba(0,100,200,0.03) 100%);">
+        <div class="section-inner">
+            <div class="section-header">
+                <h2>🛡️ OpenHands Sentinel</h2>
+                <p style="max-width: 640px; margin: 0 auto;">Real-time code quality guardian for AI agents. Watches every file write, catches violations instantly, warns the agent to self-correct.</p>
+            </div>
+
+            <div class="two-col">
+                <div class="col-block problem-block">
+                    <div class="block-tag red">The Codebase Monster</div>
+                    <h2>Agents write bad code at scale.</h2>
+                    <p>AI agents duplicate functions across files, create 200-line monolithic handlers, and ignore existing abstractions. The codebase degrades with every task.</p>
+                    <ul class="pain-list">
+                        <li>Duplicated functions across files</li>
+                        <li>Monolithic functions with 10+ params</li>
+                        <li>Cyclomatic complexity through the roof</li>
+                        <li>No human around to catch it in real-time</li>
+                    </ul>
+                </div>
+                <div class="col-block solution-block">
+                    <div class="block-tag">Sentinel Catches It</div>
+                    <h2>Self-correcting agents.</h2>
+                    <p>Sentinel hooks into the OpenHands EventStream and runs instant AST analysis on every file write. When violations are detected, it warns the agent — which self-corrects in the same session.</p>
+                    <ul class="solution-list">
+                        <li>Cross-file duplicate function detection</li>
+                        <li>Complexity & length spike alerts</li>
+                        <li>Agent self-corrects automatically</li>
+                        <li>Full audit trail via agent-vcr</li>
+                    </ul>
+                </div>
+            </div>
+
+            <div style="max-width: 720px; margin: 2.5rem auto 0;">
+                <div class="code-block">
+                    <div class="code-bar">
+                        <span class="dots"><span></span><span></span><span></span></span>
+                        <span class="code-label">sentinel demo output</span>
+                    </div>
+                    <pre><code><span class="cm">STEP 1: Agent writes auth/utils.py</span>
+🛡️ SENTINEL: auth/utils.py — <span class="str">CLEAN ✓</span>
+
+<span class="cm">STEP 2: Agent writes handlers.py (massive monolithic function)</span>
+🛡️ SENTINEL: <span class="kw">VIOLATIONS DETECTED!</span>
+  <span class="kw">CRITICAL</span>  hash_password() already exists in auth/utils.py:8
+  <span class="kw">CRITICAL</span>  handle_auth_request() is 109 lines (max 40)
+  <span class="kw">CRITICAL</span>  Cyclomatic complexity 32 (max 8)
+  <span class="dec">WARNING</span>   9 parameters (max 5)
+
+<span class="cm">→ Sentinel warns agent. Agent self-corrects.</span>
+
+<span class="cm">STEP 3: Agent rewrites handlers.py</span>
+🛡️ SENTINEL: handlers.py — <span class="str">CLEAN ✓ All issues resolved!</span>
+
+<span class="cm">📼 Audit trail saved to .vcr/sentinel-demo.vcr</span></code></pre>
+                </div>
+            </div>
+
+            <div class="features-grid" style="margin-top: 2rem;">
+                <div class="feature-item">
+                    <h3>Zero Dependencies</h3>
+                    <p>Uses only Python's built-in <code>ast</code> module. No API keys, no cloud calls, no external services. Your code never leaves your machine.</p>
+                </div>
+                <div class="feature-item">
+                    <h3>Trajectory-Aware</h3>
+                    <p>Unlike standard linters, Sentinel tracks function definitions across the entire session. It detects duplicates that span multiple files.</p>
+                </div>
+                <div class="feature-item">
+                    <h3>Frame Size Guardrails</h3>
+                    <p>Detects and warns about oversized VCR frames (the OpenHands issue #7402 pattern) before they pollute the recording.</p>
                 </div>
             </div>
         </div>

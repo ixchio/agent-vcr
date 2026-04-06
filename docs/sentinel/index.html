@@ -1,0 +1,874 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OpenHands Sentinel — Real-Time Code Quality Guardian for AI Agents</title>
+    <meta name="description"
+        content="Sentinel intercepts every file write from OpenHands agents, runs instant AST analysis, and warns the agent to self-correct — zero API keys, zero cloud, zero dependencies.">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,300;0,14..32,400;0,14..32,500;0,14..32,600;0,14..32,700;1,14..32,400&family=JetBrains+Mono:wght@400;500&display=swap"
+        rel="stylesheet">
+    <style>
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+        :root {
+            --bg: #0a0a0f;
+            --bg-card: #12121a;
+            --bg-card-hover: #1a1a28;
+            --border: rgba(255,255,255,0.06);
+            --text: #e0e0e8;
+            --text-muted: #8888a0;
+            --accent: #00d4aa;
+            --accent-glow: rgba(0,212,170,0.15);
+            --red: #ff4466;
+            --orange: #ff8844;
+            --yellow: #ffd644;
+            --blue: #4488ff;
+            --radius: 12px;
+            --font: 'Inter', -apple-system, sans-serif;
+            --mono: 'JetBrains Mono', monospace;
+        }
+
+        html { scroll-behavior: smooth; }
+        body {
+            background: var(--bg);
+            color: var(--text);
+            font-family: var(--font);
+            line-height: 1.7;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        a { color: var(--accent); text-decoration: none; }
+        a:hover { text-decoration: underline; }
+        code { font-family: var(--mono); font-size: 0.9em; }
+        .mono { font-family: var(--mono); }
+
+        /* NAV */
+        .nav {
+            position: fixed; top: 0; left: 0; right: 0; z-index: 100;
+            background: rgba(10,10,15,0.85);
+            backdrop-filter: blur(16px);
+            border-bottom: 1px solid var(--border);
+            padding: 0 2rem;
+        }
+        .nav-inner {
+            max-width: 1200px; margin: 0 auto;
+            display: flex; align-items: center; justify-content: space-between;
+            height: 64px;
+        }
+        .nav-logo {
+            font-weight: 700; font-size: 1.1rem; color: var(--text);
+            display: flex; align-items: center; gap: 6px;
+        }
+        .nav-logo:hover { text-decoration: none; color: var(--accent); }
+        .nav-links { display: flex; gap: 1.5rem; }
+        .nav-links a { color: var(--text-muted); font-size: 0.85rem; font-weight: 500; }
+        .nav-links a:hover { color: var(--accent); text-decoration: none; }
+        .nav-actions { display: flex; gap: 0.75rem; align-items: center; }
+
+        .btn-solid, .btn-ghost {
+            display: inline-flex; align-items: center; gap: 6px;
+            padding: 8px 18px; border-radius: 8px; font-size: 0.85rem; font-weight: 600;
+            transition: all 0.2s;
+        }
+        .btn-solid {
+            background: var(--accent); color: #000;
+        }
+        .btn-solid:hover { background: #00e8bb; text-decoration: none; transform: translateY(-1px); }
+        .btn-ghost {
+            border: 1px solid var(--border); color: var(--text-muted); background: none;
+        }
+        .btn-ghost:hover { border-color: var(--accent); color: var(--accent); text-decoration: none; }
+
+        .btn-solid.large, .btn-ghost.large { padding: 12px 28px; font-size: 0.95rem; border-radius: 10px; }
+
+        /* SECTIONS */
+        .section-inner { max-width: 1200px; margin: 0 auto; padding: 6rem 2rem; }
+        .section-header { text-align: center; margin-bottom: 3rem; }
+        .section-header h2 { font-size: 2.2rem; font-weight: 700; letter-spacing: -0.02em; line-height: 1.2; }
+        .section-header p { color: var(--text-muted); font-size: 1.1rem; margin-top: 0.75rem; max-width: 600px; margin-left: auto; margin-right: auto; }
+
+        /* HERO */
+        .hero {
+            padding-top: 120px;
+            text-align: center;
+            background:
+                radial-gradient(ellipse 60% 50% at 50% 0%, rgba(0,212,170,0.08) 0%, transparent 60%),
+                radial-gradient(ellipse 40% 40% at 80% 20%, rgba(68,136,255,0.05) 0%, transparent 50%);
+        }
+        .hero-pill {
+            display: inline-block;
+            padding: 6px 20px;
+            border-radius: 999px;
+            font-size: 0.8rem;
+            font-weight: 600;
+            letter-spacing: 0.03em;
+            color: var(--accent);
+            border: 1px solid rgba(0,212,170,0.3);
+            background: rgba(0,212,170,0.06);
+            margin-bottom: 2rem;
+        }
+        .hero h1 {
+            font-size: clamp(2.5rem, 6vw, 4rem);
+            font-weight: 800;
+            letter-spacing: -0.03em;
+            line-height: 1.1;
+        }
+        .hero h1 .accent { color: var(--accent); }
+        .hero .sub {
+            font-size: 1.2rem;
+            color: var(--text-muted);
+            max-width: 680px;
+            margin: 1.5rem auto 2rem;
+            line-height: 1.6;
+        }
+        .hero-cta { display: flex; gap: 1rem; justify-content: center; margin-bottom: 3rem; flex-wrap: wrap; }
+
+        .hero-stats {
+            display: flex;
+            justify-content: center;
+            gap: 3rem;
+            margin-top: 3rem;
+            flex-wrap: wrap;
+        }
+        .stat {
+            display: flex; flex-direction: column; align-items: center;
+        }
+        .stat-val {
+            font-size: 2rem; font-weight: 800; color: var(--accent);
+            font-family: var(--mono);
+        }
+        .stat-label {
+            font-size: 0.8rem; color: var(--text-muted); text-transform: uppercase;
+            letter-spacing: 0.06em; margin-top: 4px;
+        }
+
+        /* FLOW DIAGRAM */
+        .flow-section { background: rgba(0,212,170,0.02); }
+        .flow-diagram {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 1rem;
+            flex-wrap: wrap;
+            margin-top: 2rem;
+        }
+        .flow-node {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 1.25rem 1.5rem;
+            text-align: center;
+            min-width: 160px;
+            transition: all 0.2s;
+        }
+        .flow-node:hover { border-color: var(--accent); transform: translateY(-2px); }
+        .flow-node .icon { font-size: 1.6rem; margin-bottom: 0.5rem; }
+        .flow-node h4 { font-size: 0.85rem; font-weight: 600; }
+        .flow-node p { font-size: 0.75rem; color: var(--text-muted); margin-top: 4px; }
+        .flow-arrow {
+            font-size: 1.5rem;
+            color: var(--accent);
+            font-weight: 300;
+        }
+        .flow-node.sentinel-node {
+            border-color: rgba(0,212,170,0.4);
+            background: rgba(0,212,170,0.06);
+            box-shadow: 0 0 20px rgba(0,212,170,0.08);
+        }
+
+        /* CODE BLOCKS */
+        .code-block {
+            background: #0d0d14;
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            overflow: hidden;
+        }
+        .code-bar {
+            display: flex; align-items: center; justify-content: space-between;
+            padding: 10px 16px;
+            background: rgba(255,255,255,0.02);
+            border-bottom: 1px solid var(--border);
+        }
+        .code-bar .dots { display: flex; gap: 6px; }
+        .code-bar .dots span {
+            width: 10px; height: 10px; border-radius: 50%;
+            background: rgba(255,255,255,0.08);
+        }
+        .code-bar .dots span:first-child { background: #ff5f56; }
+        .code-bar .dots span:nth-child(2) { background: #ffbd2e; }
+        .code-bar .dots span:last-child { background: #27c93f; }
+        .code-label { font-family: var(--mono); font-size: 0.75rem; color: var(--text-muted); }
+        .code-block pre {
+            padding: 1.25rem 1.5rem;
+            overflow-x: auto;
+            font-family: var(--mono);
+            font-size: 0.85rem;
+            line-height: 1.8;
+            color: #c8c8d8;
+        }
+        .code-block .kw { color: #c678dd; }
+        .code-block .str { color: #98c379; }
+        .code-block .cm { color: #5c6370; font-style: italic; }
+        .code-block .num { color: #d19a66; }
+        .code-block .dec { color: #e5c07b; }
+        .code-block .fn { color: #61afef; }
+        .code-block .err { color: #ff4466; font-weight: 700; }
+        .code-block .ok { color: #98c379; font-weight: 700; }
+        .code-block .warn { color: #ffbd2e; }
+
+        /* GRID */
+        .grid-3 {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 1.5rem;
+        }
+
+        /* CARDS */
+        .card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 1.75rem;
+            transition: all 0.2s;
+        }
+        .card:hover { border-color: rgba(0,212,170,0.3); transform: translateY(-2px); }
+        .card h3 { font-size: 1.1rem; font-weight: 700; margin-bottom: 0.5rem; }
+        .card p { color: var(--text-muted); font-size: 0.9rem; }
+        .card .tag {
+            display: inline-block;
+            padding: 3px 10px;
+            border-radius: 6px;
+            font-size: 0.7rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            margin-bottom: 0.75rem;
+        }
+        .tag.critical { background: rgba(255,68,102,0.15); color: var(--red); }
+        .tag.info { background: rgba(0,212,170,0.15); color: var(--accent); }
+        .tag.warn { background: rgba(255,136,68,0.15); color: var(--orange); }
+
+        /* TWO COL */
+        .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 2rem; }
+        @media (max-width: 768px) { .two-col { grid-template-columns: 1fr; } }
+
+        /* TABLE */
+        .cost-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 2rem;
+        }
+        .cost-table th, .cost-table td {
+            padding: 12px 16px;
+            text-align: left;
+            border-bottom: 1px solid var(--border);
+            font-size: 0.9rem;
+        }
+        .cost-table th {
+            color: var(--text-muted);
+            font-weight: 600;
+            text-transform: uppercase;
+            font-size: 0.75rem;
+            letter-spacing: 0.05em;
+        }
+        .cost-table .highlight { color: var(--accent); font-weight: 700; }
+
+        /* ARCHITECTURE */
+        .arch-row {
+            display: flex;
+            align-items: stretch;
+            gap: 1rem;
+            margin-top: 1rem;
+            flex-wrap: wrap;
+        }
+        .arch-box {
+            flex: 1;
+            min-width: 200px;
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 1.25rem;
+            position: relative;
+        }
+        .arch-box h4 { font-size: 0.9rem; font-weight: 700; margin-bottom: 0.4rem; }
+        .arch-box p { font-size: 0.78rem; color: var(--text-muted); }
+        .arch-box .mono-sm { font-family: var(--mono); font-size: 0.72rem; color: var(--accent); }
+        .arch-connector {
+            display: flex; align-items: center; justify-content: center;
+            font-size: 1.4rem; color: var(--accent);
+        }
+        .arch-box.primary {
+            border-color: rgba(0,212,170,0.4);
+            background: rgba(0,212,170,0.04);
+        }
+
+        /* API REF */
+        .api-method {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 1.5rem;
+            margin-bottom: 1rem;
+        }
+        .api-method h4 {
+            font-family: var(--mono);
+            font-size: 0.9rem;
+            color: var(--accent);
+            margin-bottom: 0.5rem;
+        }
+        .api-method p { font-size: 0.85rem; color: var(--text-muted); }
+        .api-method .params {
+            margin-top: 0.75rem;
+            padding-top: 0.75rem;
+            border-top: 1px solid var(--border);
+        }
+        .api-method .params li {
+            font-size: 0.8rem;
+            color: var(--text-muted);
+            margin-bottom: 4px;
+            list-style: none;
+        }
+        .api-method .params code { color: var(--text); }
+
+        /* FOOTER */
+        .footer {
+            border-top: 1px solid var(--border);
+            padding: 2rem;
+            text-align: center;
+        }
+        .footer p { color: var(--text-muted); font-size: 0.85rem; }
+        .footer a { color: var(--accent); }
+
+        @media (max-width: 768px) {
+            .nav-links { display: none; }
+            .hero h1 { font-size: 2rem; }
+            .flow-diagram { flex-direction: column; }
+            .flow-arrow { transform: rotate(90deg); }
+            .arch-row { flex-direction: column; }
+        }
+    </style>
+</head>
+
+<body>
+
+    <!-- NAV -->
+    <header class="nav">
+        <div class="nav-inner">
+            <a href="../index.html" class="nav-logo">🛡️ Sentinel</a>
+            <nav class="nav-links">
+                <a href="#architecture">Architecture</a>
+                <a href="#flow">Flow</a>
+                <a href="#detections">Detections</a>
+                <a href="#api">API</a>
+                <a href="#cli">CLI</a>
+                <a href="#cost">Cost Analysis</a>
+            </nav>
+            <div class="nav-actions">
+                <a href="../index.html" class="btn-ghost">← Agent VCR</a>
+                <a href="https://github.com/ixchio/agent-vcr" class="btn-solid" target="_blank">GitHub ↗</a>
+            </div>
+        </div>
+    </header>
+
+    <!-- HERO -->
+    <section class="hero">
+        <div class="section-inner" style="padding-bottom: 3rem;">
+            <div class="hero-pill">OpenHands Sentinel v0.6.0 · Part of Agent VCR · Zero Dependencies</div>
+            <h1>
+                Your agent's code<br>
+                <span class="accent">quality guardian.</span>
+            </h1>
+            <p class="sub">
+                Sentinel hooks into the OpenHands EventStream and runs instant AST analysis on every file write.
+                When it detects duplication, complexity spikes, or bloat — it warns the agent inline.
+                <strong>The agent self-corrects in the same session.</strong>
+            </p>
+            <div class="hero-cta">
+                <a href="#quick-start" class="btn-solid large">Get Started →</a>
+                <a href="#architecture" class="btn-ghost large">See Architecture</a>
+            </div>
+
+            <div class="hero-stats">
+                <div class="stat">
+                    <span class="stat-val">0</span>
+                    <span class="stat-label">API Keys</span>
+                </div>
+                <div class="stat">
+                    <span class="stat-val">0</span>
+                    <span class="stat-label">Cloud Calls</span>
+                </div>
+                <div class="stat">
+                    <span class="stat-val">3</span>
+                    <span class="stat-label">Lines to Integrate</span>
+                </div>
+                <div class="stat">
+                    <span class="stat-val">ast</span>
+                    <span class="stat-label">Only Dependency</span>
+                </div>
+                <div class="stat">
+                    <span class="stat-val">&lt;2ms</span>
+                    <span class="stat-label">Per Analysis</span>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- QUICK START -->
+    <section id="quick-start">
+        <div class="section-inner" style="padding-top: 3rem; padding-bottom: 3rem;">
+            <div class="section-header">
+                <h2>Quick Start</h2>
+                <p>Three integration paths. Zero configuration.</p>
+            </div>
+            <div class="two-col">
+                <div>
+                    <h3 style="margin-bottom: 1rem; font-size: 1rem; color: var(--accent);">① As an OpenHands Hook</h3>
+                    <div class="code-block">
+                        <div class="code-bar">
+                            <span class="dots"><span></span><span></span><span></span></span>
+                            <span class="code-label">openhands_config.py</span>
+                        </div>
+                        <pre><code><span class="kw">from</span> openhands_sentinel <span class="kw">import</span> Sentinel
+<span class="kw">from</span> agent_vcr <span class="kw">import</span> VCRRecorder
+
+recorder = VCRRecorder()
+sentinel = Sentinel(recorder=recorder)
+
+<span class="cm"># Attach to any OpenHands runtime</span>
+sentinel.attach(runtime.event_stream)
+<span class="cm"># Done. Every FileWrite is now guarded.</span></code></pre>
+                    </div>
+                </div>
+                <div>
+                    <h3 style="margin-bottom: 1rem; font-size: 1rem; color: var(--accent);">② Standalone CLI</h3>
+                    <div class="code-block">
+                        <div class="code-bar">
+                            <span class="dots"><span></span><span></span><span></span></span>
+                            <span class="code-label">terminal</span>
+                        </div>
+                        <pre><code><span class="cm"># Install</span>
+$ pip install ai-agent-vcr
+
+<span class="cm"># Scan any directory</span>
+$ sentinel scan ./my-project
+
+<span class="cm"># With strict thresholds</span>
+$ sentinel scan ./src --max-complexity 6
+
+<span class="cm"># Output: per-file report + audit .vcr</span></code></pre>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ARCHITECTURE -->
+    <section id="architecture">
+        <div class="section-inner">
+            <div class="section-header">
+                <h2>Architecture</h2>
+                <p>Four components. One feedback loop. Zero external calls.</p>
+            </div>
+
+            <div class="arch-row">
+                <div class="arch-box">
+                    <div class="mono-sm">agent_vcr/integrations/</div>
+                    <h4>🔌 VCRRuntime</h4>
+                    <p>Hooks into the OpenHands EventStream. Converts FileWrite + FileEdit events into analysis targets. Includes oversized-frame guardrails (issue #7402).</p>
+                </div>
+                <div class="arch-connector">→</div>
+                <div class="arch-box primary">
+                    <div class="mono-sm">openhands_sentinel/</div>
+                    <h4>🛡️ Sentinel</h4>
+                    <p>The orchestrator. Receives file events, dispatches to CodeAnalyzer, decides severity, generates agent warnings, and records VCR frames.</p>
+                </div>
+                <div class="arch-connector">→</div>
+                <div class="arch-box">
+                    <div class="mono-sm">openhands_sentinel/</div>
+                    <h4>🔬 CodeAnalyzer</h4>
+                    <p>Python AST-based analysis engine. Trajectory-aware: tracks function definitions across all files in the session to detect cross-file duplicates.</p>
+                </div>
+                <div class="arch-connector">→</div>
+                <div class="arch-box">
+                    <div class="mono-sm">agent_vcr/</div>
+                    <h4>📼 VCRRecorder</h4>
+                    <p>Records every analysis result as a VCR frame. Creates a time-travel-debuggable audit trail of the agent's quality trajectory.</p>
+                </div>
+            </div>
+
+            <div style="text-align: center; margin-top: 2rem;">
+                <div class="flow-arrow" style="font-size: 2rem;">↻</div>
+                <p style="color: var(--text-muted); font-size: 0.85rem; margin-top: 0.5rem;">The loop: Event → Analyze → Warn → Agent Self-Corrects → Event → Analyze → Clean ✓</p>
+            </div>
+        </div>
+    </section>
+
+    <!-- FLOW -->
+    <section class="flow-section" id="flow">
+        <div class="section-inner">
+            <div class="section-header">
+                <h2>How It Works</h2>
+                <p>End-to-end flow of a single agent session with Sentinel.</p>
+            </div>
+
+            <div class="flow-diagram">
+                <div class="flow-node">
+                    <div class="icon">🤖</div>
+                    <h4>Agent Action</h4>
+                    <p>FileWrite event</p>
+                </div>
+                <div class="flow-arrow">→</div>
+                <div class="flow-node">
+                    <div class="icon">🔌</div>
+                    <h4>VCRRuntime</h4>
+                    <p>Intercepts event</p>
+                </div>
+                <div class="flow-arrow">→</div>
+                <div class="flow-node sentinel-node">
+                    <div class="icon">🛡️</div>
+                    <h4>Sentinel</h4>
+                    <p>Dispatches analysis</p>
+                </div>
+                <div class="flow-arrow">→</div>
+                <div class="flow-node">
+                    <div class="icon">🔬</div>
+                    <h4>CodeAnalyzer</h4>
+                    <p>AST inspection</p>
+                </div>
+                <div class="flow-arrow">→</div>
+                <div class="flow-node">
+                    <div class="icon">📼</div>
+                    <h4>VCR Frame</h4>
+                    <p>Recorded to .vcr/</p>
+                </div>
+            </div>
+
+            <div style="max-width: 780px; margin: 3rem auto 0;">
+                <div class="code-block">
+                    <div class="code-bar">
+                        <span class="dots"><span></span><span></span><span></span></span>
+                        <span class="code-label">sentinel_session_output.log</span>
+                    </div>
+                    <pre><code><span class="cm">━━━━━━━━━ SENTINEL SESSION ━━━━━━━━━</span>
+
+<span class="ok">▶ STEP 1</span>  Agent writes <span class="str">auth/utils.py</span>
+  🛡️ Analyzing auth/utils.py...
+  Functions found: <span class="fn">hash_password</span>, <span class="fn">verify_token</span>, <span class="fn">generate_salt</span>
+  <span class="ok">✓ CLEAN</span> — No violations detected
+  📼 Recorded as frame #1
+
+<span class="err">▶ STEP 2</span>  Agent writes <span class="str">api/handlers.py</span>
+  🛡️ Analyzing api/handlers.py...
+  Functions found: <span class="fn">handle_auth_request</span>, <span class="fn">hash_password</span>
+
+  <span class="err">╔══ VIOLATIONS DETECTED ══════════════════════════╗</span>
+  <span class="err">║</span> <span class="err">CRITICAL</span>  hash_password() duplicates auth/utils.py:8
+  <span class="err">║</span> <span class="err">CRITICAL</span>  handle_auth_request() is 109 lines (max: 40)
+  <span class="err">║</span> <span class="err">CRITICAL</span>  Cyclomatic complexity: 32 (max: 8)
+  <span class="err">║</span> <span class="warn">WARNING</span>   Parameter count: 9 (max: 5)
+  <span class="err">╚═════════════════════════════════════════════════╝</span>
+
+  → Injecting MessageAction into EventStream...
+  → Agent acknowledges warning
+  📼 Recorded as frame #2 (with violations)
+
+<span class="ok">▶ STEP 3</span>  Agent rewrites <span class="str">api/handlers.py</span>
+  🛡️ Re-analyzing api/handlers.py...
+  Functions found: <span class="fn">handle_auth_request</span>  <span class="cm">(imports hash_password)</span>
+
+  <span class="ok">✓ CLEAN — All 4 violations resolved!</span>
+  📼 Recorded as frame #3
+
+<span class="cm">━━━━━━━━━ SESSION COMPLETE ━━━━━━━━━</span>
+📼 Full audit trail: <span class="str">.vcr/sentinel-session.vcr</span>
+📊 Quality: <span class="err">4 violations caught</span> → <span class="ok">4 self-corrected</span> → <span class="ok">0 remaining</span></code></pre>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- DETECTIONS -->
+    <section id="detections">
+        <div class="section-inner">
+            <div class="section-header">
+                <h2>What Sentinel Catches</h2>
+                <p>Five classes of code quality violations, all detected via Python's built-in AST module.</p>
+            </div>
+
+            <div class="grid-3">
+                <div class="card">
+                    <div class="tag critical">CRITICAL</div>
+                    <h3>Duplicate Functions</h3>
+                    <p>Cross-file detection. When an agent defines <code>hash_password()</code> in a new file but it already exists in <code>auth/utils.py</code>, Sentinel catches it instantly. Trajectory-aware — tracks all definitions across the session.</p>
+                </div>
+                <div class="card">
+                    <div class="tag critical">CRITICAL</div>
+                    <h3>Complexity Spikes</h3>
+                    <p>Cyclomatic complexity analysis via AST branch counting. Default threshold: 8. A function with 32 nested if/else/for/while/try paths gets flagged before the agent compounds the complexity.</p>
+                </div>
+                <div class="card">
+                    <div class="tag critical">CRITICAL</div>
+                    <h3>Monolithic Functions</h3>
+                    <p>Detects functions that exceed the line-length threshold (default: 40 lines). AI agents routinely generate 100+ line handlers. Sentinel enforces decomposition.</p>
+                </div>
+                <div class="card">
+                    <div class="tag warn">WARNING</div>
+                    <h3>Parameter Overload</h3>
+                    <p>Functions with more than 5 parameters (configurable). A symptom of god-functions that try to do everything. Forces the agent to use config objects or decompose.</p>
+                </div>
+                <div class="card">
+                    <div class="tag warn">WARNING</div>
+                    <h3>File Growth</h3>
+                    <p>Detects when a file grows by more than 50% in a single write. Prevents the "append-only" pattern where agents keep adding to the same file instead of creating new modules.</p>
+                </div>
+                <div class="card">
+                    <div class="tag info">INFO</div>
+                    <h3>Frame Size Guardrails</h3>
+                    <p>VCRRuntime detects oversized recording frames (the OpenHands issue #7402 pattern) and warns before they pollute the audit trail. Keeps recordings fast and lean.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- API REFERENCE -->
+    <section id="api" style="background: rgba(0,212,170,0.02);">
+        <div class="section-inner">
+            <div class="section-header">
+                <h2>API Reference</h2>
+                <p>Three classes. Minimal surface area. Maximum impact.</p>
+            </div>
+
+            <div class="two-col">
+                <div>
+                    <div class="api-method">
+                        <h4>CodeAnalyzer(config=None)</h4>
+                        <p>The AST-based analysis engine. Stateful — maintains a cross-file function registry for duplicate detection.</p>
+                        <ul class="params">
+                            <li><code>config.max_function_length</code> — Max lines per function (default: 40)</li>
+                            <li><code>config.max_complexity</code> — Max cyclomatic complexity (default: 8)</li>
+                            <li><code>config.max_params</code> — Max parameters per function (default: 5)</li>
+                            <li><code>config.max_growth_pct</code> — Max file growth % (default: 50)</li>
+                        </ul>
+                    </div>
+
+                    <div class="api-method">
+                        <h4>analyzer.analyze_code(filepath, content)</h4>
+                        <p>Parses Python source, runs all checks, returns <code>AnalysisResult</code> with violations list and file metrics.</p>
+                    </div>
+
+                    <div class="api-method">
+                        <h4>analyzer.register_file(filepath, content)</h4>
+                        <p>Registers function definitions from a file into the cross-file registry. Called automatically on first analysis.</p>
+                    </div>
+                </div>
+
+                <div>
+                    <div class="api-method">
+                        <h4>Sentinel(recorder=None, config=None)</h4>
+                        <p>The orchestrator. Connects CodeAnalyzer to VCRRecorder and the OpenHands EventStream.</p>
+                        <ul class="params">
+                            <li><code>recorder</code> — VCRRecorder instance for audit trail</li>
+                            <li><code>config</code> — AnalysisConfig for thresholds</li>
+                        </ul>
+                    </div>
+
+                    <div class="api-method">
+                        <h4>sentinel.attach(event_stream)</h4>
+                        <p>Subscribes to an OpenHands EventStream. Automatically intercepts FileWrite and FileEdit actions.</p>
+                    </div>
+
+                    <div class="api-method">
+                        <h4>sentinel.analyze_file(filepath, content)</h4>
+                        <p>Manually trigger analysis on a specific file. Returns <code>AnalysisResult</code>.</p>
+                    </div>
+
+                    <div class="api-method">
+                        <h4>sentinel.generate_warning(result)</h4>
+                        <p>Generates a formatted warning string suitable for injecting as a <code>MessageAction</code> into the agent's stream.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- CLI -->
+    <section id="cli">
+        <div class="section-inner">
+            <div class="section-header">
+                <h2>CLI Reference</h2>
+                <p>Run Sentinel standalone from any terminal.</p>
+            </div>
+
+            <div style="max-width: 720px; margin: 0 auto;">
+                <div class="code-block">
+                    <div class="code-bar">
+                        <span class="dots"><span></span><span></span><span></span></span>
+                        <span class="code-label">terminal</span>
+                    </div>
+                    <pre><code><span class="cm"># Basic scan</span>
+$ sentinel scan ./src
+🛡️ Scanning ./src ...
+  auth/utils.py         <span class="ok">CLEAN ✓</span>
+  api/handlers.py       <span class="err">3 violations</span>
+  models/user.py        <span class="ok">CLEAN ✓</span>
+  services/payment.py   <span class="warn">1 warning</span>
+
+Summary: 4 files scanned | <span class="err">3 critical</span> | <span class="warn">1 warning</span>
+📼 Audit trail: .vcr/sentinel-scan.vcr
+
+<span class="cm"># Custom thresholds</span>
+$ sentinel scan ./src \
+    --max-complexity 6 \
+    --max-length 30 \
+    --max-params 4
+
+<span class="cm"># JSON output for CI pipelines</span>
+$ sentinel scan ./src --format json | jq '.violations'</code></pre>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- COST ANALYSIS -->
+    <section id="cost" style="background: rgba(0,212,170,0.02);">
+        <div class="section-inner">
+            <div class="section-header">
+                <h2>Why Not Just Use a Critic LLM?</h2>
+                <p>The OpenHands team is building a verification stack with critic models. Here's why Sentinel complements — not replaces — that approach.</p>
+            </div>
+
+            <div style="max-width: 800px; margin: 0 auto;">
+                <table class="cost-table">
+                    <thead>
+                        <tr>
+                            <th>Metric</th>
+                            <th>Critic LLM</th>
+                            <th class="highlight">Sentinel</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td>Latency per check</td>
+                            <td>2-8 seconds</td>
+                            <td class="highlight">&lt;2ms</td>
+                        </tr>
+                        <tr>
+                            <td>Cost per check</td>
+                            <td>$0.003 - $0.02</td>
+                            <td class="highlight">$0.00</td>
+                        </tr>
+                        <tr>
+                            <td>Requires internet</td>
+                            <td>Yes (API calls)</td>
+                            <td class="highlight">No</td>
+                        </tr>
+                        <tr>
+                            <td>Deterministic</td>
+                            <td>No (LLM variance)</td>
+                            <td class="highlight">Yes (AST-based)</td>
+                        </tr>
+                        <tr>
+                            <td>Catches duplicates</td>
+                            <td>Sometimes (limited context)</td>
+                            <td class="highlight">Always (trajectory-aware)</td>
+                        </tr>
+                        <tr>
+                            <td>Catches logical bugs</td>
+                            <td>Yes (LLM reasoning)</td>
+                            <td>No (structural only)</td>
+                        </tr>
+                        <tr>
+                            <td>Catches security issues</td>
+                            <td>Yes (if prompted)</td>
+                            <td>No (structural only)</td>
+                        </tr>
+                        <tr>
+                            <td>Dependencies</td>
+                            <td>API key + network</td>
+                            <td class="highlight">Python stdlib only</td>
+                        </tr>
+                        <tr>
+                            <td>Enterprise-ready</td>
+                            <td>Data leaves your infra</td>
+                            <td class="highlight">100% air-gapped</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <div class="card" style="margin-top: 2rem; border-color: rgba(0,212,170,0.3);">
+                    <h3>💡 The sweet spot</h3>
+                    <p>Run Sentinel as the <strong>first pass</strong> — instant, free, deterministic structural checks on every write. Use critic LLMs as a <strong>second pass</strong> for semantic/logical review on high-risk changes. Sentinel catches the low-hanging fruit at zero cost, so the critic model only runs on code that's already structurally sound.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- FILE MAP -->
+    <section id="files">
+        <div class="section-inner">
+            <div class="section-header">
+                <h2>File Map</h2>
+                <p>Where everything lives in the codebase.</p>
+            </div>
+
+            <div style="max-width: 720px; margin: 0 auto;">
+                <div class="code-block">
+                    <div class="code-bar">
+                        <span class="dots"><span></span><span></span><span></span></span>
+                        <span class="code-label">project structure</span>
+                    </div>
+                    <pre><code>agent-vcr/
+├── src/
+│   ├── <span class="fn">openhands_sentinel/</span>           <span class="cm"># NEW — The Sentinel package</span>
+│   │   ├── __init__.py               <span class="cm"># Exports: Sentinel, CodeAnalyzer</span>
+│   │   ├── <span class="str">analyzer.py</span>               <span class="cm"># AST engine (314 lines)</span>
+│   │   ├── <span class="str">sentinel.py</span>               <span class="cm"># Orchestrator (325 lines)</span>
+│   │   ├── <span class="str">cli.py</span>                    <span class="cm"># CLI entry point</span>
+│   │   └── py.typed                  <span class="cm"># PEP 561 marker</span>
+│   │
+│   └── agent_vcr/
+│       └── integrations/
+│           ├── openhands.py          <span class="cm"># Existing ACIDWorkspace</span>
+│           └── <span class="str">openhands_hook.py</span>     <span class="cm"># NEW — VCRRuntime hook</span>
+│
+├── examples/
+│   └── <span class="str">sentinel_demo.py</span>              <span class="cm"># Self-contained demo</span>
+│
+├── docs/
+│   ├── index.html                    <span class="cm"># Main docs (updated)</span>
+│   └── sentinel/
+│       └── <span class="str">index.html</span>                <span class="cm"># ← You are here</span>
+│
+└── pyproject.toml                    <span class="cm"># v0.6.0, sentinel CLI registered</span></code></pre>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- CTA -->
+    <section>
+        <div class="section-inner" style="text-align: center;">
+            <h2>Ready to guard your agent's code?</h2>
+            <p style="color: var(--text-muted); margin: 1rem 0 2rem;">Three lines of code. Zero configuration. Ship cleaner agents today.</p>
+            <div class="code-block" style="max-width: 420px; margin: 0 auto;">
+                <pre><code>pip install ai-agent-vcr</code></pre>
+            </div>
+            <div style="margin-top: 2rem; display: flex; gap: 1rem; justify-content: center; flex-wrap: wrap;">
+                <a href="https://github.com/ixchio/agent-vcr" class="btn-solid large" target="_blank">Star on GitHub ↗</a>
+                <a href="../index.html" class="btn-ghost large">Full Agent VCR Docs</a>
+            </div>
+        </div>
+    </section>
+
+    <!-- FOOTER -->
+    <footer class="footer">
+        <p>🛡️ OpenHands Sentinel — Part of <a href="../index.html">Agent VCR</a> · MIT License · Built for the OpenHands Hackathon</p>
+    </footer>
+
+</body>
+</html>
