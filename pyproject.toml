@@ -104,7 +104,7 @@ warn_unused_configs = true
 disallow_untyped_defs = true
 
 [[tool.mypy.overrides]]
-module = ["_pytest.*", "pytest.*", "langgraph.*"]
+module = ["langgraph.*", "openhands.*"]
 ignore_errors = true
 ignore_missing_imports = true
 follow_imports = "skip"
