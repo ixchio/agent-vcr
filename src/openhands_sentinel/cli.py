@@ -18,10 +18,8 @@ import time
 from pathlib import Path
 
 from agent_vcr import VCRRecorder
-
 from openhands_sentinel.analyzer import Severity
 from openhands_sentinel.sentinel import Sentinel, SentinelConfig
-
 
 # ──────────────────────────────────────────────
 #  Colors for terminal output
@@ -106,8 +104,8 @@ def scan_directory(directory: str, config: SentinelConfig) -> int:
             print(f"  {Colors.RED}✗{Colors.RESET} {Colors.BOLD}{rel_path}{Colors.RESET}")
             for v in result.violations:
                 color = severity_color(v.severity)
-                loc = f":{v.line}" if v.line else ""
-                print(f"    {color}{v.severity.value.upper():>8}{Colors.RESET}  {v.message}")
+                loc = f"Line {v.line}: " if v.line else ""
+                print(f"    {color}{v.severity.value.upper():>8}{Colors.RESET}  {loc}{v.message}")
         else:
             print(f"  {Colors.GREEN}✓{Colors.RESET} {Colors.DIM}{rel_path}{Colors.RESET}")
 

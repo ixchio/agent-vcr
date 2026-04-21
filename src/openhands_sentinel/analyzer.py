@@ -20,7 +20,6 @@ import enum
 import hashlib
 import logging
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -346,7 +345,7 @@ class CodeAnalyzer:
 
             # Update trajectory memory (remove old entries for this file, add new)
             locations[:] = [
-                (p, l, h) for p, l, h in locations if p != file_path
+                (p, ln, h) for p, ln, h in locations if p != file_path
             ]
             locations.append((file_path, node.lineno, func_hash))
 
@@ -391,7 +390,7 @@ class CodeAnalyzer:
                         line=node.lineno,
                         details={"original_file": prev_path, "original_line": prev_line},
                     ))
-            cls_locations[:] = [(p, l) for p, l in cls_locations if p != file_path]
+            cls_locations[:] = [(p, ln) for p, ln in cls_locations if p != file_path]
             cls_locations.append((file_path, node.lineno))
 
     def _check_imports(
@@ -431,17 +430,7 @@ class CodeAnalyzer:
         complexity = 1  # Base complexity
 
         for child in ast.walk(node):
-            if isinstance(child, (ast.If, ast.IfExp)):
-                complexity += 1
-            elif isinstance(child, (ast.For, ast.AsyncFor)):
-                complexity += 1
-            elif isinstance(child, (ast.While,)):
-                complexity += 1
-            elif isinstance(child, ast.ExceptHandler):
-                complexity += 1
-            elif isinstance(child, (ast.With, ast.AsyncWith)):
-                complexity += 1
-            elif isinstance(child, ast.Assert):
+            if isinstance(child, (ast.If, ast.IfExp, ast.For, ast.AsyncFor, ast.While, ast.ExceptHandler, ast.With, ast.AsyncWith, ast.Assert)):
                 complexity += 1
             elif isinstance(child, ast.BoolOp):
                 # Each `and`/`or` adds a decision point

@@ -9,7 +9,7 @@ Every quality check is recorded natively into agent-vcr for a full
 time-travel audit trail.
 """
 
-from openhands_sentinel.analyzer import CodeAnalyzer, Violation, Severity
+from openhands_sentinel.analyzer import CodeAnalyzer, Severity, Violation
 from openhands_sentinel.sentinel import Sentinel, SentinelConfig
 
 __version__ = "0.1.0"

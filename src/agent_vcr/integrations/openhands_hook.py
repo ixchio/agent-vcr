@@ -60,7 +60,7 @@ class VCRRuntime:
         self._total_bytes_recorded = 0
         self._attached = False
 
-    def attach(self, event_stream: Any) -> "VCRRuntime":
+    def attach(self, event_stream: Any) -> VCRRuntime:
         """
         Attach to an OpenHands EventStream.
 

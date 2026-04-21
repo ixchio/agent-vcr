@@ -25,7 +25,6 @@ from agent_vcr import VCRRecorder
 from openhands_sentinel import Sentinel, SentinelConfig
 from openhands_sentinel.analyzer import Severity
 
-
 # ──────────────────────────────────────────────
 #  Terminal Colors
 # ──────────────────────────────────────────────
@@ -378,7 +377,7 @@ def main() -> None:
 
     # ─── FINAL REPORT ───
     print(f"\n{C.CYAN}{C.BOLD}{'═' * 60}")
-    print(f"  FINAL SESSION REPORT")
+    print("  FINAL SESSION REPORT")
     print(f"{'═' * 60}{C.RESET}\n")
 
     print(sentinel.get_report())

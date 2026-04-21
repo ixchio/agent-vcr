@@ -25,12 +25,11 @@ from __future__ import annotations
 import json
 import logging
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Callable
 
 from agent_vcr import VCRRecorder
 from agent_vcr.models import FrameMetadata, FrameType
-
 from openhands_sentinel.analyzer import (
     AnalysisResult,
     CodeAnalyzer,
@@ -265,7 +264,7 @@ class Sentinel:
     #  OpenHands EventStream Integration
     # ──────────────────────────────────────────────
 
-    def attach(self, event_stream: Any) -> "Sentinel":
+    def attach(self, event_stream: Any) -> Sentinel:
         """
         Attach to an OpenHands EventStream for native integration.
 
