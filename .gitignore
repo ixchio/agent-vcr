@@ -30,6 +30,7 @@ htmlcov/
 # Agent VCR runtime
 .vcr/
 *.vcr
+manifest.json
 
 # OS
 .DS_Store

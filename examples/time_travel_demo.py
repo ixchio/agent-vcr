@@ -47,7 +47,7 @@ def main():
     agent = CalculatorAgent()
     state = {"a": 2, "b": 3, "c": 4, "step": "add"}
 
-    # Execute and record
+    # Execute and record each step
     for step_name in ["add", "multiply"]:
         new_state = agent.run(state)
         recorder.record_step(
@@ -74,6 +74,12 @@ def main():
     print(f"    After 'add' step: {intermediate}")
 
     # Step 4: Edit state and resume (THE KILLER FEATURE)
+    #
+    # resume(from_frame=0) rewinds to BEFORE frame 0 executed.
+    # It takes the INPUT state of frame 0 ({a:2, b:3, c:4, step:add}),
+    # applies our override (b=5), and re-runs the agent from there.
+    # So the add step re-executes: add_result = 2+5 = 7
+    # Then multiply: final_result = 7*4 = 28
     print("\n[4] Time travel: Editing state and resuming...")
     print("    Changing 'b' from 3 to 5...")
     print("    Expected new result: (2+5)*4 = 28")
@@ -95,8 +101,13 @@ def main():
     # Step 5: Verify the forked execution
     print("\n[5] Verifying forked execution...")
     forked_player = VCRPlayer.load_by_id(new_session_id)
-    forked_final = forked_player.goto_frame(1)
+    forked_final = forked_player.goto_frame(0)
     print(f"    Forked result: {forked_final['final_result']}")
+
+    assert forked_final["final_result"] == 28, (
+        f"Expected 28, got {forked_final['final_result']}"
+    )
+    print("    ✓ Assertion passed: (2+5)*4 = 28")
 
     # Step 6: Show the comparison
     print("\n[6] Comparing executions...")

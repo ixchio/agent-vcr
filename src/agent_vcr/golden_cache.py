@@ -10,6 +10,7 @@ Same task. 80% fewer tokens. Instant.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import logging
@@ -319,7 +320,22 @@ class GoldenRunCache:
                 self._index = {}
 
     def _save_index(self) -> None:
-        """Persist the golden run index to disk."""
+        """Persist the golden run index to disk (atomic write)."""
+        import os
+        import tempfile
+
         index_path = self.cache_dir / "index.json"
-        with open(index_path, "w") as f:
-            json.dump(self._index, f, indent=2)
+        # Atomic write: write to temp file, then rename.
+        # os.replace is atomic on POSIX, preventing corruption on crash.
+        fd, tmp_path = tempfile.mkstemp(
+            dir=str(self.cache_dir), suffix=".tmp"
+        )
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump(self._index, f, indent=2)
+            os.replace(tmp_path, str(index_path))
+        except BaseException:
+            # Clean up temp file if something goes wrong
+            with contextlib.suppress(OSError):
+                os.unlink(tmp_path)
+            raise

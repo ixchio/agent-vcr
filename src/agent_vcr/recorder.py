@@ -51,6 +51,18 @@ class VCRRecorder:
 
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
+    def __enter__(self) -> VCRRecorder:
+        """Support ``with`` usage — auto-saves on exit."""
+        return self
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        """Auto-save session on context manager exit."""
+        if self._session is not None:
+            try:
+                self.save()
+            except Exception:
+                logger.warning("Failed to auto-save session on exit", exc_info=True)
+
     def start_session(
         self,
         session_id: str | None = None,
@@ -118,8 +130,8 @@ class VCRRecorder:
                 parent_frame_id=parent_frame_id,
                 frame_type=frame_type,
                 node_name=node_name,
-                input_state=serialized_input if not self.diff_mode else {},
-                output_state=serialized_output if not self.diff_mode else {},
+                input_state=serialized_input,
+                output_state=serialized_output,
                 metadata=metadata,
                 state_diff=state_diff,
             )

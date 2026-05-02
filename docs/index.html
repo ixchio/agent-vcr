@@ -26,7 +26,7 @@
                 <a href="#sentinel" style="color: #00d4aa;">🛡️ Sentinel</a>
                 <a href="#features">Features</a>
                 <a href="#acid">ACID</a>
-                <a href="#golden-cache">Golden Cache</a>
+                <a href="#golden-cache">👻 Ghost Replay</a>
                 <a href="#integrations">Integrations</a>
                 <a href="#api">API</a>
                 <a href="#compare">Compare</a>
@@ -41,7 +41,7 @@
     <!-- HERO -->
     <section class="hero" id="hero">
         <div class="hero-inner">
-            <div class="hero-pill">v0.6.0 · Open Source · MIT License · 🛡️ Now with Sentinel</div>
+            <div class="hero-pill">v0.6.0 · Open Source · MIT License · 🛡️ Sentinel · 👻 Ghost Replay</div>
             <h1 class="hero-title">
                 Time-travel debugging<br>
                 <span class="hero-title-accent">for AI agents.</span>
@@ -255,9 +255,9 @@ player.resume(agent_callable, from_frame=<span class="num">7</span>)</code></pre
                     <p>BEGIN, SAVEPOINT, ROLLBACK, COMMIT — backed by git. Rollback physically reverts files on disk, not just in-memory state.</p>
                 </div>
                 <div class="feature-item">
-                    <div class="feature-icon-wrap">⭐</div>
-                    <h3>Golden Run Cache</h3>
-                    <p>Save successful runs as replayable golden paths. Same task next time? Zero tokens, zero cost, instant.</p>
+                    <div class="feature-icon-wrap">👻</div>
+                    <h3>Ghost Replay</h3>
+                    <p>Save a successful run as a ghost. Next time you hit the same task — replay it instantly. Zero LLM calls, zero tokens, zero cost.</p>
                 </div>
                 <div class="feature-item" style="border: 1px solid rgba(0, 212, 170, 0.3); background: rgba(0, 212, 170, 0.05);">
                     <div class="feature-icon-wrap">🛡️</div>
@@ -459,7 +459,7 @@ state = <span class="kw">await</span> player.goto_frame(<span class="num">3</spa
                             <td><span class="no">✗</span></td>
                         </tr>
                         <tr>
-                            <td><strong>Golden Run Cache</strong></td>
+                            <td><strong>👻 Ghost Replay</strong></td>
                             <td class="highlight-col"><span class="yes">✓</span></td>
                             <td><span class="no">✗</span></td>
                             <td><span class="no">✗</span></td>
@@ -652,38 +652,38 @@ acid.commit()                        <span class="cm"># clean merge</span></code
     <section class="features-section" id="golden-cache">
         <div class="section-inner">
             <div class="section-header">
-                <h2>Golden Run Cache — Never Pay Twice</h2>
-                <p>When your agent succeeds, save the run. Next time, replay it at zero LLM cost.</p>
+                <h2>👻 Ghost Replay — Never Pay for the Same Task Twice</h2>
+                <p>When your agent succeeds, save the run as a ghost. Next time, it replays instantly — zero tokens, zero dollars, 1ms.</p>
             </div>
             <div class="code-block" style="max-width: 720px; margin: 0 auto;">
                 <div class="code-bar">
                     <span class="dots"><span></span><span></span><span></span></span>
-                    <span class="code-label">golden_cache.py</span>
+                    <span class="code-label">ghost_replay.py</span>
                 </div>
                 <pre><code><span class="kw">from</span> agent_vcr.golden_cache <span class="kw">import</span> GoldenRunCache
 
 cache = GoldenRunCache()
 
-<span class="cm"># After a successful run</span>
+<span class="cm"># After a successful run — save as a ghost</span>
 cache.save_golden_run(<span class="str">"Build a REST API"</span>, recorder)
 
-<span class="cm"># Next time — instant, $0.00</span>
+<span class="cm"># Next time — ghost replays instantly, $0.00</span>
 outputs, ledger = cache.replay(<span class="str">"Build a REST API"</span>)
 print(ledger)
-<span class="cm"># CostLedger(saved=100% | $0.0123 | 4100 tokens | 2349ms)</span></code></pre>
+<span class="cm"># CostLedger(saved=100% | $0.0123 | 4,100 tokens | 2,349ms)</span></code></pre>
             </div>
             <div class="features-grid" style="margin-top: 2rem;">
                 <div class="feature-item">
                     <h3>Deterministic Fingerprinting</h3>
-                    <p>Tasks are hashed with SHA-256 for reliable cache lookups. Same task string always maps to the same golden run.</p>
+                    <p>Tasks are SHA-256 hashed for reliable lookups. Same task description always maps to the same ghost run — no ambiguity.</p>
                 </div>
                 <div class="feature-item">
                     <h3>Cost Ledger</h3>
-                    <p>Tracks original tokens vs replay tokens, dollars saved, milliseconds saved, and percentage reduction.</p>
+                    <p>Tracks original tokens vs replay: dollars saved, milliseconds saved, percentage reduction. Shows exactly what Ghost Replay saved you.</p>
                 </div>
                 <div class="feature-item">
                     <h3>Cache Invalidation</h3>
-                    <p>Call <code>cache.invalidate(task)</code> when the underlying codebase changes and the golden path is no longer valid.</p>
+                    <p>Call <code>cache.invalidate(task)</code> when the underlying logic changes and the ghost is no longer valid. Simple and explicit.</p>
                 </div>
             </div>
         </div>

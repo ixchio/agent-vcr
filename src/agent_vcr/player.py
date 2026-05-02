@@ -196,7 +196,7 @@ class VCRPlayer:
         )
 
         target_frame = self.frames[config.from_frame]
-        base_state = StateSerializer.deserialize(target_frame.output_state)
+        base_state = StateSerializer.deserialize(target_frame.input_state)
 
         if config.state_overrides:
             base_state.update(config.state_overrides)

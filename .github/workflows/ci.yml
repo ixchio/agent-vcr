@@ -11,13 +11,13 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.9", "3.10", "3.11", "3.12"]
+        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13"]
 
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
 
     - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v5
       with:
         python-version: ${{ matrix.python-version }}
 
@@ -39,7 +39,7 @@ jobs:
         pytest tests/ -v --cov=agent_vcr --cov-report=xml
 
     - name: Upload coverage reports to Codecov
-      uses: codecov/codecov-action@v3
+      uses: codecov/codecov-action@v4
       with:
         token: ${{ secrets.CODECOV_TOKEN }}
         file: ./coverage.xml
@@ -58,12 +58,12 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
 
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
 
-    - name: Set up Python 3.11
-      uses: actions/setup-python@v4
+    - name: Set up Python 3.12
+      uses: actions/setup-python@v5
       with:
-        python-version: "3.11"
+        python-version: "3.12"
 
     - name: Install dependencies
       run: |
@@ -92,7 +92,7 @@ jobs:
         alert-threshold: "120%"
         comment-on-alert: true
         fail-on-alert: false
-        alert-comment-cc-users: "@ruzvad"
+        alert-comment-cc-users: "@ixchio"
 
     - name: Commit and push benchmark results
       run: |
@@ -100,4 +100,3 @@ jobs:
         git config --global user.email '41898282+github-actions[bot]@users.noreply.github.com'
         git add docs/dev/bench/
         git diff --quiet && git diff --staged --quiet || (git commit -m "chore: update benchmarks [skip ci]" && git push)
-
