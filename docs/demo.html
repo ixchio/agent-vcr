@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Agent VCR — Live Demo</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#0d1117;color:#e6edf3;font-family:'Inter',system-ui,sans-serif;min-height:100vh;display:flex;flex-direction:column;align-items:center;padding:2rem}
+h1{font-size:2.2rem;margin-bottom:.5rem;background:linear-gradient(135deg,#58a6ff,#bc8cff);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.sub{color:#8b949e;margin-bottom:2rem;font-size:1.1rem}
+.demo-container{max-width:900px;width:100%;border-radius:12px;overflow:hidden;box-shadow:0 8px 32px rgba(0,0,0,.4);border:1px solid #30363d}
+.demo-container object,.demo-container img{width:100%;display:block}
+.cta{margin-top:2rem;display:flex;gap:1rem;flex-wrap:wrap;justify-content:center}
+.btn{padding:.8rem 1.6rem;border-radius:8px;text-decoration:none;font-weight:600;font-size:1rem;transition:all .2s}
+.btn-primary{background:linear-gradient(135deg,#238636,#2ea043);color:#fff}
+.btn-primary:hover{transform:translateY(-2px);box-shadow:0 4px 12px rgba(35,134,54,.4)}
+.btn-secondary{background:#21262d;color:#58a6ff;border:1px solid #30363d}
+.btn-secondary:hover{background:#30363d}
+.install{margin-top:2rem;background:#161b22;border:1px solid #30363d;border-radius:8px;padding:1rem 2rem;font-family:'JetBrains Mono',monospace;font-size:1rem;color:#7ee787;cursor:pointer;position:relative}
+.install:hover::after{content:'📋 Click to copy';position:absolute;top:-2rem;right:0;background:#30363d;padding:.3rem .6rem;border-radius:4px;font-size:.75rem;color:#8b949e}
+footer{margin-top:3rem;color:#484f58;font-size:.85rem}
+</style>
+</head>
+<body>
+<h1>📼 Agent VCR</h1>
+<p class="sub">Time-travel debugging for AI agents — Record, Rewind, Edit, Resume</p>
+<div class="demo-container">
+<object data="demo.svg" type="image/svg+xml" width="100%">
+<img src="demo.svg" alt="Agent VCR Demo">
+</object>
+</div>
+<div class="cta">
+<a href="https://github.com/ixchio/agent-vcr" class="btn btn-primary" target="_blank">⭐ Star on GitHub</a>
+<a href="https://pypi.org/project/ai-agent-vcr/" class="btn btn-secondary" target="_blank">📦 PyPI</a>
+<a href="index.html" class="btn btn-secondary">📖 Full Docs</a>
+</div>
+<div class="install" onclick="navigator.clipboard.writeText('pip install ai-agent-vcr');this.style.color='#58a6ff';this.textContent='✓ Copied!';setTimeout(()=>{this.textContent='pip install ai-agent-vcr';this.style.color='#7ee787'},1500)">
+pip install ai-agent-vcr
+</div>
+<footer>MIT License · Built by <a href="https://github.com/ixchio" style="color:#58a6ff">ixchio</a></footer>
+</body>
+</html>

@@ -202,7 +202,7 @@ class VCRServer:
     def _setup_routes(self) -> None:
         """Setup API routes."""
 
-        @self.app.get("/", response_class=RedirectResponse)
+        @self.app.get("/")
         async def root() -> Any:
             if self._has_dashboard:
                 return RedirectResponse(url="/dashboard/")

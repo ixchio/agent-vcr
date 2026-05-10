@@ -115,6 +115,10 @@ class VCRRecorder:
                 state_diff = self._compute_diff(
                     self._previous_state, serialized_output
                 )
+                # In diff mode, omit input_state from the frame when it
+                # duplicates the previous output_state (the common case).
+                # The player can reconstruct it from the prior frame.
+                serialized_input = {}
 
             if isinstance(metadata, dict):
                 metadata = FrameMetadata(**metadata)
@@ -140,7 +144,10 @@ class VCRRecorder:
             self._cache.add_frame(self._session.session_id, frame)
             self._previous_state = serialized_output
 
-            self._session.frame_count = len(self._frames)
+            self._session.frame_count = len(
+                self._cache.get_frames(self._session.session_id)
+            )
+            self._session.updated_at = datetime.now(timezone.utc)
             if metadata and metadata.tokens_used:
                 self._session.total_tokens += metadata.tokens_used
             if metadata and metadata.cost_usd:
@@ -270,10 +277,11 @@ class VCRRecorder:
         state_overrides: dict | None = None,
     ) -> VCRRecorder:
         """Create a forked recorder starting from a specific frame."""
-        if from_frame >= len(self._frames):
-            raise ValueError(f"Frame {from_frame} not found")
+        all_frames = self.get_frames()
+        if from_frame >= len(all_frames):
+            raise ValueError(f"Frame {from_frame} not found (have {len(all_frames)} frames)")
 
-        target_frame = self._frames[from_frame]
+        target_frame = all_frames[from_frame]
         forked_state = target_frame.output_state.copy()
         if state_overrides:
             forked_state.update(state_overrides)

@@ -306,10 +306,12 @@ class VCRPlayer:
             frame = self.frames[i]
             current_state = StateSerializer.deserialize(frame.output_state)
 
+            # Deserialize both states to avoid double-serialization
+            # (record_step will re-serialize them)
             recorder.record_step(
                 node_name=frame.node_name,
-                input_state=frame.input_state,
-                output_state=frame.output_state,
+                input_state=StateSerializer.deserialize(frame.input_state),
+                output_state=current_state,
                 metadata=frame.metadata,
             )
 

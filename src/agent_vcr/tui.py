@@ -434,19 +434,36 @@ class VCRApp(App):
         )
 
     def action_resume(self) -> None:
-        """Resume execution from the current frame with optional state edits."""
+        """Resume execution from the current frame with optional state edits.
+
+        Exports the current (possibly edited) state to a JSON file so
+        external scripts or the Python SDK can pick it up.
+        """
         if not self.player:
             return
 
+        frame = self.player.frames[self.current_index]
+        state = self._edited_state or frame.output_state
 
-
-        self.notify(
-            f"Resume from frame {self.current_index} "
-            f"({'edited state' if self._edited_state else 'original state'})\n"
-            f"Use Python SDK:\n"
-            f"  player.resume(agent_fn, ResumeConfig(from_frame={self.current_index}))",
-            severity="information",
-        )
+        # Write the resume payload to a file so it's actually actionable
+        resume_payload = {
+            "session_id": self.player.session.session_id,
+            "from_frame": self.current_index,
+            "state": state,
+            "edited": self._edited_state is not None,
+        }
+        resume_path = Path(self.filepath).parent / "resume_state.json"
+        try:
+            resume_path.write_text(json.dumps(resume_payload, indent=2, default=str))
+            self.notify(
+                f"Resume state saved to {resume_path}\n"
+                f"Frame {self.current_index} | "
+                f"{'edited' if self._edited_state else 'original'} state\n"
+                f"Load with: json.load(open('{resume_path}'))",
+                severity="information",
+            )
+        except Exception as e:
+            self.notify(f"Failed to save resume state: {e}", severity="error")
 
     def action_search(self) -> None:
         """Open search/filter modal."""

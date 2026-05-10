@@ -257,7 +257,7 @@ class GoldenRunCache:
 
                 recorder.record_step(
                     node_name=frame.node_name,
-                    input_state=frame.input_state,
+                    input_state=StateSerializer.deserialize(frame.input_state),
                     output_state=output,
                     metadata=FrameMetadata(
                         latency_ms=0.1,  # negligible replay overhead

@@ -34,7 +34,7 @@ class AsyncVCRRecorder:
 
     def __init__(
         self,
-        output_dir: str | Path = ".vcr_recordings",
+        output_dir: str | Path = ".vcr",
         auto_save: bool = True,
         buffer_size: int = 100,
         diff_mode: bool = False,
@@ -53,6 +53,18 @@ class AsyncVCRRecorder:
         self._previous_state: dict | None = None
         self._lock = asyncio.Lock()
         self._cache = VCRCache()
+
+    async def __aenter__(self) -> AsyncVCRRecorder:
+        """Support ``async with`` usage — auto-saves on exit."""
+        return self
+
+    async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        """Auto-save session on async context manager exit."""
+        if self._session is not None:
+            try:
+                await self.save()
+            except Exception:
+                logger.warning("Failed to auto-save async session on exit", exc_info=True)
 
     async def start_session(
         self,
@@ -101,8 +113,11 @@ class AsyncVCRRecorder:
             state_diff = None
             if self.diff_mode and self._previous_state is not None:
                 state_diff = self._compute_diff(self._previous_state, serialized_output)
+                serialized_input = {}
 
-            if metadata is None:
+            if isinstance(metadata, dict):
+                metadata = FrameMetadata(**metadata)
+            elif metadata is None:
                 metadata = FrameMetadata()
 
             frame = Frame(
@@ -120,7 +135,10 @@ class AsyncVCRRecorder:
             self._previous_state = serialized_output
 
             # Update session statistics
-            self._session.frame_count = len(self._frames)
+            self._session.frame_count = len(
+                self._cache.get_frames(self._session.session_id)
+            )
+            self._session.updated_at = datetime.now(timezone.utc)
             if metadata.tokens_used:
                 self._session.total_tokens += metadata.tokens_used
             if metadata.cost_usd:
