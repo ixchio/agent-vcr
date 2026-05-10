@@ -16,7 +16,6 @@ Run:  python examples/showcase_demo.py
 
 from __future__ import annotations
 
-import json
 import os
 import shutil
 import sys
@@ -349,7 +348,7 @@ def handle_write(request, ctx):
     """Handle POST requests."""
     return ctx.db.insert(request.body)
 '''
-    result3 = sentinel.check_file("api/handlers.py", fixed_code)
+    sentinel.check_file("api/handlers.py", fixed_code)
     print(f"\n  {D}Agent self-corrects...{R}")
     print(f"  {GRN}✓{R} api/handlers.py — {GRN}{B}CLEAN{R} ✨ All issues resolved!")
     pause(0.2)
