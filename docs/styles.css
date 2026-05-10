@@ -69,9 +69,9 @@ h1, h2, h3, h4 { font-weight: 600; color: var(--white); letter-spacing: -0.02em;
 
 .nav-logo { font-weight: 700; font-size: 1.05rem; letter-spacing: -0.02em; white-space: nowrap; }
 
-.nav-links { display: flex; gap: 28px; }
+.nav-links { display: flex; gap: 24px; white-space: nowrap; }
 .nav-links a {
-    font-size: 0.85rem; color: var(--text-muted);
+    font-size: 0.82rem; color: var(--text-muted);
     transition: color .2s;
 }
 .nav-links a:hover { color: var(--white); }
@@ -160,6 +160,38 @@ h1, h2, h3, h4 { font-weight: 600; color: var(--white); letter-spacing: -0.02em;
 .metric-val { display: block; font-size: 1.5rem; font-weight: 700; color: var(--white); font-family: var(--mono); letter-spacing: -0.03em; }
 .metric-label { display: block; font-size: 0.75rem; color: var(--text-dim); margin-top: 4px; text-transform: uppercase; letter-spacing: 0.06em; }
 .metric-divider { width: 1px; background: var(--border); }
+
+
+/* ================================================================
+   DEMO HERO
+   ================================================================ */
+
+.demo-hero-section { padding: 0 0 80px; }
+
+.demo-hero-wrap {
+    max-width: 820px;
+    margin: 0 auto;
+    border-radius: var(--radius);
+    overflow: hidden;
+    border: 1px solid var(--border);
+    box-shadow: 0 12px 48px rgba(0,0,0,0.6);
+}
+.demo-hero-wrap img { width: 100%; display: block; }
+
+.demo-hero-caption {
+    text-align: center;
+    margin-top: 12px;
+    font-size: 0.82rem;
+    color: var(--text-dim);
+}
+.demo-hero-caption code {
+    background: var(--bg-card);
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 0.78rem;
+}
+.demo-hero-caption a { color: var(--text-muted); transition: color .2s; }
+.demo-hero-caption a:hover { color: var(--white); }
 
 
 /* ================================================================
