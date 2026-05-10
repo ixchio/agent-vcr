@@ -4,40 +4,152 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Agent VCR — Live Demo</title>
+<meta name="description" content="Watch Agent VCR in action: Record, Rewind, Fork, Ghost Replay, and Sentinel — all running live in a real terminal.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-body{background:#0d1117;color:#e6edf3;font-family:'Inter',system-ui,sans-serif;min-height:100vh;display:flex;flex-direction:column;align-items:center;padding:2rem}
-h1{font-size:2.2rem;margin-bottom:.5rem;background:linear-gradient(135deg,#58a6ff,#bc8cff);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
-.sub{color:#8b949e;margin-bottom:2rem;font-size:1.1rem}
-.demo-container{max-width:900px;width:100%;border-radius:12px;overflow:hidden;box-shadow:0 8px 32px rgba(0,0,0,.4);border:1px solid #30363d}
-.demo-container object,.demo-container img{width:100%;display:block}
-.cta{margin-top:2rem;display:flex;gap:1rem;flex-wrap:wrap;justify-content:center}
-.btn{padding:.8rem 1.6rem;border-radius:8px;text-decoration:none;font-weight:600;font-size:1rem;transition:all .2s}
+body{background:#0a0a0a;color:#e6edf3;font-family:'Inter',system-ui,sans-serif;min-height:100vh}
+
+/* Nav */
+.nav{position:sticky;top:0;z-index:100;background:rgba(10,10,10,0.85);backdrop-filter:blur(12px);border-bottom:1px solid rgba(255,255,255,0.06);padding:0 2rem}
+.nav-inner{max-width:1100px;margin:0 auto;display:flex;align-items:center;justify-content:space-between;height:56px}
+.nav a{color:#8b949e;text-decoration:none;font-size:0.9rem;font-weight:500;transition:color 0.2s}
+.nav a:hover{color:#fff}
+.nav-logo{color:#fff!important;font-weight:700;font-size:1.05rem}
+.nav-links{display:flex;gap:1.5rem}
+
+/* Hero */
+.hero{text-align:center;padding:3.5rem 2rem 1rem}
+.hero h1{font-size:2.5rem;font-weight:700;letter-spacing:-0.03em;background:linear-gradient(135deg,#58a6ff,#bc8cff);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.hero p{color:#8b949e;font-size:1.15rem;margin-top:0.5rem;max-width:560px;margin-left:auto;margin-right:auto;line-height:1.6}
+
+/* Demo sections */
+.demo-section{max-width:960px;margin:2.5rem auto 0;padding:0 1.5rem}
+.demo-section h2{font-size:1.3rem;font-weight:600;margin-bottom:0.5rem;display:flex;align-items:center;gap:0.5rem}
+.demo-section .label{font-size:0.75rem;text-transform:uppercase;letter-spacing:0.08em;padding:0.2rem 0.6rem;border-radius:4px;font-weight:600}
+.label-gif{background:rgba(188,140,255,0.15);color:#bc8cff}
+.label-svg{background:rgba(0,212,170,0.15);color:#00d4aa}
+.demo-note{color:#6e7681;font-size:0.85rem;margin-bottom:1rem;line-height:1.5}
+
+.demo-container{border-radius:12px;overflow:hidden;border:1px solid rgba(255,255,255,0.08);box-shadow:0 8px 32px rgba(0,0,0,0.5);background:#161b22}
+.demo-container img,.demo-container object{width:100%;display:block}
+
+/* Steps */
+.steps-grid{max-width:960px;margin:3rem auto 0;padding:0 1.5rem;display:grid;grid-template-columns:repeat(5,1fr);gap:1rem}
+.step-card{background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);border-radius:10px;padding:1.2rem;text-align:center}
+.step-num{font-size:1.8rem;margin-bottom:0.3rem}
+.step-name{font-weight:600;font-size:0.95rem;margin-bottom:0.3rem}
+.step-desc{color:#8b949e;font-size:0.8rem;line-height:1.4}
+
+/* CTA */
+.cta{display:flex;gap:1rem;flex-wrap:wrap;justify-content:center;margin-top:2.5rem;padding:0 1.5rem}
+.btn{padding:0.75rem 1.5rem;border-radius:8px;text-decoration:none;font-weight:600;font-size:0.95rem;transition:all 0.2s}
 .btn-primary{background:linear-gradient(135deg,#238636,#2ea043);color:#fff}
-.btn-primary:hover{transform:translateY(-2px);box-shadow:0 4px 12px rgba(35,134,54,.4)}
-.btn-secondary{background:#21262d;color:#58a6ff;border:1px solid #30363d}
-.btn-secondary:hover{background:#30363d}
-.install{margin-top:2rem;background:#161b22;border:1px solid #30363d;border-radius:8px;padding:1rem 2rem;font-family:'JetBrains Mono',monospace;font-size:1rem;color:#7ee787;cursor:pointer;position:relative}
-.install:hover::after{content:'📋 Click to copy';position:absolute;top:-2rem;right:0;background:#30363d;padding:.3rem .6rem;border-radius:4px;font-size:.75rem;color:#8b949e}
-footer{margin-top:3rem;color:#484f58;font-size:.85rem}
+.btn-primary:hover{transform:translateY(-2px);box-shadow:0 4px 16px rgba(35,134,54,0.4)}
+.btn-ghost{background:transparent;color:#58a6ff;border:1px solid #30363d}
+.btn-ghost:hover{background:rgba(88,166,255,0.08)}
+.btn-accent{background:rgba(0,212,170,0.12);color:#00d4aa;border:1px solid rgba(0,212,170,0.3)}
+.btn-accent:hover{background:rgba(0,212,170,0.2)}
+
+.install{max-width:420px;margin:2rem auto 0;background:#161b22;border:1px solid #30363d;border-radius:8px;padding:0.9rem 1.8rem;font-family:'JetBrains Mono',monospace;font-size:1rem;color:#7ee787;text-align:center;cursor:pointer;transition:all 0.2s}
+.install:hover{border-color:#7ee787;box-shadow:0 0 12px rgba(126,231,135,0.15)}
+
+/* Footer */
+footer{text-align:center;padding:3rem 1.5rem 2rem;color:#484f58;font-size:0.85rem}
+footer a{color:#58a6ff;text-decoration:none}
+
+@media(max-width:700px){
+  .steps-grid{grid-template-columns:repeat(2,1fr)}
+  .hero h1{font-size:1.8rem}
+}
 </style>
 </head>
 <body>
-<h1>📼 Agent VCR</h1>
-<p class="sub">Time-travel debugging for AI agents — Record, Rewind, Edit, Resume</p>
-<div class="demo-container">
-<object data="demo.svg" type="image/svg+xml" width="100%">
-<img src="demo.svg" alt="Agent VCR Demo">
-</object>
+
+<!-- Nav -->
+<nav class="nav">
+  <div class="nav-inner">
+    <a href="index.html" class="nav-logo">📼 Agent VCR</a>
+    <div class="nav-links">
+      <a href="index.html">Docs</a>
+      <a href="sentinel/">🛡️ Sentinel</a>
+      <a href="dev/bench/">📊 Benchmarks</a>
+      <a href="https://github.com/ixchio/agent-vcr" target="_blank">GitHub ↗</a>
+    </div>
+  </div>
+</nav>
+
+<!-- Hero -->
+<section class="hero">
+  <h1>📼 Agent VCR — Live Demo</h1>
+  <p>Watch all 5 features running in a real terminal. Record → Rewind → Fork → Ghost Replay → Sentinel.</p>
+</section>
+
+<!-- What You'll See -->
+<div class="steps-grid">
+  <div class="step-card">
+    <div class="step-num">📹</div>
+    <div class="step-name">Record</div>
+    <div class="step-desc">4 agent steps captured with full state</div>
+  </div>
+  <div class="step-card">
+    <div class="step-num">⏮️</div>
+    <div class="step-name">Rewind</div>
+    <div class="step-desc">Jump to any frame, inspect state, diff</div>
+  </div>
+  <div class="step-card">
+    <div class="step-num">✏️</div>
+    <div class="step-name">Fork</div>
+    <div class="step-desc">Change framework, resume from frame 1</div>
+  </div>
+  <div class="step-card">
+    <div class="step-num">👻</div>
+    <div class="step-name">Ghost Replay</div>
+    <div class="step-desc">Same task: 0 tokens, $0.00, 0.4ms</div>
+  </div>
+  <div class="step-card">
+    <div class="step-num">🛡️</div>
+    <div class="step-name">Sentinel</div>
+    <div class="step-desc">Catches bad code, agent self-corrects</div>
+  </div>
 </div>
+
+<!-- Animated GIF Demo -->
+<section class="demo-section" style="margin-top:2.5rem">
+  <h2><span class="label label-gif">Animated</span> Terminal Recording</h2>
+  <p class="demo-note">Recorded with asciinema from <code>python examples/showcase_demo.py</code> — this is real output, not a mockup.</p>
+  <div class="demo-container">
+    <img src="demo.gif" alt="Agent VCR animated demo — Record, Rewind, Fork, Ghost Replay, Sentinel" loading="lazy">
+  </div>
+</section>
+
+<!-- SVG Demo (CSS animated, works in standalone pages) -->
+<section class="demo-section" style="margin-top:3rem">
+  <h2><span class="label label-svg">Interactive</span> SVG Recording</h2>
+  <p class="demo-note">CSS-animated SVG via termtosvg — plays inline with full terminal styling. Best viewed in a modern browser.</p>
+  <div class="demo-container">
+    <object data="demo.svg" type="image/svg+xml" width="100%" aria-label="Agent VCR SVG demo">
+      <img src="demo.gif" alt="Agent VCR Demo fallback">
+    </object>
+  </div>
+</section>
+
+<!-- CTA -->
 <div class="cta">
-<a href="https://github.com/ixchio/agent-vcr" class="btn btn-primary" target="_blank">⭐ Star on GitHub</a>
-<a href="https://pypi.org/project/ai-agent-vcr/" class="btn btn-secondary" target="_blank">📦 PyPI</a>
-<a href="index.html" class="btn btn-secondary">📖 Full Docs</a>
+  <a href="https://github.com/ixchio/agent-vcr" class="btn btn-primary" target="_blank">⭐ Star on GitHub</a>
+  <a href="https://pypi.org/project/ai-agent-vcr/" class="btn btn-ghost" target="_blank">📦 PyPI</a>
+  <a href="index.html" class="btn btn-ghost">📖 Full Docs</a>
+  <a href="sentinel/" class="btn btn-accent">🛡️ Sentinel Docs</a>
 </div>
+
 <div class="install" onclick="navigator.clipboard.writeText('pip install ai-agent-vcr');this.style.color='#58a6ff';this.textContent='✓ Copied!';setTimeout(()=>{this.textContent='pip install ai-agent-vcr';this.style.color='#7ee787'},1500)">
-pip install ai-agent-vcr
+  pip install ai-agent-vcr
 </div>
-<footer>MIT License · Built by <a href="https://github.com/ixchio" style="color:#58a6ff">ixchio</a></footer>
+
+<footer>
+  MIT License · Built by <a href="https://github.com/ixchio">ixchio</a> · Part of the <a href="https://openhands.dev/community">OpenHands Champions Program</a>
+</footer>
+
 </body>
 </html>
