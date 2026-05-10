@@ -24,7 +24,7 @@
 
 <!-- DEMO -->
 <p align="center">
-  <img src="docs/demo.svg" alt="Agent VCR Demo" width="800">
+  <img src="docs/demo.gif" alt="Agent VCR Demo" width="800">
 </p>
 
 <br>
