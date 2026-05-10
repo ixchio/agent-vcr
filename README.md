@@ -2,87 +2,163 @@
 
 # 📼 Agent VCR
 
-**Time-travel debugging for AI agents.**
+### Time-travel debugging for AI agents.
 
-When your agent fails on step 8 of 10, LangSmith shows you what happened.
-**Agent VCR lets you rewind to step 8, fix it, and resume — without re-running anything.**
+**Record · Rewind · Edit · Resume — without re-running anything.**
 
-[![CI](https://github.com/ixchio/agent-vcr/actions/workflows/ci.yml/badge.svg)](https://github.com/ixchio/agent-vcr/actions)
-[![PyPI](https://badge.fury.io/py/ai-agent-vcr.svg)](https://badge.fury.io/py/ai-agent-vcr)
-[![codecov](https://codecov.io/gh/ixchio/agent-vcr/branch/main/graph/badge.svg)](https://codecov.io/gh/ixchio/agent-vcr)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
+<br>
 
-[**Docs**](https://ixchio.github.io/agent-vcr/) · [**Examples**](examples/) · [**🛡️ Sentinel**](#️-openhands-sentinel)
+<a href="https://pypi.org/project/ai-agent-vcr/"><img src="https://img.shields.io/pypi/v/ai-agent-vcr?style=flat-square&color=00d4aa&label=PyPI" alt="PyPI"></a>
+<a href="https://github.com/ixchio/agent-vcr/actions"><img src="https://img.shields.io/github/actions/workflow/status/ixchio/agent-vcr/ci.yml?style=flat-square&label=CI" alt="CI"></a>
+<a href="https://codecov.io/gh/ixchio/agent-vcr"><img src="https://img.shields.io/codecov/c/github/ixchio/agent-vcr?style=flat-square&color=58a6ff" alt="Coverage"></a>
+<a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/license-MIT-yellow?style=flat-square" alt="License"></a>
+<a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.10+-blue?style=flat-square" alt="Python"></a>
+
+<br><br>
+
+[📖 Docs](https://ixchio.github.io/agent-vcr/) · [🚀 Examples](examples/) · [🛡️ Sentinel](https://ixchio.github.io/agent-vcr/sentinel/) · [📊 Benchmarks](https://ixchio.github.io/agent-vcr/dev/bench/)
+
+<br>
 
 </div>
 
+<!-- DEMO -->
+<p align="center">
+  <img src="docs/demo.svg" alt="Agent VCR Demo" width="800">
+</p>
+
+<br>
+
+<div align="center">
+  <code>pip install ai-agent-vcr</code>
+  <br><br>
+  No API keys. No cloud. Runs entirely locally.
+</div>
+
+<br>
+
 ---
 
-## The Problem
+<br>
 
+<div align="center">
+
+### LangSmith shows you what happened. Agent VCR lets you **change** it.
+
+</div>
+
+<br>
+
+<table align="center">
+<tr>
+<td width="50%">
+
+**❌ Without Agent VCR**
 ```
 Agent fails at step 8 of 10
-        ↓
+         ↓
 You patch the code
-        ↓
+         ↓
 Re-run ALL 10 steps from scratch
-        ↓
-Wasted: 2 minutes + $0.04 in tokens
-        ↓
+         ↓
+$0.04 + 2 minutes wasted
+         ↓
 Repeat for every bug
 ```
 
-LangSmith, LangFuse, Arize — they're all read-only. They show you what happened. None of them let you change it.
+</td>
+<td width="50%">
 
-## The Solution
-
+**✅ With Agent VCR**
 ```python
-# 1. Record your agent — 3 lines
-recorder = VCRRecorder()
-recorder.start_session("debug_run")
-recorder.save()
+player = VCRPlayer.load("run.vcr")
 
-# 2. See exactly what happened at step 8
-player = VCRPlayer.load(".vcr/debug_run.vcr")
-state = player.goto_frame(7)   # {'prompt': 'bad prompt', 'context': ...}
+# Jump to step 8, see what went wrong
+state = player.goto_frame(7)
 
-# 3. Fix it and resume from there
-player.resume(my_agent, config=ResumeConfig(
+# Fix it and resume — skip steps 0-7
+player.resume(agent, ResumeConfig(
     from_frame=7,
-    state_overrides={"prompt": "fixed prompt"}
+    state_overrides={"prompt": "fixed"}
 ))
-# Steps 0-6: skipped. Step 7 onwards: re-executed with fix.
 ```
+
+</td>
+</tr>
+</table>
+
+<br>
 
 ---
 
-## Install
+<br>
 
-```bash
-pip install ai-agent-vcr
-```
+## ✨ Features
 
-No API keys. No cloud. Runs entirely locally.
+<table>
+<tr>
+<td width="33%" valign="top">
 
----
+#### ⏮️ Time Travel
+Jump to any step. Full state snapshot at every node. Inspect input, output, diffs.
 
-## What It Does
+</td>
+<td width="33%" valign="top">
 
-| Feature | What it means |
-|---|---|
-| **⏮ Time Travel** | Jump to any step. Full input/output state snapshot at every node. |
-| **✏️ State Injection** | Edit the state at any frame — fix a prompt, patch tool output, inject context — then resume. |
-| **🌿 Session Forking** | Fork from any frame to create parallel runs. Compare how fixes change downstream behavior. |
-| **🔒 ACID Transactions** | BEGIN / SAVEPOINT / ROLLBACK / COMMIT backed by git. Rollback physically deletes files from disk — not just state. |
-| **👻 Ghost Replay** | Save successful runs. Next time you hit the same task: zero LLM calls, instant results, 100% cost savings. |
-| **🛡️ Sentinel Guardian** | Real-time AST analysis on every file an AI agent writes. Catches duplicate functions, complexity spikes, parameter bloat — and makes the agent self-correct. |
-| **🖥 TUI Debugger** | Run `vcr-tui` in your terminal. `←/→` navigate frames, `e` edit state, `d` diff, `r` resume. |
-| **📊 DAG Visualization** | See your agent's execution as a directed acyclic graph. Fork branches, parallel paths, all visible. |
-| **📡 Live Dashboard** | Run `vcr-server`, open `localhost:8000`. WebSocket streaming, state diffing, session browser. |
-| **⚡ <5ms Overhead** | P99 recording latency under 5ms. Continuously benchmarked in CI. Safe for production. |
-| **🔌 Framework Agnostic** | Native integrations for LangGraph and CrewAI. Decorator for raw Python. |
-| **🗂 JSONL Storage** | Human-readable, git-diffable, append-only. Zero binary formats. |
+#### ✏️ Edit & Resume
+Fix a prompt, patch a tool output, inject context — then resume from that point. No re-runs.
+
+</td>
+<td width="33%" valign="top">
+
+#### 🌿 Session Forking
+Fork from any frame. Create parallel runs. Compare how fixes change downstream behavior.
+
+</td>
+</tr>
+<tr>
+<td width="33%" valign="top">
+
+#### 👻 Ghost Replay
+Save successful runs. Replay the same task instantly — zero tokens, zero cost, 100% savings.
+
+</td>
+<td width="33%" valign="top">
+
+#### 🔒 ACID Transactions
+`BEGIN / SAVEPOINT / ROLLBACK / COMMIT` backed by git. Rollback deletes files from disk.
+
+</td>
+<td width="33%" valign="top">
+
+#### 🛡️ Sentinel Guardian
+Real-time AST analysis catches duplicate functions, complexity spikes, and makes the agent self-correct.
+
+</td>
+</tr>
+<tr>
+<td width="33%" valign="top">
+
+#### 🖥️ TUI Debugger
+`vcr-tui` in your terminal. Navigate frames, edit state, diff, resume — all keyboard-driven.
+
+</td>
+<td width="33%" valign="top">
+
+#### 📡 Live Dashboard
+`vcr-server` → `localhost:8000`. WebSocket streaming, session browser, DAG visualization.
+
+</td>
+<td width="33%" valign="top">
+
+#### ⚡ <5ms Overhead
+P99 under 5ms. Benchmarked in CI on every commit. Safe for production.
+
+</td>
+</tr>
+</table>
+
+<br>
 
 ---
 
@@ -393,19 +469,25 @@ sentinel scan ./my-ai-project
 
 ## How It Compares
 
-| Feature | Agent VCR | LangSmith | LangFuse | Arize Phoenix |
-|---|:---:|:---:|:---:|:---:|
-| Record execution traces | ✅ | ✅ | ✅ | ✅ |
-| Time-travel to any step | **✅** | ❌ | ❌ | ❌ |
-| **Edit state & resume** | **✅** | ❌ | ❌ | ❌ |
-| Fork from any frame | **✅** | ❌ | ❌ | ❌ |
-| **ACID transactions (filesystem rollback)** | **✅** | ❌ | ❌ | ❌ |
-| **Ghost Replay (zero-cost task replay)** | **✅** | ❌ | ❌ | ❌ |
-| Real-time code guardian | **✅ Sentinel** | ❌ | ❌ | ❌ |
-| Terminal TUI debugger | **✅** | ❌ | ❌ | ❌ |
-| Self-hosted / local-first | ✅ | ❌ Cloud | ✅ | ✅ |
-| Git-friendly format | **✅ JSONL** | ❌ | ❌ | ❌ |
-| Setup lines of code | **3** | ~15 | ~10 | ~10 |
+<table>
+<tr>
+<th>Feature</th>
+<th>📼 Agent VCR</th>
+<th>LangSmith</th>
+<th>LangFuse</th>
+<th>Arize Phoenix</th>
+</tr>
+<tr><td>Record traces</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td></tr>
+<tr><td><b>Time-travel to any step</b></td><td><b>✅</b></td><td>❌</td><td>❌</td><td>❌</td></tr>
+<tr><td><b>Edit state & resume</b></td><td><b>✅</b></td><td>❌</td><td>❌</td><td>❌</td></tr>
+<tr><td><b>Fork from any frame</b></td><td><b>✅</b></td><td>❌</td><td>❌</td><td>❌</td></tr>
+<tr><td><b>ACID filesystem rollback</b></td><td><b>✅</b></td><td>❌</td><td>❌</td><td>❌</td></tr>
+<tr><td><b>Ghost Replay (zero-cost)</b></td><td><b>✅</b></td><td>❌</td><td>❌</td><td>❌</td></tr>
+<tr><td><b>Code quality guardian</b></td><td><b>✅ Sentinel</b></td><td>❌</td><td>❌</td><td>❌</td></tr>
+<tr><td>TUI debugger</td><td><b>✅</b></td><td>❌</td><td>❌</td><td>❌</td></tr>
+<tr><td>Self-hosted / local</td><td>✅</td><td>❌ Cloud</td><td>✅</td><td>✅</td></tr>
+<tr><td>Setup</td><td><b>3 lines</b></td><td>~15</td><td>~10</td><td>~10</td></tr>
+</table>
 
 ---
 
@@ -577,8 +659,27 @@ MIT — see [LICENSE](LICENSE).
 
 ---
 
+<br>
+
 <div align="center">
-  <strong>LangSmith shows you what happened. Agent VCR lets you change it.</strong>
-  <br><br>
-  <code>pip install ai-agent-vcr</code>
+
+### 📼
+
+**LangSmith shows you what happened.**
+**Agent VCR lets you change it.**
+
+<br>
+
+```
+pip install ai-agent-vcr
+```
+
+<br>
+
+<a href="https://github.com/ixchio/agent-vcr">⭐ Star on GitHub</a> · <a href="https://pypi.org/project/ai-agent-vcr/">📦 PyPI</a> · <a href="https://ixchio.github.io/agent-vcr/">📖 Docs</a>
+
+<br>
+
+<sub>Built with 🤍 by <a href="https://github.com/ixchio">ixchio</a> · MIT License</sub>
+
 </div>
