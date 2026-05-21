@@ -1,0 +1,9 @@
+{
+  "generated_by": "scripts/generate_bench_dashboard.py",
+  "groups": {
+    "core": [],
+    "time_travel": [],
+    "ghost_replay": []
+  },
+  "total_benchmarks": 0
+}
