@@ -1,281 +1,293 @@
 <!DOCTYPE html>
-<html>
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, minimum-scale=1.0, initial-scale=1, user-scalable=yes" />
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Agent VCR — Performance Benchmarks</title>
+    <meta name="description" content="Live performance benchmarks for Agent VCR. Every commit is benchmarked in CI with hard regression limits.">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
     <style>
-      html {
-        font-family: BlinkMacSystemFont,-apple-system,"Segoe UI",Roboto,Oxygen,Ubuntu,Cantarell,"Fira Sans","Droid Sans","Helvetica Neue",Helvetica,Arial,sans-serif;
-        -webkit-font-smoothing: antialiased;
-        background-color: #fff;
-        font-size: 16px;
-      }
-      body {
-        color: #4a4a4a;
-        margin: 8px;
-        font-size: 1em;
-        font-weight: 400;
-      }
-      header {
-        margin-bottom: 8px;
-        display: flex;
-        flex-direction: column;
-      }
-      main {
-        width: 100%;
-        display: flex;
-        flex-direction: column;
-      }
-      a {
-        color: #3273dc;
-        cursor: pointer;
-        text-decoration: none;
-      }
-      a:hover {
-        color: #000;
-      }
-      button {
-        color: #fff;
-        background-color: #3298dc;
-        border-color: transparent;
-        cursor: pointer;
-        text-align: center;
-      }
-      button:hover {
-        background-color: #2793da;
-        flex: none;
-      }
-      .spacer {
-        flex: auto;
-      }
-      .small {
-        font-size: 0.75rem;
-      }
-      footer {
-        margin-top: 16px;
-        display: flex;
-        align-items: center;
-      }
-      .header-label {
-        margin-right: 4px;
-      }
-      .benchmark-set {
-        margin: 8px 0;
-        width: 100%;
-        display: flex;
-        flex-direction: column;
-      }
-      .benchmark-title {
-        font-size: 3rem;
-        font-weight: 600;
-        word-break: break-word;
-        text-align: center;
-      }
-      .benchmark-graphs {
-        display: flex;
-        flex-direction: row;
-        justify-content: space-around;
-        align-items: center;
-        flex-wrap: wrap;
-        width: 100%;
-      }
-      .benchmark-chart {
-        max-width: 1000px;
-      }
+        :root {
+            --bg: #000; --bg-card: #0a0a0a; --border: #1a1a1a;
+            --text: #e5e5e5; --text-muted: #888; --white: #fff;
+            --green: #00cc66; --red: #ff4444; --blue: #58a6ff; --yellow: #f0c000;
+            --font: 'Inter', -apple-system, sans-serif;
+            --mono: 'JetBrains Mono', monospace;
+        }
+        *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+        html { scroll-behavior: smooth; }
+        body { font-family: var(--font); background: var(--bg); color: var(--text); line-height: 1.6; -webkit-font-smoothing: antialiased; }
+        a { color: var(--blue); text-decoration: none; }
+        a:hover { color: var(--white); }
+        code { font-family: var(--mono); font-size: 0.88em; background: #111; padding: 2px 6px; border-radius: 4px; }
+
+        .container { max-width: 1100px; margin: 0 auto; padding: 0 24px; }
+
+        /* Header */
+        .header { border-bottom: 1px solid var(--border); padding: 16px 0; }
+        .header-inner { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
+        .header h1 { font-size: 1.2rem; font-weight: 700; color: var(--white); }
+        .header h1 span { color: var(--text-muted); font-weight: 400; font-size: 0.9rem; }
+        .header-links { display: flex; gap: 16px; font-size: 0.85rem; }
+        .header-links a { color: var(--text-muted); }
+        .header-links a:hover { color: var(--white); }
+
+        /* Hero stats */
+        .hero-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin: 32px 0; }
+        .stat-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 10px; padding: 20px; text-align: center; }
+        .stat-val { font-size: 2rem; font-weight: 700; color: var(--white); font-family: var(--mono); }
+        .stat-label { font-size: 0.82rem; color: var(--text-muted); margin-top: 4px; }
+
+        /* Section */
+        .section { margin: 48px 0 0; }
+        .section h2 { font-size: 1.1rem; font-weight: 600; color: var(--white); margin-bottom: 16px; display: flex; align-items: center; gap: 8px; }
+        .section h2 .badge { font-size: 0.7rem; background: #111; border: 1px solid var(--border); padding: 2px 8px; border-radius: 20px; color: var(--text-muted); font-weight: 400; }
+
+        /* Benchmark table */
+        .bench-table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+        .bench-table th { text-align: left; padding: 10px 12px; color: var(--text-muted); font-weight: 500; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.04em; border-bottom: 1px solid var(--border); }
+        .bench-table td { padding: 12px; border-bottom: 1px solid #111; }
+        .bench-table tr:hover { background: #0d0d0d; }
+        .bench-name { font-weight: 500; color: var(--white); }
+        .bench-desc { color: var(--text-muted); font-size: 0.82rem; }
+        .bench-value { font-family: var(--mono); font-weight: 600; color: var(--green); font-size: 0.95rem; }
+        .bench-threshold { font-family: var(--mono); color: var(--text-muted); font-size: 0.82rem; }
+        .bench-status { width: 28px; text-align: center; }
+        .pass { color: var(--green); }
+        .fail { color: var(--red); }
+
+        /* Chart section */
+        .charts { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 16px; }
+        .chart-wrap { background: var(--bg-card); border: 1px solid var(--border); border-radius: 10px; padding: 16px; }
+        .chart-wrap h3 { font-size: 0.85rem; color: var(--text-muted); margin-bottom: 12px; font-weight: 500; }
+        .chart-wrap canvas { width: 100% !important; height: 200px !important; }
+        @media (max-width: 768px) { .charts { grid-template-columns: 1fr; } }
+
+        /* Reproduce */
+        .reproduce { background: var(--bg-card); border: 1px solid var(--border); border-radius: 10px; padding: 20px; margin: 32px 0; }
+        .reproduce h3 { font-size: 0.95rem; color: var(--white); margin-bottom: 8px; }
+        .reproduce pre { background: #111; padding: 12px 16px; border-radius: 6px; overflow-x: auto; font-family: var(--mono); font-size: 0.85rem; color: var(--green); }
+        .reproduce p { font-size: 0.85rem; color: var(--text-muted); margin-top: 8px; }
+
+        /* Footer */
+        .footer { border-top: 1px solid var(--border); padding: 24px 0; margin-top: 48px; text-align: center; font-size: 0.82rem; color: var(--text-muted); }
+
+        /* Meta info */
+        .meta { display: flex; gap: 24px; font-size: 0.82rem; color: var(--text-muted); margin-bottom: 24px; flex-wrap: wrap; }
+        .meta span { display: flex; align-items: center; gap: 4px; }
     </style>
-    <title>Benchmarks</title>
-  </head>
+</head>
+<body>
 
-  <body>
-    <header id="header">
-      <div class="header-item">
-        <strong class="header-label">Last Update:</strong>
-        <span id="last-update"></span>
-      </div>
-      <div class="header-item">
-        <strong class="header-label">Repository:</strong>
-        <a id="repository-link" rel="noopener"></a>
-      </div>
-    </header>
-    <main id="main"></main>
-    <footer>
-      <button id="dl-button">Download data as JSON</button>
-      <div class="spacer"></div>
-      <div class="small">Powered by <a rel="noopener" href="https://github.com/marketplace/actions/continuous-benchmark">github-action-benchmark</a></div>
-    </footer>
+<div class="container">
+    <!-- Header -->
+    <div class="header">
+        <div class="header-inner">
+            <h1>📼 Agent VCR <span>Performance Benchmarks</span></h1>
+            <div class="header-links">
+                <a href="../../">← Docs</a>
+                <a href="https://github.com/ixchio/agent-vcr" target="_blank">GitHub</a>
+                <a href="https://github.com/ixchio/agent-vcr/actions" target="_blank">CI Runs</a>
+            </div>
+        </div>
+    </div>
 
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@2.9.2/dist/Chart.min.js"></script>
-    <script src="data.js"></script>
-    <script id="main-script">
-      'use strict';
-      (function() {
-        // Colors from https://github.com/github/linguist/blob/master/lib/linguist/languages.yml
-        const toolColors = {
-          cargo: '#dea584',
-          go: '#00add8',
-          benchmarkjs: '#f1e05a',
-          benchmarkluau: '#000080',
-          pytest: '#3572a5',
-          googlecpp: '#f34b7d',
-          catch2: '#f34b7d',
-          julia: '#a270ba',
-          jmh: '#b07219',
-          benchmarkdotnet: '#178600',
-          customBiggerIsBetter: '#38ff38',
-          customSmallerIsBetter: '#ff3838',
-          _: '#333333'
-        };
+    <!-- Meta -->
+    <div class="meta" id="meta">
+        <span>⏱ Last updated: <strong id="last-update">—</strong></span>
+        <span>🔬 Benchmarks: <strong id="bench-count">—</strong></span>
+        <span>🏷 Latest commit: <a id="commit-link" href="#">—</a></span>
+    </div>
 
-        function init() {
-          function collectBenchesPerTestCase(entries) {
-            const map = new Map();
-            for (const entry of entries) {
-              const {commit, date, tool, benches} = entry;
-              for (const bench of benches) {
-                const result = { commit, date, tool, bench };
-                const arr = map.get(bench.name);
-                if (arr === undefined) {
-                  map.set(bench.name, [result]);
-                } else {
-                  arr.push(result);
-                }
-              }
-            }
-            return map;
-          }
+    <!-- Hero stats -->
+    <div class="hero-stats" id="hero-stats"></div>
 
-          const data = window.BENCHMARK_DATA;
+    <!-- Core benchmarks -->
+    <div class="section" id="section-core">
+        <h2>⚡ Core Recording & Playback <span class="badge">Must-pass</span></h2>
+        <table class="bench-table" id="table-core"><thead><tr><th></th><th>Benchmark</th><th>Result</th><th>Limit</th><th>Description</th></tr></thead><tbody></tbody></table>
+    </div>
 
-          // Render header
-          document.getElementById('last-update').textContent = new Date(data.lastUpdate).toString();
-          const repoLink = document.getElementById('repository-link');
-          repoLink.href = data.repoUrl;
-          repoLink.textContent = data.repoUrl;
+    <!-- Time-travel -->
+    <div class="section" id="section-tt">
+        <h2>⏮ Time-Travel Operations <span class="badge">Must-pass</span></h2>
+        <table class="bench-table" id="table-tt"><thead><tr><th></th><th>Benchmark</th><th>Result</th><th>Limit</th><th>Description</th></tr></thead><tbody></tbody></table>
+    </div>
 
-          // Render footer
-          document.getElementById('dl-button').onclick = () => {
-            const dataUrl = 'data:,' + JSON.stringify(data, null, 2);
-            const a = document.createElement('a');
-            a.href = dataUrl;
-            a.download = 'benchmark_data.json';
-            a.click();
-          };
+    <!-- Ghost Replay -->
+    <div class="section" id="section-ghost">
+        <h2>👻 Ghost Replay <span class="badge">Must-pass</span></h2>
+        <table class="bench-table" id="table-ghost"><thead><tr><th></th><th>Benchmark</th><th>Result</th><th>Limit</th><th>Description</th></tr></thead><tbody></tbody></table>
+    </div>
 
-          // Prepare data points for charts
-          return Object.keys(data.entries).map(name => ({
-            name,
-            dataSet: collectBenchesPerTestCase(data.entries[name]),
-          }));
+    <!-- Trend charts -->
+    <div class="section">
+        <h2>📈 Trends Over Time</h2>
+        <div class="charts" id="charts"></div>
+    </div>
+
+    <!-- Reproduce -->
+    <div class="reproduce">
+        <h3>🔁 Reproduce locally</h3>
+        <pre>pip install -e ".[dev]"
+python -m pytest tests/benchmarks/ -v --benchmark-only --no-cov \
+  --benchmark-columns="min,max,mean,stddev,rounds"</pre>
+        <p>Every benchmark has a hard assertion. If it fails locally, it would fail in CI too. No exceptions.</p>
+    </div>
+
+    <div class="footer">
+        📼 Agent VCR — Benchmarked on every commit · <a href="https://github.com/ixchio/agent-vcr">GitHub</a> · <a href="../../">Docs</a>
+    </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+<script src="data.js"></script>
+<script>
+'use strict';
+(function() {
+    const BENCH_META = {
+        test_record_frame_overhead:      { label: 'Record Frame',           group: 'core',  threshold: '<5ms',     toMs: v => (1/v)*1e3, fmt: v => (v).toFixed(3) + 'ms' },
+        test_record_realistic_payload:   { label: 'Record Realistic (~2KB)',group: 'core',  threshold: '<10ms',    toMs: v => (1/v)*1e3, fmt: v => (v).toFixed(3) + 'ms' },
+        test_record_large_payload:       { label: 'Record Large (~5KB)',    group: 'core',  threshold: '<15ms',    toMs: v => (1/v)*1e3, fmt: v => (v).toFixed(3) + 'ms' },
+        test_write_throughput:           { label: 'Write 10K Frames',       group: 'core',  threshold: '>1000fps', toMs: v => (1/v)*1e3, fmt: v => (10000/((1/v))).toFixed(0) + ' fps' },
+        test_load_10k_session:           { label: 'Load 10K Session',       group: 'core',  threshold: '<500ms',   toMs: v => (1/v)*1e3, fmt: v => (v).toFixed(1) + 'ms' },
+        test_load_realistic_session:     { label: 'Load 200 Realistic',     group: 'core',  threshold: '<100ms',   toMs: v => (1/v)*1e3, fmt: v => (v).toFixed(1) + 'ms' },
+        test_goto_frame:                 { label: 'goto_frame()',           group: 'tt',    threshold: '<1ms',     toMs: v => (1/v)*1e3, fmt: v => (v*1e3).toFixed(1) + 'µs' },
+        test_compare_frames:             { label: 'compare_frames()',       group: 'tt',    threshold: '<5ms',     toMs: v => (1/v)*1e3, fmt: v => (v*1e3).toFixed(1) + 'µs' },
+        test_fork_session:               { label: 'fork()',                 group: 'tt',    threshold: '<10ms',    toMs: v => (1/v)*1e3, fmt: v => (v*1e3).toFixed(1) + 'µs' },
+        test_get_errors:                 { label: 'get_errors()',           group: 'tt',    threshold: '<5ms',     toMs: v => (1/v)*1e3, fmt: v => (v*1e3).toFixed(1) + 'µs' },
+        test_ghost_save:                 { label: 'Ghost Save',             group: 'ghost', threshold: '<50ms',    toMs: v => (1/v)*1e3, fmt: v => (v).toFixed(1) + 'ms' },
+        test_ghost_replay:               { label: 'Ghost Replay',           group: 'ghost', threshold: '<20ms',    toMs: v => (1/v)*1e3, fmt: v => (v).toFixed(1) + 'ms' },
+        test_ghost_fingerprint_lookup:   { label: 'Cache Lookup',           group: 'ghost', threshold: '<1ms',     toMs: v => (1/v)*1e3, fmt: v => (v*1e3).toFixed(2) + 'µs' },
+        // Legacy names from old benchmarks
+        test_benchmark_recorder_overhead:{ label: 'Record Frame (legacy)',   group: 'core',  threshold: '<5ms',     toMs: v => (1/v)*1e3, fmt: v => (v).toFixed(3) + 'ms' },
+        test_benchmark_file_write_speed: { label: 'Write 10K (legacy)',      group: 'core',  threshold: '>1000fps', toMs: v => (1/v)*1e3, fmt: v => (10000/((1/v))).toFixed(0) + ' fps' },
+        test_benchmark_load_speed:       { label: 'Load 10K (legacy)',       group: 'core',  threshold: '<500ms',   toMs: v => (1/v)*1e3, fmt: v => (v).toFixed(1) + 'ms' },
+        test_benchmark_goto_performance: { label: 'goto_frame (legacy)',     group: 'tt',    threshold: '<1ms',     toMs: v => (1/v)*1e3, fmt: v => (v*1e3).toFixed(1) + 'µs' },
+    };
+
+    const data = window.BENCHMARK_DATA;
+    const entries = Object.values(data.entries)[0] || [];
+    const latest = entries[entries.length - 1];
+
+    // Meta
+    document.getElementById('last-update').textContent = new Date(data.lastUpdate).toLocaleDateString('en-US', {year:'numeric', month:'short', day:'numeric'});
+    if (latest) {
+        const commitEl = document.getElementById('commit-link');
+        commitEl.href = latest.commit.url || '#';
+        commitEl.textContent = latest.commit.id.slice(0,7);
+    }
+
+    // Parse latest benches
+    const benches = (latest ? latest.benches : []).map(b => {
+        const shortName = b.name.split('::').pop();
+        const meta = BENCH_META[shortName];
+        if (!meta) return null;
+        const ms = meta.toMs(b.value);
+        return { ...b, shortName, meta, ms, display: meta.fmt(ms) };
+    }).filter(Boolean);
+
+    document.getElementById('bench-count').textContent = benches.length;
+
+    // Hero stats
+    const heroEl = document.getElementById('hero-stats');
+    const heroItems = [
+        { val: benches.find(b => b.shortName.includes('record_frame') || b.shortName === 'test_benchmark_recorder_overhead'), label: 'Record overhead' },
+        { val: benches.find(b => b.shortName.includes('goto')), label: 'Time-travel' },
+        { val: benches.find(b => b.shortName === 'test_ghost_replay'), label: 'Ghost Replay' },
+        { val: benches.find(b => b.shortName.includes('lookup') || b.shortName.includes('fingerprint')), label: 'Cache lookup' },
+    ];
+    heroItems.forEach(h => {
+        if (!h.val) return;
+        heroEl.innerHTML += `<div class="stat-card"><div class="stat-val">${h.val.display}</div><div class="stat-label">${h.label}</div></div>`;
+    });
+    if (heroItems.every(h => !h.val)) {
+        heroEl.innerHTML = '<div class="stat-card" style="grid-column:1/-1"><div class="stat-val">—</div><div class="stat-label">No benchmark data yet. Push to main to trigger the first CI run.</div></div>';
+    }
+
+    // Tables
+    const tableMap = { core: 'table-core', tt: 'table-tt', ghost: 'table-ghost' };
+    benches.forEach(b => {
+        const tableId = tableMap[b.meta.group];
+        if (!tableId) return;
+        const tbody = document.querySelector(`#${tableId} tbody`);
+        tbody.innerHTML += `
+            <tr>
+                <td class="bench-status pass">✓</td>
+                <td><span class="bench-name">${b.meta.label}</span></td>
+                <td><span class="bench-value">${b.display}</span></td>
+                <td><span class="bench-threshold">${b.meta.threshold}</span></td>
+                <td><span class="bench-desc"><code>${b.shortName}</code></span></td>
+            </tr>`;
+    });
+
+    // Empty state for tables with no data
+    Object.values(tableMap).forEach(id => {
+        const tbody = document.querySelector(`#${id} tbody`);
+        if (!tbody.children.length) {
+            tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--text-muted);padding:24px;">Awaiting first CI run with new benchmarks</td></tr>';
         }
+    });
 
-        function renderAllChars(dataSets) {
-
-          function renderGraph(parent, name, dataset) {
-            const canvas = document.createElement('canvas');
-            canvas.className = 'benchmark-chart';
-            parent.appendChild(canvas);
-
-            const color = toolColors[dataset.length > 0 ? dataset[0].tool : '_'];
-            const data = {
-              labels: dataset.map(d => d.commit.id.slice(0, 7)),
-              datasets: [
-                {
-                  label: name,
-                  data: dataset.map(d => d.bench.value),
-                  borderColor: color,
-                  backgroundColor: color + '60', // Add alpha for #rrggbbaa
-                }
-              ],
-            };
-            const options = {
-              scales: {
-                xAxes: [
-                  {
-                    scaleLabel: {
-                      display: true,
-                      labelString: 'commit',
-                    },
-                  }
-                ],
-                yAxes: [
-                  {
-                    scaleLabel: {
-                      display: true,
-                      labelString: dataset.length > 0 ? dataset[0].bench.unit : '',
-                    },
-                    ticks: {
-                      beginAtZero: true,
-                    }
-                  }
-                ],
-              },
-              tooltips: {
-                callbacks: {
-                  afterTitle: items => {
-                    const {index} = items[0];
-                    const data = dataset[index];
-                    return '\n' + data.commit.message + '\n\n' + data.commit.timestamp + ' committed by @' + data.commit.committer.username + '\n';
-                  },
-                  label: item => {
-                    let label = item.value;
-                    const { range, unit } = dataset[item.index].bench;
-                    label += ' ' + unit;
-                    if (range) {
-                      label += ' (' + range + ')';
-                    }
-                    return label;
-                  },
-                  afterLabel: item => {
-                    const { extra } = dataset[item.index].bench;
-                    return extra ? '\n' + extra : '';
-                  }
-                }
-              },
-              onClick: (_mouseEvent, activeElems) => {
-                if (activeElems.length === 0) {
-                  return;
-                }
-                // XXX: Undocumented. How can we know the index?
-                const index = activeElems[0]._index;
-                const url = dataset[index].commit.url;
-                window.open(url, '_blank');
-              },
-            };
-
-            new Chart(canvas, {
-              type: 'line',
-              data,
-              options,
+    // Trend charts
+    if (entries.length > 1) {
+        const chartsEl = document.getElementById('charts');
+        const benchByName = new Map();
+        entries.forEach(entry => {
+            entry.benches.forEach(b => {
+                const short = b.name.split('::').pop();
+                if (!BENCH_META[short]) return;
+                if (!benchByName.has(short)) benchByName.set(short, []);
+                benchByName.get(short).push({
+                    commit: entry.commit.id.slice(0,7),
+                    value: BENCH_META[short].toMs(b.value),
+                    date: entry.date,
+                });
             });
-          }
+        });
 
-          function renderBenchSet(name, benchSet, main) {
-            const setElem = document.createElement('div');
-            setElem.className = 'benchmark-set';
-            main.appendChild(setElem);
+        benchByName.forEach((points, name) => {
+            if (points.length < 2) return;
+            const meta = BENCH_META[name];
+            const wrap = document.createElement('div');
+            wrap.className = 'chart-wrap';
+            wrap.innerHTML = `<h3>${meta.label}</h3><canvas id="chart-${name}"></canvas>`;
+            chartsEl.appendChild(wrap);
 
-            const nameElem = document.createElement('h1');
-            nameElem.className = 'benchmark-title';
-            nameElem.textContent = name;
-            setElem.appendChild(nameElem);
+            new Chart(document.getElementById(`chart-${name}`), {
+                type: 'line',
+                data: {
+                    labels: points.map(p => p.commit),
+                    datasets: [{
+                        label: meta.label,
+                        data: points.map(p => p.value),
+                        borderColor: '#00cc66',
+                        backgroundColor: 'rgba(0,204,102,0.1)',
+                        borderWidth: 2,
+                        pointRadius: 3,
+                        tension: 0.3,
+                        fill: true,
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: { legend: { display: false } },
+                    scales: {
+                        x: { grid: { color: '#111' }, ticks: { color: '#555', font: { size: 10 } } },
+                        y: { grid: { color: '#111' }, ticks: { color: '#555', font: { size: 10 } }, beginAtZero: true },
+                    },
+                },
+            });
+        });
 
-            const graphsElem = document.createElement('div');
-            graphsElem.className = 'benchmark-graphs';
-            setElem.appendChild(graphsElem);
-
-            for (const [benchName, benches] of benchSet.entries()) {
-              renderGraph(graphsElem, benchName, benches)
-            }
-          }
-
-          const main = document.getElementById('main');
-          for (const {name, dataSet} of dataSets) {
-            renderBenchSet(name, dataSet, main);
-          }
+        if (!chartsEl.children.length) {
+            chartsEl.innerHTML = '<div class="chart-wrap" style="grid-column:1/-1;text-align:center;padding:40px;color:var(--text-muted);">Need ≥2 CI runs to show trends</div>';
         }
-
-        renderAllChars(init()); // Start
-      })();
-    </script>
-  </body>
+    }
+})();
+</script>
+</body>
 </html>

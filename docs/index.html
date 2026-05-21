@@ -4,9 +4,56 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Agent VCR — Time-Travel Debugging for AI Agents</title>
+    <title>Agent VCR — ACID Transactions & Time-Travel Debugging for AI Agents</title>
     <meta name="description"
-        content="Record your AI agent's execution, rewind to any step, edit the state, and resume — without re-running the entire chain.">
+        content="ACID transactions, time-travel debugging, and zero-cost Ghost Replay for AI agents. Rollback filesystem + state with git reset --hard. Works with LangGraph, CrewAI, or raw Python. Open source, fully local.">
+    <meta name="keywords" content="AI agent debugging, LangGraph time travel, agent rollback, ACID transactions AI, Ghost Replay, CrewAI debugging, LLM observability, agent-vcr, ai-agent-vcr, agent checkpoint, prompt debugging, agentic workflow testing">
+    <meta name="author" content="ixchio">
+    <meta name="robots" content="index, follow">
+    <link rel="canonical" href="https://ixchio.github.io/agent-vcr/">
+
+    <!-- Open Graph / Social -->
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://ixchio.github.io/agent-vcr/">
+    <meta property="og:title" content="Agent VCR — ACID Transactions & Time-Travel Debugging for AI Agents">
+    <meta property="og:description" content="The only tool that rolls back the filesystem, not just the state object. ACID transactions, Ghost Replay (zero-cost re-runs), and Sentinel code guardian. Works with LangGraph, CrewAI, or raw Python.">
+    <meta property="og:image" content="https://ixchio.github.io/agent-vcr/demo.gif">
+
+    <!-- Twitter Card -->
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="Agent VCR — ACID Transactions for AI Agents">
+    <meta name="twitter:description" content="git reset --hard deletes hallucinated files, not just state. Time-travel debugging + Ghost Replay + Sentinel. Open source.">
+    <meta name="twitter:image" content="https://ixchio.github.io/agent-vcr/demo.gif">
+
+    <!-- Structured Data -->
+    <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "SoftwareApplication",
+        "name": "Agent VCR",
+        "alternateName": "ai-agent-vcr",
+        "applicationCategory": "DeveloperApplication",
+        "operatingSystem": "Cross-platform",
+        "description": "ACID transactions, time-travel debugging, and zero-cost Ghost Replay for AI agents. Rollback filesystem + state. Works with LangGraph, CrewAI, or raw Python.",
+        "url": "https://ixchio.github.io/agent-vcr/",
+        "downloadUrl": "https://pypi.org/project/ai-agent-vcr/",
+        "softwareVersion": "0.6.0",
+        "license": "https://opensource.org/licenses/MIT",
+        "author": {
+            "@type": "Person",
+            "name": "ixchio",
+            "url": "https://github.com/ixchio"
+        },
+        "codeRepository": "https://github.com/ixchio/agent-vcr",
+        "programmingLanguage": "Python",
+        "offers": {
+            "@type": "Offer",
+            "price": "0",
+            "priceCurrency": "USD"
+        }
+    }
+    </script>
+
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link
@@ -28,6 +75,7 @@
                 <a href="#integrations">Integrations</a>
                 <a href="#api">API</a>
                 <a href="#compare">Compare</a>
+                <a href="#faq">vs LangGraph</a>
             </nav>
             <div class="nav-actions">
                 <a href="https://github.com/ixchio/agent-vcr" class="btn-ghost" target="_blank">GitHub ↗</a>
@@ -41,12 +89,12 @@
         <div class="hero-inner">
             <div class="hero-pill">v0.6.0 · Open Source · MIT License · 🛡️ Sentinel · 👻 Ghost Replay</div>
             <h1 class="hero-title">
-                Time-travel debugging<br>
+                ACID transactions<br>
                 <span class="hero-title-accent">for AI agents.</span>
             </h1>
             <p class="hero-sub">
-                Your agent failed on step 8 of 10. LangSmith shows you what happened.<br>
-                <strong>Agent VCR lets you rewind, fix it, and resume from step 8.</strong>
+                Your agent failed on step 8 of 10. Observability tools show you what happened.<br>
+                <strong>Agent VCR rolls back the filesystem, replays for free, and resumes from step 8.</strong>
             </p>
             <div class="hero-cta">
                 <a href="#quick-start" class="btn-solid large">Install in 30 seconds</a>
@@ -768,6 +816,67 @@ print(ledger)
                     <h3>Frame Size Guardrails</h3>
                     <p>Detects and warns about oversized VCR frames (the OpenHands issue #7402 pattern) before they pollute the recording.</p>
                 </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- FAQ: WHY NOT LANGGRAPH -->
+    <section class="two-col-section" id="faq">
+        <div class="section-inner">
+            <div class="section-header">
+                <h2>"Why not just use LangGraph's built-in time-travel?"</h2>
+                <p>LangGraph's checkpointer persists graph state at every super-step. If you only need state inspection within LangGraph, it's a solid built-in. But state checkpoints aren't the whole picture.</p>
+            </div>
+            <div style="max-width: 780px; margin: 0 auto;">
+                <table style="width:100%; border-collapse:collapse; font-size:0.92rem;">
+                    <thead>
+                        <tr style="border-bottom:1px solid var(--border);">
+                            <th style="text-align:left; padding:12px 8px; color:var(--text-muted);"></th>
+                            <th style="text-align:center; padding:12px 8px; color:var(--text-muted);">LangGraph Checkpointer</th>
+                            <th style="text-align:center; padding:12px 8px; color:var(--white);">Agent VCR</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr style="border-bottom:1px solid var(--border-light);">
+                            <td style="padding:10px 8px;">Checkpoint in-memory state</td>
+                            <td style="text-align:center;">✅</td>
+                            <td style="text-align:center;">✅</td>
+                        </tr>
+                        <tr style="border-bottom:1px solid var(--border-light);">
+                            <td style="padding:10px 8px;"><strong>Rollback files on disk</strong> (<code>git reset --hard</code>)</td>
+                            <td style="text-align:center;">❌</td>
+                            <td style="text-align:center; color:var(--green);">✅</td>
+                        </tr>
+                        <tr style="border-bottom:1px solid var(--border-light);">
+                            <td style="padding:10px 8px;"><strong>Ghost Replay</strong> (zero tokens, zero cost)</td>
+                            <td style="text-align:center;">❌</td>
+                            <td style="text-align:center; color:var(--green);">✅</td>
+                        </tr>
+                        <tr style="border-bottom:1px solid var(--border-light);">
+                            <td style="padding:10px 8px;"><strong>Sentinel</strong> (real-time AST quality guard)</td>
+                            <td style="text-align:center;">❌</td>
+                            <td style="text-align:center; color:var(--green);">✅</td>
+                        </tr>
+                        <tr style="border-bottom:1px solid var(--border-light);">
+                            <td style="padding:10px 8px;">Works with CrewAI, raw Python, any framework</td>
+                            <td style="text-align:center;">❌ LangGraph only</td>
+                            <td style="text-align:center; color:var(--green);">✅</td>
+                        </tr>
+                        <tr style="border-bottom:1px solid var(--border-light);">
+                            <td style="padding:10px 8px;">JSONL format (git-diffable, streamable)</td>
+                            <td style="text-align:center;">❌ Opaque</td>
+                            <td style="text-align:center; color:var(--green);">✅</td>
+                        </tr>
+                        <tr>
+                            <td style="padding:10px 8px;">Session forking with parallel comparison</td>
+                            <td style="text-align:center;">❌</td>
+                            <td style="text-align:center; color:var(--green);">✅</td>
+                        </tr>
+                    </tbody>
+                </table>
+                <p style="margin-top:1.5rem; color:var(--text-muted); font-size:0.9rem; text-align:center;">
+                    When your agent writes files to disk and then fails, the checkpointer rolls back the state object but <strong style="color:var(--white);">the files stay</strong>. Agent VCR's ACID workspace runs <code>git reset --hard</code> and physically deletes them. That's the difference between "debugger" and "undo."
+                </p>
             </div>
         </div>
     </section>

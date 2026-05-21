@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "ai-agent-vcr"
 version = "0.6.0"
-description = "The DVR for AI Agents - Record, visualize, and time-travel through agent execution"
+description = "ACID transactions, time-travel debugging, and zero-cost Ghost Replay for AI agents. Rollback filesystem + state. Works with LangGraph, CrewAI, or raw Python."
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.9"
@@ -13,13 +13,26 @@ authors = [
     {name = "ixchio", email = "amankumarpandeyin@gmail.com"},
 ]
 keywords = [
-    "ai",
-    "agents",
-    "debugging",
-    "langchain",
+    "ai-agent-debugging",
+    "ai-agent-testing",
+    "agent-framework",
     "langgraph",
-    "observability",
-    "time-travel",
+    "langgraph-time-travel",
+    "langchain",
+    "crewai",
+    "llm-debugging",
+    "llm-observability",
+    "ai-agent-rollback",
+    "agent-checkpoint",
+    "ghost-replay",
+    "acid-transactions",
+    "time-travel-debugging",
+    "agent-vcr",
+    "openhands",
+    "agentic-workflow",
+    "multi-agent",
+    "agent-orchestration",
+    "prompt-debugging",
 ]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -32,6 +45,10 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Topic :: Software Development :: Debuggers",
     "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Software Development :: Testing",
+    "Topic :: Software Development :: Quality Assurance",
+    "Topic :: Software Development :: Version Control :: Git",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
     "pydantic>=2.0.0",

@@ -2,14 +2,14 @@
 
 # 📼 Agent VCR
 
-### Time-travel debugging for AI agents.
-**Record · Rewind · Edit · Resume — without re-running anything.**
+### ACID transactions, time-travel debugging, and zero-cost replay for AI agents.
+**The only tool that rolls back the filesystem — not just the state object.**
 <br>
 <a href="https://pypi.org/project/ai-agent-vcr/"><img src="https://img.shields.io/pypi/v/ai-agent-vcr?style=flat-square&color=00d4aa&label=PyPI" alt="PyPI"></a>
 <a href="https://github.com/ixchio/agent-vcr/actions"><img src="https://img.shields.io/github/actions/workflow/status/ixchio/agent-vcr/ci.yml?style=flat-square&label=CI" alt="CI"></a>
 <a href="https://codecov.io/gh/ixchio/agent-vcr"><img src="https://img.shields.io/codecov/c/github/ixchio/agent-vcr?style=flat-square&color=58a6ff" alt="Coverage"></a>
 <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/license-MIT-yellow?style=flat-square" alt="License"></a>
-<a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.10+-blue?style=flat-square" alt="Python"></a>
+<a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.9+-blue?style=flat-square" alt="Python"></a>
 <br><br>
 [📖 Docs](https://ixchio.github.io/agent-vcr/) · [🚀 Examples](examples/) · [🛡️ Sentinel](https://ixchio.github.io/agent-vcr/sentinel/) · [📊 Benchmarks](https://ixchio.github.io/agent-vcr/dev/bench/)
 
@@ -19,7 +19,7 @@
 
 <!-- DEMO -->
 <p align="center">
-  <img src="docs/demo.gif" alt="Agent VCR Demo" width="800">
+  <img src="docs/demo.gif" alt="Agent VCR — time-travel debugging, ACID rollback, Ghost Replay for LangGraph CrewAI and Python AI agents" width="800">
 </p>
 
 <br>
@@ -27,7 +27,7 @@
 <div align="center">
   <code>pip install ai-agent-vcr</code>
   <br><br>
-  No API keys. No cloud. Runs entirely locally.
+  No API keys. No cloud. No vendor lock-in. Works with LangGraph, CrewAI, or raw Python.
 </div>
 
 <br>
@@ -38,7 +38,7 @@
 
 <div align="center">
 
-### LangSmith shows you what happened. Agent VCR lets you **change** it.
+### Observability tools show you what happened. Agent VCR lets you **undo** it.
 
 </div>
 
@@ -462,27 +462,55 @@ sentinel scan ./my-ai-project
 
 ---
 
+## "Why not just use LangGraph's built-in time-travel?"
+
+Great question. LangGraph's [checkpointer](https://langchain-ai.github.io/langgraph/concepts/persistence/) persists graph state at every super-step and lets you inspect/replay from any checkpoint. If you're 100% LangGraph and only need state inspection, it's a solid built-in.
+
+**Agent VCR exists because state checkpoints aren't enough:**
+
+| | LangGraph Checkpointer | Agent VCR |
+|---|---|---|
+| Checkpoint in-memory state | ✅ | ✅ |
+| **Rollback files on disk** (`git reset --hard`) | ❌ | ✅ |
+| **Ghost Replay** (zero tokens, zero cost) | ❌ | ✅ |
+| **Sentinel** (real-time AST quality guard) | ❌ | ✅ |
+| Works with CrewAI, raw Python, any framework | ❌ LangGraph only | ✅ |
+| JSONL format (git-diffable, streamable) | ❌ Opaque persistence | ✅ |
+| Session forking with parallel comparison | ❌ | ✅ |
+
+When your agent writes files to disk — code, configs, data — and then fails, LangGraph's checkpointer rolls back the state object but **the files stay**. Agent VCR's ACID workspace runs `git reset --hard` and physically deletes the hallucinated files. That's the difference between "debugger" and "undo."
+
+---
+
 ## How It Compares
+
+> **Honest note:** LangSmith, LangFuse, and Arize Phoenix are excellent observability platforms with large teams and production deployments. Agent VCR is not an observability tool — it's an **intervention** tool. They show you what happened. We let you change it. The categories overlap on tracing but diverge on everything else.
 
 <table>
 <tr>
-<th>Feature</th>
+<th>Capability</th>
 <th>📼 Agent VCR</th>
 <th>LangSmith</th>
 <th>LangFuse</th>
 <th>Arize Phoenix</th>
 </tr>
-<tr><td>Record traces</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td></tr>
+<tr><td>Record execution traces</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td></tr>
+<tr><td>Production-grade dashboards</td><td>Basic (local)</td><td><b>✅ Best-in-class</b></td><td>✅</td><td>✅</td></tr>
+<tr><td>Eval / scoring pipelines</td><td>❌</td><td><b>✅</b></td><td>✅</td><td>✅</td></tr>
+<tr><td>Cost & latency analytics</td><td>✅ (per-session)</td><td>✅</td><td>✅</td><td>✅</td></tr>
+<tr><td colspan="5" style="background:#1a1a1a"><b>↓ What only Agent VCR does ↓</b></td></tr>
 <tr><td><b>Time-travel to any step</b></td><td><b>✅</b></td><td>❌</td><td>❌</td><td>❌</td></tr>
-<tr><td><b>Edit state & resume</b></td><td><b>✅</b></td><td>❌</td><td>❌</td><td>❌</td></tr>
+<tr><td><b>Edit state & resume mid-chain</b></td><td><b>✅</b></td><td>❌</td><td>❌</td><td>❌</td></tr>
 <tr><td><b>Fork from any frame</b></td><td><b>✅</b></td><td>❌</td><td>❌</td><td>❌</td></tr>
 <tr><td><b>ACID filesystem rollback</b></td><td><b>✅</b></td><td>❌</td><td>❌</td><td>❌</td></tr>
-<tr><td><b>Ghost Replay (zero-cost)</b></td><td><b>✅</b></td><td>❌</td><td>❌</td><td>❌</td></tr>
-<tr><td><b>Code quality guardian</b></td><td><b>✅ Sentinel</b></td><td>❌</td><td>❌</td><td>❌</td></tr>
-<tr><td>TUI debugger</td><td><b>✅</b></td><td>❌</td><td>❌</td><td>❌</td></tr>
-<tr><td>Self-hosted / local</td><td>✅</td><td>❌ Cloud</td><td>✅</td><td>✅</td></tr>
-<tr><td>Setup</td><td><b>3 lines</b></td><td>~15</td><td>~10</td><td>~10</td></tr>
+<tr><td><b>Ghost Replay (zero-token re-runs)</b></td><td><b>✅</b></td><td>❌</td><td>❌</td><td>❌</td></tr>
+<tr><td><b>Sentinel (real-time code guardian)</b></td><td><b>✅</b></td><td>❌</td><td>❌</td><td>❌</td></tr>
+<tr><td>Terminal TUI debugger</td><td>✅</td><td>❌</td><td>❌</td><td>❌</td></tr>
+<tr><td>Fully local / self-hosted</td><td>✅</td><td>❌ (Cloud)</td><td>✅</td><td>✅</td></tr>
+<tr><td>Framework-agnostic</td><td>✅</td><td>⚠️ Best w/ LangChain</td><td>✅</td><td>✅</td></tr>
 </table>
+
+**TL;DR:** Use LangSmith/LangFuse/Phoenix for production observability and evals. Use Agent VCR when you need to actually *intervene* — fix a broken run without re-running it, replay a successful run for free, or rollback filesystem damage from a rogue agent.
 
 ---
 
@@ -604,13 +632,23 @@ Sessions are plain JSONL — one JSON object per line:
 
 ## Performance
 
-Recording overhead is benchmarked in CI on every commit and must stay under 5ms P99.
+Recording overhead is benchmarked in CI on every commit. The benchmark suite enforces hard limits — CI fails if any threshold is exceeded.
+
+**Reproduce locally:**
 
 ```bash
-pytest tests/benchmarks/ -v --benchmark-only
+pip install -e ".[dev]"
+pytest tests/benchmarks/ -v --benchmark-only --benchmark-columns="min,max,mean,stddev,rounds"
 ```
 
-Results are published at [ixchio.github.io/agent-vcr/dev/bench/](https://ixchio.github.io/agent-vcr/dev/bench/).
+| Benchmark | Threshold | What it measures |
+|---|---|---|
+| `test_benchmark_recorder_overhead` | **<5ms mean** per frame | Time to serialize and buffer one state snapshot |
+| `test_benchmark_file_write_speed` | **>1,000 frames/sec** | Sustained write throughput (10K frames) |
+| `test_benchmark_load_speed` | **<500ms** | Load a 10,000-frame session from disk |
+| `test_benchmark_goto_frame` | **<1ms** | Random-access time-travel to any frame |
+
+These are real `pytest-benchmark` tests with assertions. If they regress, CI breaks. Historical results are published at [ixchio.github.io/agent-vcr/dev/bench/](https://ixchio.github.io/agent-vcr/dev/bench/).
 
 ---
 
@@ -660,8 +698,8 @@ MIT — see [LICENSE](LICENSE).
 
 ### 📼
 
-**LangSmith shows you what happened.**
-**Agent VCR lets you change it.**
+**Observability shows you what happened.**
+**Agent VCR lets you undo it.**
 
 <br>
 
