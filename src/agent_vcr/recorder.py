@@ -328,7 +328,12 @@ class VCRRecorder:
             f.write(json.dumps(header, separators=(",", ":")) + "\n")
 
     def _flush_frames(self) -> None:
-        """Write buffered frames to disk."""
+        """Write buffered frames to disk.
+
+        Uses fsync to ensure frames are durable on disk before clearing
+        the in-memory buffer.  Without this, a crash between write() and
+        the OS flushing kernel buffers would silently lose frames.
+        """
         if not self._frames:
             return
 
@@ -340,6 +345,8 @@ class VCRRecorder:
                     "data": frame.model_dump(),
                 }
                 f.write(json.dumps(line, separators=(",", ":")) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
 
         self._frames = []
 

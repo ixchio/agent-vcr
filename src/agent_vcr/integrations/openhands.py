@@ -1,4 +1,5 @@
 import logging
+import re
 import subprocess
 from pathlib import Path
 from typing import Optional
@@ -7,6 +8,10 @@ from agent_vcr.models import Frame, Session
 from agent_vcr.recorder import VCRRecorder
 
 logger = logging.getLogger(__name__)
+
+# Strict whitelist: only alphanumerics, hyphens, underscores, and dots.
+_SAFE_SESSION_ID = re.compile(r"^[a-zA-Z0-9_\-\.]+$")
+
 
 class ACIDWorkspace:
     """
@@ -22,12 +27,32 @@ class ACIDWorkspace:
 
         self.workspace_dir.mkdir(parents=True, exist_ok=True)
 
+    @staticmethod
+    def _sanitize_session_id(session_id: str) -> str:
+        """Validate session_id against a strict whitelist to prevent git argument injection.
+
+        Git interprets strings starting with ``-`` as flags, so an
+        unsanitised session ID like ``--orphan`` would be treated as a
+        git option rather than a branch name.  This guard ensures only
+        safe characters are allowed.
+        """
+        if not _SAFE_SESSION_ID.match(session_id):
+            raise ValueError(
+                f"Invalid session_id {session_id!r}: must match {_SAFE_SESSION_ID.pattern}. "
+                f"Only alphanumerics, hyphens, underscores, and dots are allowed."
+            )
+        return session_id
+
     def begin(self, session_id: Optional[str] = None) -> Session:
         """
         BEGIN - Starts a session and git stashes the workspace state as a snapshot.
         """
         self.session = self.recorder.start_session(session_id)
-        assert self.session is not None, "Session failed to start"
+        if self.session is None:
+            raise RuntimeError("Session failed to start")
+
+        # Validate session ID before using it in git commands
+        self._sanitize_session_id(self.session.session_id)
 
         # Git initialize workspace if not already
         if not (self.workspace_dir / ".git").exists():
@@ -43,7 +68,9 @@ class ACIDWorkspace:
             subprocess.run(["git", "add", "-A"], cwd=self.workspace_dir, check=True)
             subprocess.run(["git", "commit", "-m", "Initial ACID baseline"], cwd=self.workspace_dir, check=True)
 
-        # ISOLATION: Create an isolated branch for this agent's uncommitted file changes
+        # ISOLATION: Create an isolated branch for this agent's uncommitted file changes.
+        # The session ID is whitelist-validated by _sanitize_session_id() above,
+        # so git argument injection (e.g. --orphan) is not possible here.
         self.branch_name = f"acid/{self.session.session_id}"
         subprocess.run(["git", "checkout", "-b", self.branch_name], cwd=self.workspace_dir, check=True)
 
@@ -115,12 +142,19 @@ class ACIDWorkspace:
         """
         if not self.session:
             raise RuntimeError("No active session to commit.")
-        assert self.branch_name is not None, "Branch name not set."
+        if self.branch_name is None:
+            raise RuntimeError("Branch name not set — was begin() called?")
 
         # Save any final memory states
         self.recorder.save()
 
-        # Merge the branch back to main
+        # Merge the branch back to main.
+        # Branch names are safe — validated by _sanitize_session_id().
         subprocess.run(["git", "checkout", "main"], cwd=self.workspace_dir, check=True)
-        subprocess.run(["git", "merge", self.branch_name, "--no-ff", "-m", f"ACID COMMIT: {self.session.session_id}"], cwd=self.workspace_dir, check=True)
+        subprocess.run(
+            ["git", "merge", "--no-ff", "-m", f"ACID COMMIT: {self.session.session_id}", self.branch_name],
+            cwd=self.workspace_dir,
+            check=True,
+        )
         logger.info(f"ACID COMMIT: Session {self.session.session_id} successfully merged to main.")
+

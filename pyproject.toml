@@ -4,10 +4,10 @@ build-backend = "hatchling.build"
 
 [project]
 name = "ai-agent-vcr"
-version = "0.6.0"
+version = "0.7.0"
 description = "ACID transactions, time-travel debugging, and zero-cost Ghost Replay for AI agents. Rollback filesystem + state. Works with LangGraph, CrewAI, or raw Python."
 readme = "README.md"
-license = {text = "MIT"}
+license = "MIT"
 requires-python = ">=3.9"
 authors = [
     {name = "ixchio", email = "amankumarpandeyin@gmail.com"},

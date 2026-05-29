@@ -147,7 +147,13 @@ class VCRFileWatcher(FileSystemEventHandler):
 class VCRServer:
     """FastAPI server for VCR dashboard."""
 
-    def __init__(self, vcr_dir: str = ".vcr", host: str = "0.0.0.0", port: int = 8000):
+    def __init__(
+        self,
+        vcr_dir: str = ".vcr",
+        host: str = "0.0.0.0",
+        port: int = 8000,
+        allowed_origins: list[str] | None = None,
+    ):
         self.vcr_dir = Path(vcr_dir)
         self.host = host
         self.port = port
@@ -163,13 +169,28 @@ class VCRServer:
             lifespan=self._lifespan,
         )
 
-        self.app.add_middleware(
-            CORSMiddleware,
-            allow_origins=["*"],
-            allow_credentials=True,
-            allow_methods=["*"],
-            allow_headers=["*"],
-        )
+        # Hybrid CORS: If the caller supplies explicit origins, enable
+        # credentialed requests to those origins only.  Otherwise fall
+        # back to a permissive wildcard that works for dashboards but
+        # correctly disables credentials (the previous allow_origins=["*"]
+        # + allow_credentials=True combo is a known-bad pattern per the
+        # CORS spec — browsers silently block credentialed wildcard).
+        if allowed_origins:
+            self.app.add_middleware(
+                CORSMiddleware,
+                allow_origins=allowed_origins,
+                allow_credentials=True,
+                allow_methods=["*"],
+                allow_headers=["*"],
+            )
+        else:
+            self.app.add_middleware(
+                CORSMiddleware,
+                allow_origins=["*"],
+                allow_credentials=False,
+                allow_methods=["*"],
+                allow_headers=["*"],
+            )
 
         # Serve the built React dashboard if it exists
         dashboard_dir = Path(__file__).parent / "dashboard"

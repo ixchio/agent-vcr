@@ -297,6 +297,11 @@ class AsyncVCRRecorder:
             await f.write(json.dumps(record) + "\n")
 
     async def _flush_frames(self) -> None:
+        """Write buffered frames to disk.
+
+        Performs an fsync after writing to ensure frames are durable on
+        disk before clearing the in-memory buffer.
+        """
         if not self._frames:
             return
         path = self._get_session_path()
@@ -307,7 +312,21 @@ class AsyncVCRRecorder:
                     "data": json.loads(frame.model_dump_json()),
                 }
                 await f.write(json.dumps(record) + "\n")
+            await f.flush()
+        # fsync must use the real fd — aiofiles doesn't expose fileno(),
+        # so we open briefly just for the sync.  os.replace-style atomic
+        # writes aren't practical for append-mode JSONL.
+        await asyncio.to_thread(self._fsync_path, path)
         self._frames = []
+
+    @staticmethod
+    def _fsync_path(path: Path) -> None:
+        """Open a file briefly to fsync it (used after async writes)."""
+        fd = os.open(str(path), os.O_RDONLY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
 
     async def _update_session_manifest(self) -> None:
         if self._session is None:
