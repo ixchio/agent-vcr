@@ -130,8 +130,7 @@ class VCRPlayer:
 
     def get_input_state(self, index: int) -> dict[str, Any]:
         """Get the input state for a frame."""
-        frame = self.get_frame(index)
-        return StateSerializer.deserialize(frame.input_state)
+        return self._get_frame_input_state(index)
 
     def get_output_state(self, index: int) -> dict[str, Any]:
         """Get the output state for a frame."""
@@ -195,8 +194,7 @@ class VCRPlayer:
             len(config.state_overrides),
         )
 
-        target_frame = self.frames[config.from_frame]
-        base_state = StateSerializer.deserialize(target_frame.input_state)
+        base_state = self._get_frame_input_state(config.from_frame)
 
         if config.state_overrides:
             base_state.update(config.state_overrides)
@@ -310,12 +308,19 @@ class VCRPlayer:
             # (record_step will re-serialize them)
             recorder.record_step(
                 node_name=frame.node_name,
-                input_state=StateSerializer.deserialize(frame.input_state),
+                input_state=self._get_frame_input_state(i),
                 output_state=current_state,
                 metadata=frame.metadata,
             )
 
         return self._execute_fresh(agent_callable, current_state, recorder)
+
+    def _get_frame_input_state(self, index: int) -> dict[str, Any]:
+        """Return a frame's input state, reconstructing diff-mode omissions."""
+        frame = self.get_frame(index)
+        if frame.input_state or index == 0 or frame.state_diff is None:
+            return StateSerializer.deserialize(frame.input_state)
+        return self.get_output_state(index - 1)
 
     def _compute_state_diff(
         self, state_a: dict[str, Any], state_b: dict[str, Any]

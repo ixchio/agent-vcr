@@ -132,7 +132,10 @@ class ACIDWorkspace:
         else:
             subprocess.run(["git", "reset", "--hard", target_hash], cwd=self.workspace_dir, check=True)
 
-        subprocess.run(["git", "clean", "-fd"], cwd=self.workspace_dir, check=True)
+        clean_cmd = ["git", "clean", "-fdx"]
+        for exclude in self._git_clean_excludes():
+            clean_cmd.extend(["-e", exclude])
+        subprocess.run(clean_cmd, cwd=self.workspace_dir, check=True)
 
         logger.info("ACID ROLLBACK SUCCESS: Filesystem and memory correctly rewound.")
 
@@ -158,3 +161,20 @@ class ACIDWorkspace:
         )
         logger.info(f"ACID COMMIT: Session {self.session.session_id} successfully merged to main.")
 
+    def _git_clean_excludes(self) -> list[str]:
+        """Exclude VCR audit files from ignored-file cleanup when they live in the workspace."""
+        excludes = [".vcr/"]
+
+        recorder_dir = self.recorder.output_dir
+        if not recorder_dir.is_absolute():
+            recorder_dir = recorder_dir.resolve()
+
+        try:
+            relative = recorder_dir.relative_to(self.workspace_dir)
+        except ValueError:
+            return excludes
+
+        pattern = relative.as_posix().rstrip("/") + "/"
+        if pattern not in excludes:
+            excludes.append(pattern)
+        return excludes

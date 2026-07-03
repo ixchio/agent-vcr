@@ -38,10 +38,11 @@ class TestAsyncVCRRecorder:
             recorder = AsyncVCRRecorder(output_dir=tmpdir, auto_save=False)
             await recorder.start_session()
 
+            response = {"content": "hello", "tool_calls": [{"name": "search"}]}
             frame = await recorder.record_llm_call(
                 model="gpt-4",
                 messages=[{"role": "user", "content": "hi"}],
-                response="hello",
+                response=response,
                 tokens_input=10,
                 tokens_output=5,
                 latency_ms=100,
@@ -49,6 +50,7 @@ class TestAsyncVCRRecorder:
 
             assert frame.frame_type == FrameType.LLM_CALL
             assert frame.metadata.model == "gpt-4"
+            assert frame.output_state["response"] == response
 
     async def test_record_tool_call(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -63,6 +65,8 @@ class TestAsyncVCRRecorder:
             )
 
             assert frame.frame_type == FrameType.TOOL_CALL
+            assert frame.input_state == {"query": "test"}
+            assert frame.output_state == {"result": ["result1"], "error": None}
 
     async def test_record_error(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -102,10 +106,12 @@ class TestAsyncVCRRecorder:
 
             await recorder.record_step("n1", {}, {"v": 1})
 
-            forked = await recorder.fork(from_frame=0)
+            forked = await recorder.fork(from_frame=0, state_overrides={"patched": True})
             session = forked.get_session()
             assert session.parent_session_id == "parent"
             assert session.forked_from_frame == 0
+            assert forked.get_frames()[0].frame_type == FrameType.CHECKPOINT
+            assert forked.get_frames()[0].output_state == {"v": 1, "patched": True}
 
     async def test_no_session_raises(self):
         with tempfile.TemporaryDirectory() as tmpdir:

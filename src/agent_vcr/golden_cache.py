@@ -287,6 +287,10 @@ class GoldenRunCache:
             for fp, info in self._index.items()
         ]
 
+    def list_runs(self) -> list[dict]:
+        """Backward-compatible alias for list_golden_runs()."""
+        return self.list_golden_runs()
+
     def invalidate(self, task: str) -> bool:
         """Remove a golden run from the cache."""
         fp = self._fingerprint(task)

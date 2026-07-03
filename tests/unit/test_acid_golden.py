@@ -29,7 +29,7 @@ class TestACIDWorkspace:
         acid = ACIDWorkspace(self.workspace)
         acid.begin(session_id="test-001")
 
-        assert (os.path.join(self.workspace, ".git"))
+        assert os.path.exists(os.path.join(self.workspace, ".git"))
         assert acid.session is not None
         assert acid.session.session_id == "test-001"
 
@@ -93,6 +93,27 @@ class TestACIDWorkspace:
 
         assert os.path.exists(good_file), "Good file should survive rollback"
         assert not os.path.exists(bad_file), "Bad file should be removed"
+
+    def test_rollback_deletes_ignored_generated_files(self):
+        recorder = VCRRecorder(output_dir=os.path.join(self.workspace, ".vcr"), auto_save=False)
+        acid = ACIDWorkspace(self.workspace, recorder=recorder)
+        acid.begin(session_id="ignored-files")
+
+        gitignore = os.path.join(self.workspace, ".gitignore")
+        with open(gitignore, "w") as f:
+            f.write("ignored.txt\n")
+        acid.savepoint({"step": "ignore rule"})
+
+        ignored_file = os.path.join(self.workspace, "ignored.txt")
+        with open(ignored_file, "w") as f:
+            f.write("agent generated ignored junk\n")
+        acid.savepoint({"step": "ignored junk"})
+        assert os.path.exists(ignored_file)
+
+        acid.rollback(to_frame_index=0)
+
+        assert not os.path.exists(ignored_file), "Ignored generated files must be removed"
+        assert os.path.isdir(os.path.join(self.workspace, ".vcr")), "VCR audit directory must survive"
 
     def test_commit_merges_to_main(self):
         acid = ACIDWorkspace(self.workspace)
@@ -275,6 +296,13 @@ class TestGoldenRunCache:
         assert len(runs) == 1
         assert runs[0]["task"] == "build a todo app"
         assert "web" in runs[0]["tags"]
+
+    def test_list_runs_alias(self):
+        recorder = self._make_recorder_with_frames()
+        cache = GoldenRunCache(cache_dir=self.golden_dir)
+        cache.save_golden_run("build a todo app", recorder, tags=["web"])
+
+        assert cache.list_runs() == cache.list_golden_runs()
 
     def test_fingerprint_is_case_insensitive(self):
         cache = GoldenRunCache(cache_dir=self.golden_dir)

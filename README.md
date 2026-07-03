@@ -2,8 +2,9 @@
 
 # 📼 Agent VCR
 
-### ACID transactions, time-travel debugging, and zero-cost replay for AI agents.
-**The only tool that rolls back the filesystem — not just the state object.**
+### Your AI agent corrupted the codebase. Now what?
+**The only tool that physically deletes hallucinated files — `git reset --hard`, not just state rollback.**
+
 <br>
 <a href="https://pypi.org/project/ai-agent-vcr/"><img src="https://img.shields.io/pypi/v/ai-agent-vcr?style=flat-square&color=00d4aa&label=PyPI" alt="PyPI"></a>
 <a href="https://github.com/ixchio/agent-vcr/actions"><img src="https://img.shields.io/github/actions/workflow/status/ixchio/agent-vcr/ci.yml?style=flat-square&label=CI" alt="CI"></a>
@@ -11,149 +12,155 @@
 <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/license-MIT-yellow?style=flat-square" alt="License"></a>
 <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.9+-blue?style=flat-square" alt="Python"></a>
 <br><br>
-[📖 Docs](https://ixchio.github.io/agent-vcr/) · [🚀 Examples](examples/) · [🛡️ Sentinel](https://ixchio.github.io/agent-vcr/sentinel/) · [📊 Benchmarks](https://ixchio.github.io/agent-vcr/dev/bench/)
+
+```bash
+pip install ai-agent-vcr
+```
+
+No API keys. No cloud. No vendor lock-in.
+Works with [TERX](https://github.com/ixchio/terx) — memory layer for browser agents.
 
 <br>
 
 </div>
-
-<!-- DEMO -->
-<p align="center">
-  <img src="docs/demo.gif" alt="Agent VCR — time-travel debugging, ACID rollback, Ghost Replay for LangGraph CrewAI and Python AI agents" width="800">
-</p>
-
-<br>
-
-<div align="center">
-  <code>pip install ai-agent-vcr</code>
-  <br><br>
-  No API keys. No cloud. No vendor lock-in. Works with LangGraph, CrewAI, or raw Python.
-</div>
-
-<br>
 
 ---
 
-<br>
+## The Problem Every AI Agent Developer Has Hit
 
-<div align="center">
+You ran Claude Code, OpenHands, or a LangGraph agent autonomously.
 
-### Observability tools show you what happened. Agent VCR lets you **undo** it.
+It wrote 40 files. It failed at step 8. Now you have:
+- 23 files that shouldn't exist
+- A broken import chain
+- State that says "success" on steps that half-ran
+- No way to know what the repo looked like before step 6
 
-</div>
-
-<br>
-
-<table align="center">
-<tr>
-<td width="50%">
-
-**❌ Without Agent VCR**
 ```
-Agent fails at step 8 of 10
-         ↓
-You patch the code
-         ↓
-Re-run ALL 10 steps from scratch
-         ↓
-$0.04 + 2 minutes wasted
-         ↓
-Repeat for every bug
+Your repo after a bad autonomous run:
+
+/src/handlers.py          ← hallucinated, breaks import
+/src/auth_v2.py           ← duplicate of auth.py, never needed
+/src/models_refactor.py   ← partial rewrite, syntax error
+/tests/test_fake.py       ← tests for code that doesn't exist
+/config/settings_new.py   ← overwrote working config
 ```
 
-</td>
-<td width="50%">
+**Every other tool shows you logs. Agent VCR runs `git reset --hard` and deletes every one of those files.**
 
-**✅ With Agent VCR**
+---
+
+## ACID Rollback — The Feature Nobody Else Has
+
 ```python
-player = VCRPlayer.load("run.vcr")
+from agent_vcr import VCRRecorder
+from agent_vcr.integrations.openhands import ACIDWorkspace
 
-# Jump to step 8, see what went wrong
-state = player.goto_frame(7)
+recorder = VCRRecorder()
+acid = ACIDWorkspace("/my/workspace", recorder=recorder)
 
-# Fix it and resume — skip steps 0-7
-player.resume(agent, ResumeConfig(
-    from_frame=7,
-    state_overrides={"prompt": "fixed"}
-))
+acid.begin(session_id="task-001")        # isolated git branch
+acid.savepoint(state, node_name="coder") # checkpoint state + filesystem
+acid.savepoint(state, node_name="tester")
+
+# Agent writes 47 files. 23 are hallucinated garbage. Step 6 failed.
+acid.rollback(to_frame_index=1)
+# git reset --hard
+# All 23 files: physically deleted from disk. Not hidden. Gone.
+
+acid.commit()                            # merge only the clean branch
 ```
 
-</td>
-</tr>
-</table>
+```
+Before rollback:          After rollback:
+/src/handlers.py    ✗     DELETED
+/src/auth_v2.py     ✗     DELETED
+/tests/fake_test.py ✗     DELETED
+/src/utils.py       ✓     kept
+/src/models.py      ✓     kept
+```
 
-<br>
+**LangSmith** shows you what happened. **LangFuse** shows you what happened. **Arize** shows you what happened.
+
+Agent VCR **changes** what happened.
 
 ---
 
-<br>
+## Ghost Replay — Never Pay for the Same Task Twice
 
-## ✨ Features
+Agent succeeds? Save it. Run it again for free forever.
 
-<table>
-<tr>
-<td width="33%" valign="top">
+```python
+from agent_vcr.golden_cache import GoldenRunCache
 
-#### ⏮️ Time Travel
-Jump to any step. Full state snapshot at every node. Inspect input, output, diffs.
+cache = GoldenRunCache()
+cache.save_golden_run("Build a REST API with JWT auth", recorder)
 
-</td>
-<td width="33%" valign="top">
+# Every future run of the same task:
+outputs, ledger = cache.replay("Build a REST API with JWT auth")
+print(ledger)
+```
 
-#### ✏️ Edit & Resume
-Fix a prompt, patch a tool output, inject context — then resume from that point. No re-runs.
+```
+RUN 1 (original)      RUN 2 (Ghost Replay)
+─────────────────     ─────────────────────
+Tokens:   4,100       Tokens:      0
+Cost:   $0.0123       Cost:    $0.00
+Time:  2,350ms        Time:      1ms
 
-</td>
-<td width="33%" valign="top">
+💰 100% savings · $0.0123 saved · 4,100 tokens · 2,349ms faster
+```
 
-#### 🌿 Session Forking
-Fork from any frame. Create parallel runs. Compare how fixes change downstream behavior.
+---
 
-</td>
-</tr>
-<tr>
-<td width="33%" valign="top">
+## Time-Travel Debugging
 
-#### 👻 Ghost Replay
-Save successful runs. Replay the same task instantly — zero tokens, zero cost, 100% savings.
+Agent fails at step 8 of 10? Don't re-run from zero.
 
-</td>
-<td width="33%" valign="top">
+```python
+from agent_vcr import VCRPlayer
+from agent_vcr.models import ResumeConfig
 
-#### 🔒 ACID Transactions
-`BEGIN / SAVEPOINT / ROLLBACK / COMMIT` backed by git. Rollback deletes files from disk.
+player = VCRPlayer.load(".vcr/my_run.vcr")
 
-</td>
-<td width="33%" valign="top">
+# See exact state at every step
+print(player.goto_frame(6))   # {'files_written': [...], 'plan': '...'}
+print(player.get_errors())    # what broke and where
 
-#### 🛡️ Sentinel Guardian
-Real-time AST analysis catches duplicate functions, complexity spikes, and makes the agent self-correct.
+# Fix the prompt. Resume from step 6. Skip steps 0-5.
+player.resume(
+    agent_callable=coder,
+    config=ResumeConfig(
+        from_frame=6,
+        state_overrides={"plan": "use SQLAlchemy instead of raw SQL"}
+    )
+)
+```
 
-</td>
-</tr>
-<tr>
-<td width="33%" valign="top">
+```
+Without Agent VCR          With Agent VCR
+──────────────────         ──────────────────────────
+Agent fails step 8         Agent fails step 8
+Patch the code             player.goto_frame(7)
+Re-run ALL 10 steps        Fix the state
+$0.04 + 2 min wasted       Resume from step 7
+Repeat for every bug       Done. $0.00 extra.
+```
 
-#### 🖥️ TUI Debugger
-`vcr-tui` in your terminal. Navigate frames, edit state, diff, resume — all keyboard-driven.
+---
 
-</td>
-<td width="33%" valign="top">
+## Who This Is For
 
-#### 📡 Live Dashboard
-`vcr-server` → `localhost:8000`. WebSocket streaming, session browser, DAG visualization.
+**You need this if you're running:**
+- Claude Code / Cursor autonomous mode
+- OpenHands on real codebases
+- LangGraph agents that write files
+- CrewAI pipelines with filesystem access
+- Any autonomous coding agent on a repo you care about
 
-</td>
-<td width="33%" valign="top">
-
-#### ⚡ <5ms Overhead
-P99 under 5ms. Benchmarked in CI on every commit. Safe for production.
-
-</td>
-</tr>
-</table>
-
-<br>
+**You don't need this if you're only:**
+- Doing RAG / chatbots (no filesystem risk)
+- Already happy with LangSmith for tracing
 
 ---
 
@@ -167,50 +174,35 @@ from agent_vcr import VCRRecorder
 recorder = VCRRecorder()
 recorder.start_session("my_run")
 
-# Your existing agent code — unchanged
 state = {"query": "build a REST API"}
-state = planner(state)          # step 1
+state = planner(state)
 recorder.record_step("planner", input_state, state)
 
-state = coder(state)            # step 2
+state = coder(state)
 recorder.record_step("coder", input_state, state)
 
-recorder.save()                 # → .vcr/my_run.vcr
+recorder.save()  # → .vcr/my_run.vcr
 ```
 
-Or use the context manager — never lose frames even if the agent crashes:
+Or use the context manager — frames are saved even if the agent crashes:
 
 ```python
 with VCRRecorder() as recorder:
     recorder.start_session("my_run")
     # ... your agent code ...
-# auto-saved on exit
 ```
 
 ### Rewind & Fix
 
 ```python
-from agent_vcr import VCRPlayer
-from agent_vcr.models import ResumeConfig
-
 player = VCRPlayer.load(".vcr/my_run.vcr")
 
-# Inspect any step
-print(player.goto_frame(0))     # {'query': 'build a REST API', ...}
-print(player.goto_frame(1))     # {'plan': '...', 'steps': [...], ...}
-print(player.get_errors())      # see what failed
+diff = player.compare_frames(5, 6)
+# {'added': {'bad_file': '...'}, 'modified': {'plan': '...'}}
 
-# Diff two frames
-diff = player.compare_frames(0, 1)
-# {'added': {'plan': ...}, 'modified': {'query': ...}, ...}
-
-# Fix and resume from step 1 with a different plan
 player.resume(
     agent_callable=coder,
-    config=ResumeConfig(
-        from_frame=1,
-        state_overrides={"plan": "use FastAPI instead of Flask"}
-    )
+    config=ResumeConfig(from_frame=5, state_overrides={"plan": "fixed"})
 )
 ```
 
@@ -218,20 +210,15 @@ player.resume(
 
 ## Integrations
 
-### LangGraph
+### LangGraph — one line
 
 ```python
 from langgraph.graph import StateGraph
 from agent_vcr import VCRRecorder
 from agent_vcr.integrations.langgraph import VCRLangGraph
 
-graph = StateGraph(MyState)
-graph.add_node("planner", planner_node)
-graph.add_node("coder", coder_node)
-graph.add_edge("planner", "coder")
-
 recorder = VCRRecorder()
-graph = VCRLangGraph(recorder).wrap_graph(graph)  # one line
+graph = VCRLangGraph(recorder).wrap_graph(graph)  # ← one line, that's it
 
 result = graph.invoke({"query": "Build a todo app"})
 recorder.save()
@@ -240,20 +227,13 @@ recorder.save()
 ### CrewAI
 
 ```python
-from crewai import Crew
-from agent_vcr import VCRRecorder
 from agent_vcr.integrations.crewai import VCRCrewAI
 
 recorder = VCRRecorder()
 recorder.start_session("crew_run")
-
-crew = Crew(agents=[researcher, writer], tasks=[task1, task2])
 result = VCRCrewAI(recorder).kickoff(crew)
-
 recorder.save()
 ```
-
-Install extras:
 
 ```bash
 pip install "ai-agent-vcr[crewai]"
@@ -263,10 +243,7 @@ pip install "ai-agent-vcr[langgraph]"
 ### Raw Python (decorator)
 
 ```python
-from agent_vcr import VCRRecorder
 from agent_vcr.integrations.langgraph import vcr_record
-
-recorder = VCRRecorder()
 
 @vcr_record(recorder, node_name="research_step")
 def research(state: dict) -> dict:
@@ -275,242 +252,170 @@ def research(state: dict) -> dict:
 
 ---
 
-## 🔒 ACID Transactions
+## Sentinel — Real-Time Code Guardian
 
-Databases solved the partial-failure problem 40 years ago. Agents have the exact same problem — when your agent fails mid-run, you don't just have bad in-memory state. You have **files written to disk** that shouldn't exist.
-
-Current tools only roll back state objects. The filesystem stays polluted.
-
-Agent VCR wraps agent execution in real transactional semantics:
+Catches what the agent wrote before it moves to the next step.
 
 ```python
-from agent_vcr import VCRRecorder
-from agent_vcr.integrations.openhands import ACIDWorkspace
+from openhands_sentinel import Sentinel
 
-recorder = VCRRecorder()
-acid = ACIDWorkspace("/my/workspace", recorder=recorder)
-
-acid.begin(session_id="task-001")        # isolated git branch
-acid.savepoint(state, node_name="coder") # checkpoint state + filesystem
-acid.savepoint(state, node_name="tester")
-
-# Agent writes bad code at step 4 — rollback
-acid.rollback(to_frame_index=1)
-# git reset --hard → bad files are GONE from disk, not just hidden
-
-acid.commit()                            # merge clean branch into main
+sentinel = Sentinel(recorder=recorder)
+sentinel.attach(runtime.event_stream)  # 3 lines. auto-intercepts every write.
 ```
 
-- **BEGIN** → isolated git branch per agent session. Parallel agents can't clobber each other.
-- **SAVEPOINT** → checkpoints both VCR state AND filesystem. Every frame has a matching git commit.
-- **ROLLBACK** → `git reset --hard`. Files your agent hallucinated are physically deleted.
-- **COMMIT** → clean merge back into main.
+```
+STEP 2: Agent writes handlers.py
+🛡️ SENTINEL: VIOLATIONS DETECTED
+  CRITICAL  hash_password() already exists in auth/utils.py:8 — reuse it
+  CRITICAL  handle_auth_request() is 109 lines (limit: 40) — break it up
+  CRITICAL  Cyclomatic complexity: 32 (limit: 8)
+
+STEP 3: Agent self-corrects
+🛡️ SENTINEL: handlers.py — CLEAN ✓
+```
+
+| | Without Sentinel | With Sentinel |
+|---|---|---|
+| Agent writes bad code | ✓ | ✓ |
+| Sentinel catches it | — | **< 10ms** |
+| Agent self-corrects | — | **done** |
+| Human reviews PR | manual | **zero** |
+| Cost | 2× LLM + human time | 1 extra LLM call |
+
+Standalone scan:
 
 ```bash
-python examples/acid_golden_run.py
+sentinel scan ./my-ai-project
 ```
 
 ---
 
-## 👻 Ghost Replay — Never Pay for the Same Task Twice
-
-When your agent succeeds, save the entire execution as a replayable ghost run. Next time you hit the same task, replay it instantly — zero LLM calls, zero tokens, zero cost.
-
-```python
-from agent_vcr.golden_cache import GoldenRunCache
-
-cache = GoldenRunCache()
-
-# After a successful run:
-cache.save_golden_run("Build a REST API with JWT auth", recorder)
-
-# Next time — instant, $0.00:
-outputs, ledger = cache.replay("Build a REST API with JWT auth")
-print(ledger)
-# CostLedger(saved=100% | $0.0123 | 4,100 tokens | 2,349ms)
-```
-
-The `CostLedger` tracks original vs replay: tokens, dollars, milliseconds, and reduction percentage. The demo shows it live:
+## TUI Debugger
 
 ```bash
-python examples/acid_golden_run.py
-```
-
-```
-RUN 1: Original            RUN 2: Ghost Replay
-Tokens:    4,100           Tokens:    0
-Cost:    $0.0123           Cost:    $0.00
-Latency: 2,350ms           Latency:  1ms
-
-💰 Savings: 100% · $0.0123 · 4,100 tokens · 2,349ms
-```
-
----
-
-## 🖥 TUI Debugger
-
-Run the terminal debugger on any recorded session:
-
-```bash
-vcr-tui .vcr/my_run.vcr
+vcr .vcr/my_run.vcr
 ```
 
 ```
 ┌──────────────────────────────────────────────────────────┐
-│ 📼 Agent VCR TUI              Session: my_run · 8 frames │
+│ 📼 Agent VCR                  Session: my_run · 8 frames │
 ├──────────────────────────────────────────────────────────┤
 │ ▶ Frame 0  │ planner     │ 100ms  │ ●                    │
 │   Frame 1  │ researcher  │  250ms │ ●                    │
 │   Frame 2  │ coder       │  480ms │ ✗ ERROR              │
 │   Frame 3  │ tester      │   80ms │ ●                    │
 ├──────────────────────────────────────────────────────────┤
-│  State at frame 0:                                       │
-│  { "query": "build a todo app",                          │
-│    "context": "...",                                     │
-│    "plan": null }                                        │
+│  { "query": "build a todo app", "plan": null }           │
 ├──────────────────────────────────────────────────────────┤
-│ ← → navigate  │ e edit  │ d diff  │ r resume  │ q quit   │
+│ ←/→ navigate  │ e edit  │ d diff  │ r resume  │ q quit   │
 └──────────────────────────────────────────────────────────┘
 ```
 
-**Keybindings:**
-- `←` `→` — navigate frames
-- `e` — edit state inline (opens editor, saves on exit)
-- `d` — diff current frame vs previous
-- `r` — resume from current frame
-- `f` — fork current frame to new session
-- `q` — quit
+**Keybindings:** `↑/↓` or `j/k` navigate · `e` edit state · `1/2/3` input/output/diff · `r` resume · `s` search · `q` quit
+
+Claude Code hooks:
+
+```bash
+vcr init --claude-code
+```
 
 ---
 
-## 📊 DAG Visualization
-
-See your agent's full execution graph — forks, parallel branches, error paths:
+## DAG Visualization
 
 ```bash
 vcr-server .vcr/
-# Open localhost:8000
+# localhost:8000
 ```
 
-The dashboard renders your session as a DAG:
-
 ```
-original_run ────────────────────────────────────────────► [done]
+original_run ──────────────────────────────────────────► [done]
                │ frame 3
                ╰──► fork_v1 ──► [coder] ──► [tester] ──► [done]
-               │
                ╰──► fork_v2 ──► [coder] ──► [done]
 ```
 
-- Every fork is a branch node
-- Error frames shown in red
-- Click any node to inspect full state
-- Live WebSocket streaming for in-progress sessions
+Live WebSocket streaming. Every fork is a branch. Errors in red.
 
 ---
 
-## 🛡️ OpenHands Sentinel
+## vs Everything Else
 
-> *"Code is cheap now. Good code is not."* — Graham Neubig, OpenHands Chief Scientist
+> **Honest take:** LangSmith, Langfuse, Arize Phoenix, and AgentOps are serious platforms with large teams. They are observability tools — they show you what happened. Agent VCR is an intervention tool — it lets you change what happened. Different category. The overlap is tracing. Everything else diverges.
 
-Sentinel watches every file an AI agent writes and catches quality violations in real time — before the agent moves on.
+| Capability | 📼 Agent VCR | LangSmith | LangFuse | AgentOps | Arize Phoenix |
+|---|---|---|---|---|---|
+| Record execution traces | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Production dashboards | Local | ✅ best-in-class | ✅ | ✅ | ✅ |
+| Eval / scoring pipelines | ❌ | ✅ | ✅ | ✅ | ✅ |
+| Time-travel / session replay | ✅ | ❌ | ❌ | ✅ (view only) | ❌ |
+| **Edit state & resume mid-chain** | **✅** | ❌ | ❌ | ❌ | ❌ |
+| **ACID filesystem rollback** | **✅** | ❌ | ❌ | ❌ | ❌ |
+| **Ghost Replay (zero tokens)** | **✅** | ❌ | ❌ | ❌ | ❌ |
+| **Sentinel (real-time code guard)** | **✅** | ❌ | ❌ | ❌ | ❌ |
+| **Fork from any frame** | **✅** | ❌ | ❌ | ❌ | ❌ |
+| TUI debugger | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Fully local / self-hosted | ✅ | ❌ Cloud | ✅ | ❌ Cloud | ✅ |
+| Framework-agnostic | ✅ | ⚠️ LangChain | ✅ | ✅ | ✅ |
 
-```python
-from openhands_sentinel import Sentinel
-from agent_vcr import VCRRecorder
+**AgentOps** — closest competitor on time-travel. It lets you view past sessions. It does not let you edit state and resume, fork a session, rollback the filesystem, or replay for zero tokens. If you need view-only replay, AgentOps is mature. If you need to actually intervene, you need Agent VCR.
 
-recorder = VCRRecorder()
-sentinel = Sentinel(recorder=recorder)
-sentinel.attach(runtime.event_stream)  # 3 lines, auto-intercepts every file write
-```
-
-```bash
-python examples/sentinel_demo.py
-```
-
-```
-STEP 1: Agent writes auth/utils.py
-🛡️ SENTINEL: auth/utils.py — CLEAN ✓
-
-STEP 2: Agent writes handlers.py
-🛡️ SENTINEL: VIOLATIONS DETECTED!
-  CRITICAL  hash_password() already exists in auth/utils.py:8 — reuse it
-  CRITICAL  handle_auth_request() is 109 lines (max 40) — break it up
-  CRITICAL  Cyclomatic complexity 32 (max 8) — simplify
-  WARNING   9 parameters (max 5) — use a config object
-
-STEP 3: Agent self-corrects
-🛡️ SENTINEL: handlers.py — CLEAN ✓ All issues resolved!
-
-📼 Audit trail: .vcr/sentinel-demo.vcr
-```
-
-Or scan any directory standalone:
-
-```bash
-sentinel scan ./my-ai-project
-```
-
-| Without Sentinel | With Sentinel |
-|---|---|
-| Agent writes bad code | Agent writes bad code |
-| Human reviews PR | **Sentinel catches in <10ms** |
-| Human rejects PR | **Agent self-corrects** |
-| Agent rewrites | *(already done)* |
-| Human reviews again | **Zero human time** |
-| **Cost: 2× LLM + human hours** | **Cost: 1 extra LLM call** |
+**Use LangSmith/Langfuse/Phoenix/AgentOps** for production tracing and evals. **Use Agent VCR** when you need to actually fix a broken run without re-running it, rollback filesystem damage, or replay a successful run for free.
 
 ---
 
-## "Why not just use LangGraph's built-in time-travel?"
+## vs LangGraph's Built-In Checkpointer
 
-Great question. LangGraph's [checkpointer](https://langchain-ai.github.io/langgraph/concepts/persistence/) persists graph state at every super-step and lets you inspect/replay from any checkpoint. If you're 100% LangGraph and only need state inspection, it's a solid built-in.
+LangGraph's checkpointer is solid if you're 100% LangGraph and only need state inspection.
 
-**Agent VCR exists because state checkpoints aren't enough:**
+The gap: when your agent writes files to disk and fails, the checkpointer rolls back the state object. **The files stay.** Agent VCR runs `git reset --hard`. The files are gone.
 
 | | LangGraph Checkpointer | Agent VCR |
 |---|---|---|
 | Checkpoint in-memory state | ✅ | ✅ |
-| **Rollback files on disk** (`git reset --hard`) | ❌ | ✅ |
-| **Ghost Replay** (zero tokens, zero cost) | ❌ | ✅ |
-| **Sentinel** (real-time AST quality guard) | ❌ | ✅ |
-| Works with CrewAI, raw Python, any framework | ❌ LangGraph only | ✅ |
-| JSONL format (git-diffable, streamable) | ❌ Opaque persistence | ✅ |
-| Session forking with parallel comparison | ❌ | ✅ |
-
-When your agent writes files to disk — code, configs, data — and then fails, LangGraph's checkpointer rolls back the state object but **the files stay**. Agent VCR's ACID workspace runs `git reset --hard` and physically deletes the hallucinated files. That's the difference between "debugger" and "undo."
+| **Rollback files from disk** | ❌ | **✅** |
+| **Ghost Replay (zero tokens)** | ❌ | **✅** |
+| **Sentinel (code guardian)** | ❌ | **✅** |
+| Works with CrewAI, raw Python | ❌ | ✅ |
+| JSONL format (git-diffable) | ❌ | ✅ |
+| Session forking | ❌ | ✅ |
 
 ---
 
-## How It Compares
+## Performance
 
-> **Honest note:** LangSmith, LangFuse, and Arize Phoenix are excellent observability platforms with large teams and production deployments. Agent VCR is not an observability tool — it's an **intervention** tool. They show you what happened. We let you change it. The categories overlap on tracing but diverge on everything else.
+Every benchmark is enforced in CI. If it regresses, CI fails.
 
-<table>
-<tr>
-<th>Capability</th>
-<th>📼 Agent VCR</th>
-<th>LangSmith</th>
-<th>LangFuse</th>
-<th>Arize Phoenix</th>
-</tr>
-<tr><td>Record execution traces</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td></tr>
-<tr><td>Production-grade dashboards</td><td>Basic (local)</td><td><b>✅ Best-in-class</b></td><td>✅</td><td>✅</td></tr>
-<tr><td>Eval / scoring pipelines</td><td>❌</td><td><b>✅</b></td><td>✅</td><td>✅</td></tr>
-<tr><td>Cost & latency analytics</td><td>✅ (per-session)</td><td>✅</td><td>✅</td><td>✅</td></tr>
-<tr><td colspan="5" style="background:#1a1a1a"><b>↓ What only Agent VCR does ↓</b></td></tr>
-<tr><td><b>Time-travel to any step</b></td><td><b>✅</b></td><td>❌</td><td>❌</td><td>❌</td></tr>
-<tr><td><b>Edit state & resume mid-chain</b></td><td><b>✅</b></td><td>❌</td><td>❌</td><td>❌</td></tr>
-<tr><td><b>Fork from any frame</b></td><td><b>✅</b></td><td>❌</td><td>❌</td><td>❌</td></tr>
-<tr><td><b>ACID filesystem rollback</b></td><td><b>✅</b></td><td>❌</td><td>❌</td><td>❌</td></tr>
-<tr><td><b>Ghost Replay (zero-token re-runs)</b></td><td><b>✅</b></td><td>❌</td><td>❌</td><td>❌</td></tr>
-<tr><td><b>Sentinel (real-time code guardian)</b></td><td><b>✅</b></td><td>❌</td><td>❌</td><td>❌</td></tr>
-<tr><td>Terminal TUI debugger</td><td>✅</td><td>❌</td><td>❌</td><td>❌</td></tr>
-<tr><td>Fully local / self-hosted</td><td>✅</td><td>❌ (Cloud)</td><td>✅</td><td>✅</td></tr>
-<tr><td>Framework-agnostic</td><td>✅</td><td>⚠️ Best w/ LangChain</td><td>✅</td><td>✅</td></tr>
-</table>
+```bash
+pip install -e ".[dev]"
+pytest tests/benchmarks/ -v --benchmark-only
+```
 
-**TL;DR:** Use LangSmith/LangFuse/Phoenix for production observability and evals. Use Agent VCR when you need to actually *intervene* — fix a broken run without re-running it, replay a successful run for free, or rollback filesystem damage from a rogue agent.
+| Benchmark | Limit | What it measures |
+|---|---|---|
+| `test_benchmark_recorder_overhead` | **< 5ms mean** | Serialize + buffer one state snapshot |
+| `test_benchmark_file_write_speed` | **> 1,000 frames/sec** | Sustained write throughput (10K frames) |
+| `test_benchmark_load_speed` | **< 500ms** | Load a 10,000-frame session from disk |
+| `test_benchmark_goto_frame` | **< 1ms** | Random-access time-travel to any frame |
+
+Historical results: [ixchio.github.io/agent-vcr/dev/bench/](https://ixchio.github.io/agent-vcr/dev/bench/)
+
+---
+
+## Storage Format
+
+Plain JSONL. One object per line.
+
+```jsonl
+{"type": "session", "data": {"session_id": "my_run", "created_at": "..."}}
+{"type": "frame", "data": {"node_name": "planner", "input_state": {...}, "output_state": {...}}}
+{"type": "frame", "data": {"node_name": "coder", ...}}
+```
+
+- **Human-readable** — open in any text editor
+- **Git-diffable** — review agent state in PRs
+- **Append-only** — safe for concurrent agents, no full-file rewrites
+- **Streamable** — parse line-by-line without loading the full file
 
 ---
 
@@ -520,49 +425,39 @@ When your agent writes files to disk — code, configs, data — and then fails,
 
 ```python
 recorder = VCRRecorder(
-    output_dir=".vcr",     # where to save sessions
-    auto_save=True,        # flush frames to disk as you go
-    diff_mode=False,       # also store state diffs (jsonpatch)
+    output_dir=".vcr",
+    auto_save=True,
+    diff_mode=False,
 )
 
 recorder.start_session(session_id="my_run", tags=["prod"])
 recorder.record_step(node_name, input_state, output_state, metadata)
-recorder.record_llm_call(node_name, prompt, response, tokens, cost_usd)
-recorder.record_tool_call(node_name, tool_name, args, result)
+recorder.record_llm_call(model, messages, response, tokens_input, tokens_output, latency_ms)
+recorder.record_tool_call(tool_name, tool_input, tool_output, latency_ms)
 recorder.record_error(node_name, input_state, error)
 recorder.save() -> Path
-recorder.fork(from_frame=3) -> VCRRecorder  # branch from a frame
-
-# Context manager — auto-saves on exit
-with VCRRecorder() as r:
-    r.start_session("run")
-    ...
+recorder.fork(from_frame=3) -> VCRRecorder
 ```
 
 ### `VCRPlayer`
 
 ```python
 player = VCRPlayer.load(".vcr/my_run.vcr")
-player = VCRPlayer.load_by_id("my_run")
 
-player.goto_frame(index)           # → dict (output state at frame N)
-player.get_frame(index)            # → Frame object
-player.get_input_state(index)      # → dict (input state at frame N)
-player.list_nodes()                # → ['planner', 'coder', ...]
+player.goto_frame(index)           # → output state at frame N
+player.get_input_state(index)      # → input state at frame N
 player.get_errors()                # → [Frame, ...]
 player.compare_frames(a, b)        # → {'added': {}, 'removed': {}, 'modified': {}}
-player.get_total_latency()         # → float (ms)
-player.get_total_tokens()          # → int
 player.get_total_cost()            # → float (USD)
 
 player.resume(
-    agent_callable,                # your agent function
+    agent_callable,
     config=ResumeConfig(
-        from_frame=7,              # rewind to BEFORE step 7 ran
-        state_overrides={"k": "v"},# apply these before re-running
+        from_frame=7,
+        state_overrides={"k": "v"},
         mode=ResumeMode.FORK,      # FORK | REPLAY | MOCK
     )
-) -> str                           # new session ID
+)
 ```
 
 ### `ACIDWorkspace`
@@ -572,19 +467,17 @@ acid = ACIDWorkspace("/workspace", recorder=recorder)
 acid.begin(session_id="task-001")
 acid.savepoint(state, node_name="coder")
 acid.rollback(to_frame_index=2)    # git reset --hard
-acid.commit()                      # merge to main
+acid.commit()
 ```
 
-### `GoldenRunCache` (Ghost Replay)
+### `GoldenRunCache`
 
 ```python
-from agent_vcr.golden_cache import GoldenRunCache
-
 cache = GoldenRunCache(cache_dir=".vcr/golden")
-cache.save_golden_run(task_description, recorder) -> str  # fingerprint
-cache.replay(task_description)    -> (outputs, CostLedger)
-cache.invalidate(task_description) -> bool
-cache.list_runs()                  -> list[dict]
+cache.save_golden_run(task_description, recorder)
+outputs, ledger = cache.replay(task_description)
+cache.invalidate(task_description)
+cache.list_golden_runs()
 ```
 
 ---
@@ -592,63 +485,21 @@ cache.list_runs()                  -> list[dict]
 ## Examples
 
 ```bash
-# Basic recording and playback
-python examples/basic_usage.py
+# ACID rollback + Ghost Replay — start here
+python examples/acid_golden_run.py
 
-# Time-travel: rewind, edit state, resume (with assertion)
+# Time-travel: rewind, edit state, resume
 python examples/time_travel_demo.py
+
+# Sentinel: watch agent self-correct in real time
+python examples/sentinel_demo.py
 
 # LangGraph auto-instrumentation
 python examples/langgraph_integration.py
 
-# ACID transactions + Ghost Replay (most impressive demo)
-python examples/acid_golden_run.py
-
-# OpenHands Sentinel: agent self-correction live
-python examples/sentinel_demo.py
-
-# Async recording
-python examples/async_example.py
+# Basic recording and playback
+python examples/basic_usage.py
 ```
-
----
-
-## Storage Format
-
-Sessions are plain JSONL — one JSON object per line:
-
-```jsonl
-{"type": "session", "data": {"session_id": "my_run", "created_at": "2024-01-01T00:00:00Z", ...}}
-{"type": "frame", "data": {"node_name": "planner", "input_state": {...}, "output_state": {...}, "metadata": {"latency_ms": 120}}}
-{"type": "frame", "data": {"node_name": "coder", ...}}
-```
-
-- **Human-readable** — open in any text editor
-- **Git-diffable** — review agent state changes in PRs
-- **Append-only** — no rewrites, safe for concurrent agents
-- **Streamable** — parse line-by-line, no full-file load required
-
----
-
-## Performance
-
-Recording overhead is benchmarked in CI on every commit. The benchmark suite enforces hard limits — CI fails if any threshold is exceeded.
-
-**Reproduce locally:**
-
-```bash
-pip install -e ".[dev]"
-pytest tests/benchmarks/ -v --benchmark-only --benchmark-columns="min,max,mean,stddev,rounds"
-```
-
-| Benchmark | Threshold | What it measures |
-|---|---|---|
-| `test_benchmark_recorder_overhead` | **<5ms mean** per frame | Time to serialize and buffer one state snapshot |
-| `test_benchmark_file_write_speed` | **>1,000 frames/sec** | Sustained write throughput (10K frames) |
-| `test_benchmark_load_speed` | **<500ms** | Load a 10,000-frame session from disk |
-| `test_benchmark_goto_frame` | **<1ms** | Random-access time-travel to any frame |
-
-These are real `pytest-benchmark` tests with assertions. If they regress, CI breaks. Historical results are published at [ixchio.github.io/agent-vcr/dev/bench/](https://ixchio.github.io/agent-vcr/dev/bench/).
 
 ---
 
@@ -656,20 +507,33 @@ These are real `pytest-benchmark` tests with assertions. If they regress, CI bre
 
 - [x] Core recording and playback
 - [x] Time-travel resume with state injection
-- [x] FastAPI server with live WebSocket streaming
-- [x] LangGraph integration
-- [x] CrewAI integration
+- [x] LangGraph + CrewAI integrations
 - [x] Async recorder and player
-- [x] Terminal TUI debugger (`vcr-tui`)
-- [x] React dashboard with DAG visualization
+- [x] Terminal TUI debugger (`vcr`)
+- [x] Claude Code hook scaffolding (`vcr init --claude-code`)
+- [x] Live dashboard with DAG visualization
 - [x] ACID Transactions (git-backed filesystem rollback)
 - [x] Ghost Replay (zero-cost replay of successful runs)
-- [x] 🛡️ OpenHands Sentinel (real-time code quality guardian)
+- [x] Sentinel — real-time code quality guardian
 - [x] Context manager (`with VCRRecorder() as r:`)
+- [ ] Claude Code / Cursor integration
 - [ ] AutoGen integration
-- [ ] Cloud storage backend (S3, GCS)
+- [ ] Replay regression tests (golden paths as CI assertions)
 - [ ] Collaborative debugging (share sessions)
-- [ ] Replay regression tests (run golden paths as CI assertions)
+- [ ] Cloud storage backend (S3, GCS)
+
+---
+
+## Community
+
+If Agent VCR saved your repo from a bad autonomous run, share it:
+
+- **OpenHands** — [Discord](https://discord.gg/openhands) `#tools` channel
+- **LangGraph** — [Discord](https://discord.gg/langchain) `#community` channel
+- **r/LocalLLaMA** — post your ACID rollback story
+- **Hacker News** — Show HN posts with real before/after diffs get traction
+
+The best growth comes from developers sharing the moment it saved them. If that's you, a post with your actual corrupted-repo story (even anonymized) is worth more than any ad.
 
 ---
 
@@ -692,18 +556,16 @@ MIT — see [LICENSE](LICENSE).
 
 ---
 
-<br>
-
 <div align="center">
 
 ### 📼
 
-**Observability shows you what happened.**
-**Agent VCR lets you undo it.**
+**Every AI agent developer has had a bad run trash their codebase.**
+**Agent VCR is the undo button.**
 
 <br>
 
-```
+```bash
 pip install ai-agent-vcr
 ```
 
@@ -713,6 +575,6 @@ pip install ai-agent-vcr
 
 <br>
 
-<sub>Built with 🤍 by <a href="https://github.com/ixchio">ixchio</a> · MIT License</sub>
+<sub>Built by <a href="https://github.com/ixchio">ixchio</a> · MIT License</sub>
 
 </div>

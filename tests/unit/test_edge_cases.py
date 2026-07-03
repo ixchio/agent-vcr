@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from agent_vcr.models import ResumeConfig
 from agent_vcr.player import VCRPlayer
 from agent_vcr.recorder import VCRRecorder
 
@@ -242,3 +243,31 @@ class TestDiffMode:
             diff = frames[1].state_diff
             ops = {d["op"] for d in diff}
             assert "replace" in ops or "add" in ops
+
+    def test_diff_mode_resume_reconstructs_input(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            recorder = VCRRecorder(output_dir=tmpdir, auto_save=False, diff_mode=True)
+            recorder.start_session("diff-resume")
+
+            recorder.record_step("n1", {"seed": True}, {"a": 1, "b": 2})
+            recorder.record_step("n2", {"a": 1, "b": 2}, {"a": 1, "b": 3})
+            path = recorder.save()
+
+            player = VCRPlayer.load(path)
+            assert player.frames[1].input_state == {}
+            assert player.get_input_state(1) == {"a": 1, "b": 2}
+
+            seen_states = []
+
+            def agent(state):
+                seen_states.append(dict(state))
+                return {"seen": state}
+
+            new_recorder = VCRRecorder(output_dir=tmpdir, auto_save=False)
+            player.resume(
+                agent_callable=agent,
+                config=ResumeConfig(from_frame=1),
+                recorder=new_recorder,
+            )
+
+            assert seen_states == [{"a": 1, "b": 2}]

@@ -90,7 +90,7 @@ all = [
 
 [project.scripts]
 vcr-server = "agent_vcr.server:main"
-vcr = "agent_vcr.tui:main"
+vcr = "agent_vcr.cli:main"
 sentinel = "openhands_sentinel.cli:main"
 
 [project.urls]

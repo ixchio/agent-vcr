@@ -82,6 +82,28 @@ class TestVCRRecorder:
             assert forked.get_session().parent_session_id == "parent"
             assert forked.get_session().forked_from_frame == 0
 
+    def test_fork_restores_state(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            recorder = VCRRecorder(output_dir=tmpdir, auto_save=False)
+            recorder.start_session(session_id="parent")
+
+            recorder.record_step("node1", {"a": 1}, {"b": 2})
+            recorder.record_step("node2", {"b": 2}, {"c": 3})
+
+            forked = recorder.fork(
+                from_frame=1,
+                new_session_id="child",
+                state_overrides={"patched": True},
+            )
+
+            frames = forked.get_frames()
+            assert len(frames) == 1
+            assert frames[0].frame_type == FrameType.CHECKPOINT
+            assert frames[0].node_name == "fork:node2"
+            assert frames[0].input_state == {"c": 3}
+            assert frames[0].output_state == {"c": 3, "patched": True}
+            assert frames[0].parent_frame_id == recorder.get_frames()[1].frame_id
+
     def test_record_llm_call(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             recorder = VCRRecorder(output_dir=tmpdir, auto_save=False)

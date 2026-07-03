@@ -101,6 +101,7 @@ class AsyncVCRRecorder:
         output_state: dict[str, Any],
         metadata: FrameMetadata | None = None,
         frame_type: FrameType = FrameType.NODE_EXECUTION,
+        parent_frame_id: str | None = None,
     ) -> Frame:
         """Record a single execution step."""
         async with self._lock:
@@ -122,6 +123,7 @@ class AsyncVCRRecorder:
 
             frame = Frame(
                 session_id=self._session.session_id,
+                parent_frame_id=parent_frame_id,
                 node_name=node_name,
                 input_state=serialized_input,
                 output_state=serialized_output,
@@ -182,7 +184,7 @@ class AsyncVCRRecorder:
         return await self.record_step(
             node_name=f"llm:{model}",
             input_state={"messages": messages},
-            output_state={"response": str(response)},
+            output_state={"response": response},
             metadata=metadata,
             frame_type=FrameType.LLM_CALL,
         )
@@ -193,13 +195,19 @@ class AsyncVCRRecorder:
         tool_input: Any,
         tool_output: Any,
         latency_ms: float = 0.0,
+        error: str | None = None,
     ) -> Frame:
         """Record a tool call."""
-        metadata = FrameMetadata(latency_ms=latency_ms)
+        metadata = FrameMetadata(
+            latency_ms=latency_ms,
+            error_message=error,
+            error_type="ToolError" if error else None,
+        )
+        input_state = tool_input if isinstance(tool_input, dict) else {"value": tool_input}
         return await self.record_step(
             node_name=f"tool:{tool_name}",
-            input_state={"tool_input": StateSerializer.serialize(tool_input)},
-            output_state={"tool_output": StateSerializer.serialize(tool_output)},
+            input_state=input_state,
+            output_state={"result": tool_output, "error": error},
             metadata=metadata,
             frame_type=FrameType.TOOL_CALL,
         )
@@ -255,10 +263,25 @@ class AsyncVCRRecorder:
         """Get all recorded frames as a property."""
         return self.get_frames()
 
-    async def fork(self, from_frame: int) -> AsyncVCRRecorder:
+    async def fork(
+        self,
+        from_frame: int,
+        new_session_id: str | None = None,
+        state_overrides: dict | None = None,
+    ) -> AsyncVCRRecorder:
         """Fork a new recorder from a specific frame."""
         if self._session is None:
             raise RuntimeError("No active session to fork from.")
+
+        all_frames = self.get_frames()
+        if from_frame < 0 or from_frame >= len(all_frames):
+            raise ValueError(f"Frame {from_frame} not found (have {len(all_frames)} frames)")
+
+        target_frame = all_frames[from_frame]
+        base_state = StateSerializer.deserialize(target_frame.output_state)
+        forked_state = dict(base_state)
+        if state_overrides:
+            forked_state.update(state_overrides)
 
         new_recorder = AsyncVCRRecorder(
             output_dir=self.output_dir,
@@ -268,8 +291,24 @@ class AsyncVCRRecorder:
         )
 
         await new_recorder.start_session(
+            session_id=new_session_id,
             parent_session_id=self._session.session_id,
             forked_from_frame=from_frame,
+            metadata={"forked_from": self._session.session_id},
+        )
+        await new_recorder.record_step(
+            node_name=f"fork:{target_frame.node_name}",
+            input_state=base_state,
+            output_state=forked_state,
+            metadata=FrameMetadata(
+                custom={
+                    "source": "fork",
+                    "forked_from_frame": from_frame,
+                    "forked_from_frame_id": target_frame.frame_id,
+                }
+            ),
+            frame_type=FrameType.CHECKPOINT,
+            parent_frame_id=target_frame.frame_id,
         )
 
         return new_recorder

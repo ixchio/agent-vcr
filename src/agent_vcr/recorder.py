@@ -278,11 +278,12 @@ class VCRRecorder:
     ) -> VCRRecorder:
         """Create a forked recorder starting from a specific frame."""
         all_frames = self.get_frames()
-        if from_frame >= len(all_frames):
+        if from_frame < 0 or from_frame >= len(all_frames):
             raise ValueError(f"Frame {from_frame} not found (have {len(all_frames)} frames)")
 
         target_frame = all_frames[from_frame]
-        forked_state = target_frame.output_state.copy()
+        base_state = StateSerializer.deserialize(target_frame.output_state)
+        forked_state = dict(base_state)
         if state_overrides:
             forked_state.update(state_overrides)
 
@@ -298,6 +299,21 @@ class VCRRecorder:
             parent_session_id=self._session.session_id if self._session else None,
             forked_from_frame=from_frame,
             metadata={"forked_from": self._session.session_id if self._session else None},
+        )
+
+        new_recorder.record_step(
+            node_name=f"fork:{target_frame.node_name}",
+            input_state=base_state,
+            output_state=forked_state,
+            metadata=FrameMetadata(
+                custom={
+                    "source": "fork",
+                    "forked_from_frame": from_frame,
+                    "forked_from_frame_id": target_frame.frame_id,
+                }
+            ),
+            frame_type=FrameType.CHECKPOINT,
+            parent_frame_id=target_frame.frame_id,
         )
 
         return new_recorder
