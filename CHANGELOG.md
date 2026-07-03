@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.1] - 2026-07-03
+
+### Added
+- `vcr init --claude-code` scaffolds Claude Code lifecycle hooks for Agent VCR recording.
+
+### Fixed
+- `fork()` now materializes fork state as a real checkpoint frame.
+- `diff_mode` resume reconstructs omitted input state from prior output state.
+- ACID rollback removes ignored generated files while preserving VCR audit files.
+- Async recorder helper methods now match the sync recorder more closely.
+- README/API drift around CLI, cache listing, and recorder helpers.
+
 ## [0.5.0] - 2026-03-26
 
 ### Added

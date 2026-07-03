@@ -15,7 +15,7 @@ from agent_vcr.models import (
 from agent_vcr.player import VCRPlayer
 from agent_vcr.recorder import VCRRecorder
 
-__version__ = "0.7.0"
+__version__ = "0.7.1"
 __all__ = [
     "AsyncVCRPlayer",
     "AsyncVCRRecorder",
@@ -31,4 +31,3 @@ __all__ = [
     "ResumeMode",
     "StateSerializer",
 ]
-
