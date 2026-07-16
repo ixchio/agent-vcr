@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] - 2026-07-15
+
+### Added
+- Safe ACID rollback now preserves pre-existing untracked and ignored files while deleting only files introduced during the transaction.
+- `ACIDWorkspace` rejects dirty tracked worktrees by default, with `dirty_worktree_policy="allow"` available for advanced callers.
+- Ghost Replay identities can now include model, prompt hash, code commit, tool schema hash, dependency lock hash, environment, and custom fields.
+- Ghost Replay ledgers now expose cache-hit reasons and per-step replay/rerun sources.
+- `vcr-server` supports optional token auth for API and WebSocket access.
+- `sentinel watch` provides polling-based live scans without adding a runtime watcher dependency.
+- `Makefile` provides repeatable install, verify, build, benchmark, and cleanup commands.
+
+### Changed
+- `vcr-server` binds to `127.0.0.1` by default instead of `0.0.0.0`.
+- Partial Ghost Replay is now conservative by default: if a step changes, downstream steps are re-executed unless `allow_partial_replay=True`.
+- Dashboard/server dependencies moved out of the core install and into the `dashboard` extra.
+- CI now type-checks and measures coverage for `openhands_sentinel`.
+- Build metadata now explicitly excludes local caches, runtime recordings, and build artifacts from release outputs.
+
 ## [0.7.1] - 2026-07-03
 
 ### Added
@@ -30,7 +48,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 
 ### Added
-- **Legit React Dashboard** — We built a stunning, glassmorphism-themed React dashboard right into the package. Fire up `vcr-server`, pop open `localhost:8000`, and you get a beautiful UI to visualize live frame streaming, track token usage/latency, and inspect state changes with dedicated JSON diffing tabs. 100% local. No cloud bullshit.
+- **Legit React Dashboard** — We built a stunning, glassmorphism-themed React dashboard right into the package. Fire up `vcr-server`, pop open `localhost:8000`, and you get a beautiful UI to visualize live frame streaming, track token usage/latency, and inspect state changes with dedicated JSON diffing tabs. 100% local. No cloud service.
 - **Search & Filter Support** — Added `GET /api/tags` and search queries to easily track down specific sessions in the dashboard.
 - **`[dashboard]` Extra** — We kept the core lightweight. Run `pip install "ai-agent-vcr[dashboard]"` if you want the FastAPI server and UI bundled in.
 

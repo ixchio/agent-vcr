@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "ai-agent-vcr"
-version = "0.7.1"
+version = "0.8.0"
 description = "ACID transactions, time-travel debugging, and zero-cost Ghost Replay for AI agents. Rollback filesystem + state. Works with LangGraph, CrewAI, or raw Python."
 readme = "README.md"
 license = "MIT"
@@ -43,6 +43,7 @@ classifiers = [
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Software Development :: Debuggers",
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Topic :: Software Development :: Testing",
@@ -53,10 +54,6 @@ classifiers = [
 dependencies = [
     "pydantic>=2.0.0",
     "eval-type-backport>=0.2.0; python_version < '3.10'",
-    "fastapi>=0.104.0",
-    "uvicorn>=0.24.0",
-    "websockets>=12.0",
-    "watchdog>=3.0.0",
     "aiofiles>=23.0.0",
 ]
 
@@ -66,7 +63,7 @@ langchain = ["langchain>=0.1.0"]
 crewai = ["crewai>=0.28.0"]
 openhands = ["openhands-ai>=0.30.0"]
 tui = ["rich>=13.0.0", "textual>=0.40.0"]
-dashboard = ["fastapi>=0.104.0", "uvicorn>=0.24.0", "websockets>=12.0"]
+dashboard = ["fastapi>=0.104.0", "uvicorn>=0.24.0", "websockets>=12.0", "watchdog>=3.0.0"]
 dev = [
     "pytest>=7.4.0",
     "pytest-asyncio>=0.21.0",
@@ -77,15 +74,25 @@ dev = [
     "ruff>=0.1.0",
     "mypy>=1.6.0",
     "pre-commit>=3.5.0",
+    "build>=1.0.0",
+    "twine>=4.0.0",
     "types-aiofiles>=23.2.0.20240417",
+    "fastapi>=0.104.0",
+    "uvicorn>=0.24.0",
+    "websockets>=12.0",
+    "watchdog>=3.0.0",
 ]
 all = [
     "langgraph>=0.0.20",
     "langchain>=0.1.0",
     "crewai>=0.28.0",
-    "pytest>=7.4.0",
-    "pytest-asyncio>=0.21.0",
-    "pytest-cov>=4.1.0",
+    "openhands-ai>=0.30.0",
+    "rich>=13.0.0",
+    "textual>=0.40.0",
+    "fastapi>=0.104.0",
+    "uvicorn>=0.24.0",
+    "websockets>=12.0",
+    "watchdog>=3.0.0",
 ]
 
 [project.scripts]
@@ -98,6 +105,36 @@ Homepage = "https://github.com/ixchio/agent-vcr"
 Documentation = "https://ixchio.github.io/agent-vcr/"
 Repository = "https://github.com/ixchio/agent-vcr"
 Issues = "https://github.com/ixchio/agent-vcr/issues"
+
+[tool.hatch.build]
+exclude = [
+    "/.benchmarks",
+    "/.mypy_cache",
+    "/.pytest_cache",
+    "/.ruff_cache",
+    "/.vcr",
+    "/build",
+    "/dist",
+    "/htmlcov",
+    "/**/__pycache__",
+    "/**/*.pyc",
+]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/src",
+    "/tests",
+    "/examples",
+    "/docs",
+    "/scripts",
+    "/README.md",
+    "/CHANGELOG.md",
+    "/CONTRIBUTING.md",
+    "/LICENSE",
+    "/SECURITY.md",
+    "/Makefile",
+    "/pyproject.toml",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/agent_vcr", "src/openhands_sentinel"]
@@ -131,4 +168,4 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
-addopts = "-v --cov=agent_vcr --cov-report=term-missing"
+addopts = "-v --cov=agent_vcr --cov=openhands_sentinel --cov-report=term-missing"

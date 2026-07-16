@@ -41,6 +41,8 @@ class CostLedger:
         self.replay_latency_ms: float = 0.0
         self.steps_replayed: int = 0
         self.steps_rerun: int = 0
+        self.cache_hit_reason: str | None = None
+        self.step_sources: list[str] = []
 
     @property
     def tokens_saved(self) -> int:
@@ -80,6 +82,8 @@ class CostLedger:
             },
             "steps_replayed": self.steps_replayed,
             "steps_rerun": self.steps_rerun,
+            "cache_hit_reason": self.cache_hit_reason,
+            "step_sources": self.step_sources,
         }
 
     def __repr__(self) -> str:
@@ -117,6 +121,7 @@ class GoldenRunCache:
         task: str,
         recorder: VCRRecorder,
         tags: list[str] | None = None,
+        identity: dict[str, Any] | None = None,
     ) -> str:
         """
         Save a successful agent run as a golden path.
@@ -125,11 +130,14 @@ class GoldenRunCache:
             task: The task description that produced this run.
             recorder: The VCRRecorder that recorded the successful run.
             tags: Optional tags for categorization.
+            identity: Optional validity inputs such as model, prompt hash,
+                      code commit, tool schema hash, or dependency lock hash.
 
         Returns:
             The fingerprint key used to cache this run.
         """
-        fingerprint = self._fingerprint(task)
+        normalized_identity = self._normalize_identity(identity)
+        fingerprint = self._fingerprint(task, normalized_identity)
         session = recorder.get_session()
         frames = recorder.get_frames()
 
@@ -154,6 +162,7 @@ class GoldenRunCache:
             "total_cost_usd": session.total_cost_usd,
             "created_at": datetime.now(timezone.utc).isoformat(),
             "tags": tags or [],
+            "identity": normalized_identity,
             "file": str(golden_path),
         }
         self._save_index()
@@ -164,13 +173,13 @@ class GoldenRunCache:
         )
         return fingerprint
 
-    def has_golden_run(self, task: str) -> bool:
+    def has_golden_run(self, task: str, identity: dict[str, Any] | None = None) -> bool:
         """Check if a golden run exists for this task."""
-        return self._fingerprint(task) in self._index
+        return self._fingerprint(task, self._normalize_identity(identity)) in self._index
 
-    def get_golden_info(self, task: str) -> dict | None:
+    def get_golden_info(self, task: str, identity: dict[str, Any] | None = None) -> dict | None:
         """Get metadata about a cached golden run."""
-        fp = self._fingerprint(task)
+        fp = self._fingerprint(task, self._normalize_identity(identity))
         return self._index.get(fp)
 
     def replay(
@@ -179,6 +188,8 @@ class GoldenRunCache:
         step_executor: Callable[[str, dict], dict] | None = None,
         changed_steps: set[int] | None = None,
         recorder: VCRRecorder | None = None,
+        identity: dict[str, Any] | None = None,
+        allow_partial_replay: bool = False,
     ) -> tuple[list[dict], CostLedger]:
         """
         Replay a golden run. Steps not in `changed_steps` are replayed from
@@ -190,13 +201,21 @@ class GoldenRunCache:
             step_executor: Callable(node_name, input_state) -> output_state
                            Only called for steps in `changed_steps`.
             changed_steps: Set of frame indices that need re-execution.
-                           If None, ALL steps are replayed from cache.
+                           If None, ALL steps are replayed from cache. By
+                           default, every downstream step after the first
+                           changed step is also re-executed.
             recorder: Optional recorder to log the replay session.
+            identity: Optional validity inputs used to select the golden run.
+            allow_partial_replay: If True, replay unchanged downstream steps
+                                  even after a changed step. This is faster but
+                                  can be logically unsafe unless dependencies
+                                  are known to be independent.
 
         Returns:
             Tuple of (list of output states, CostLedger with savings).
         """
-        fingerprint = self._fingerprint(task)
+        normalized_identity = self._normalize_identity(identity)
+        fingerprint = self._fingerprint(task, normalized_identity)
         if fingerprint not in self._index:
             raise KeyError(f"No golden run found for task: {task!r}")
 
@@ -204,7 +223,10 @@ class GoldenRunCache:
         golden_player = VCRPlayer.load(golden_info["file"])
 
         changed_steps = changed_steps or set()
+        if changed_steps and step_executor is None:
+            raise ValueError("changed_steps requires step_executor so invalidated steps can be re-run")
         ledger = CostLedger()
+        ledger.cache_hit_reason = self._cache_hit_reason(fingerprint, normalized_identity)
 
         # Populate the original cost from the golden run
         ledger.original_tokens = golden_player.get_total_tokens()
@@ -218,20 +240,26 @@ class GoldenRunCache:
             metadata={
                 "replay_of": golden_info["session_id"],
                 "golden_fingerprint": fingerprint,
+                "golden_identity": normalized_identity,
                 "mode": "golden_replay",
             },
             tags=["golden_replay"],
         )
 
         outputs: list[dict] = []
+        rerun_from = min(changed_steps) if changed_steps and not allow_partial_replay else None
+        current_state: dict[str, Any] | None = None
 
         for i, frame in enumerate(golden_player.frames):
-            if i in changed_steps and step_executor is not None:
-                # RE-RUN: This step has changed, actually call the LLM
+            should_rerun = i in changed_steps or (rerun_from is not None and i >= rerun_from)
+
+            if should_rerun and step_executor is not None:
                 start = time.perf_counter()
-                input_state = StateSerializer.deserialize(frame.input_state)
+                original_input = golden_player.get_input_state(i)
+                input_state = current_state if current_state is not None else original_input
                 result = step_executor(frame.node_name, input_state)
                 elapsed = (time.perf_counter() - start) * 1000
+                source = "changed_step" if i in changed_steps else "downstream_invalidated"
 
                 recorder.record_step(
                     node_name=frame.node_name,
@@ -241,7 +269,7 @@ class GoldenRunCache:
                         latency_ms=elapsed,
                         tokens_used=frame.metadata.tokens_used,
                         cost_usd=frame.metadata.cost_usd,
-                        custom={"source": "re_executed"},
+                        custom={"source": "re_executed", "reason": source},
                     ),
                 )
 
@@ -250,26 +278,34 @@ class GoldenRunCache:
                 ledger.replay_cost_usd += frame.metadata.cost_usd or 0.0
                 ledger.replay_latency_ms += elapsed
                 ledger.steps_rerun += 1
+                ledger.step_sources.append(source)
                 outputs.append(result)
+                current_state = result
             else:
                 # REPLAY: Cache hit — zero LLM cost, instant
                 output = StateSerializer.deserialize(frame.output_state)
+                input_state = golden_player.get_input_state(i)
 
                 recorder.record_step(
                     node_name=frame.node_name,
-                    input_state=StateSerializer.deserialize(frame.input_state),
+                    input_state=input_state,
                     output_state=output,
                     metadata=FrameMetadata(
                         latency_ms=0.1,  # negligible replay overhead
                         tokens_used=0,
                         cost_usd=0.0,
-                        custom={"source": "golden_cache"},
+                        custom={
+                            "source": "golden_cache",
+                            "reason": ledger.cache_hit_reason,
+                        },
                     ),
                 )
 
                 ledger.replay_latency_ms += 0.1
                 ledger.steps_replayed += 1
+                ledger.step_sources.append("golden_cache")
                 outputs.append(output)
+                current_state = output
 
         recorder.save()
 
@@ -291,9 +327,9 @@ class GoldenRunCache:
         """Backward-compatible alias for list_golden_runs()."""
         return self.list_golden_runs()
 
-    def invalidate(self, task: str) -> bool:
+    def invalidate(self, task: str, identity: dict[str, Any] | None = None) -> bool:
         """Remove a golden run from the cache."""
-        fp = self._fingerprint(task)
+        fp = self._fingerprint(task, self._normalize_identity(identity))
         if fp in self._index:
             # Delete the file
             golden_file = Path(self._index[fp]["file"])
@@ -308,10 +344,53 @@ class GoldenRunCache:
     #  Internal
     # ──────────────────────────────────────────────
 
-    def _fingerprint(self, task: str) -> str:
+    @staticmethod
+    def build_identity(
+        *,
+        model: str | None = None,
+        prompt_hash: str | None = None,
+        code_commit: str | None = None,
+        tool_schema_hash: str | None = None,
+        dependency_lock_hash: str | None = None,
+        environment: str | None = None,
+        extra: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Build a stable identity object for validating golden-run reuse."""
+        identity = {
+            "model": model,
+            "prompt_hash": prompt_hash,
+            "code_commit": code_commit,
+            "tool_schema_hash": tool_schema_hash,
+            "dependency_lock_hash": dependency_lock_hash,
+            "environment": environment,
+        }
+        if extra:
+            identity.update(extra)
+        return {key: value for key, value in identity.items() if value is not None}
+
+    def _fingerprint(self, task: str, identity: dict[str, Any] | None = None) -> str:
         """Generate a deterministic fingerprint for a task description."""
         normalized = task.strip().lower()
-        return hashlib.sha256(normalized.encode()).hexdigest()[:16]
+        normalized_identity = self._normalize_identity(identity)
+        if not normalized_identity:
+            return hashlib.sha256(normalized.encode()).hexdigest()[:16]
+        payload = json.dumps(
+            {"task": normalized, "identity": normalized_identity},
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return hashlib.sha256(payload.encode()).hexdigest()[:16]
+
+    def _normalize_identity(self, identity: dict[str, Any] | None) -> dict[str, Any]:
+        if not identity:
+            return {}
+        return json.loads(json.dumps(identity, sort_keys=True, default=str))
+
+    def _cache_hit_reason(self, fingerprint: str, identity: dict[str, Any]) -> str:
+        if not identity:
+            return f"task_fingerprint_match:{fingerprint}"
+        keys = ",".join(sorted(identity))
+        return f"task_and_identity_match:{fingerprint}:{keys}"
 
     def _load_index(self) -> None:
         """Load the golden run index from disk."""

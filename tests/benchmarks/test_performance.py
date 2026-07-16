@@ -1,7 +1,7 @@
 """Performance benchmarks for Agent VCR.
 
 Every benchmark has an assertion threshold. If it regresses, CI fails.
-Run locally:  python -m pytest tests/benchmarks/ -v --benchmark-only --no-cov
+Run locally:  python3 -m pytest tests/benchmarks/ -v --benchmark-only --no-cov
 """
 
 from __future__ import annotations

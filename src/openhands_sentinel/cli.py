@@ -134,6 +134,74 @@ def scan_directory(directory: str, config: SentinelConfig) -> int:
         return 0
 
 
+def _iter_python_files(target: Path) -> list[Path]:
+    py_files = sorted(target.rglob("*.py"))
+    return [
+        f for f in py_files
+        if not any(part.startswith(".") for part in f.parts)
+        and "node_modules" not in f.parts
+        and "__pycache__" not in f.parts
+        and ".venv" not in f.parts
+        and "venv" not in f.parts
+    ]
+
+
+def watch_directory(
+    directory: str,
+    config: SentinelConfig,
+    interval: float = 1.0,
+    once: bool = False,
+) -> int:
+    """Watch Python files and rescan changed files until interrupted."""
+    print_banner()
+    target = Path(directory)
+    if not target.exists():
+        print(f"{Colors.RED}Error: Directory {directory} does not exist{Colors.RESET}")
+        return 1
+
+    recorder = VCRRecorder(output_dir=os.path.join(directory, ".vcr"))
+    sentinel = Sentinel(config=config, recorder=recorder)
+    sentinel.start_session("sentinel-watch")
+    mtimes: dict[Path, float] = {}
+    exit_code = 0
+
+    print(f"{Colors.DIM}  Watching Python files in {directory}{Colors.RESET}\n")
+    try:
+        while True:
+            changed: list[Path] = []
+            for py_file in _iter_python_files(target):
+                try:
+                    mtime = py_file.stat().st_mtime
+                except OSError:
+                    continue
+                if mtimes.get(py_file) != mtime:
+                    mtimes[py_file] = mtime
+                    changed.append(py_file)
+
+            for py_file in changed:
+                try:
+                    content = py_file.read_text(encoding="utf-8", errors="ignore")
+                except Exception:
+                    continue
+                rel_path = str(py_file.relative_to(target))
+                result, warning = sentinel.check_and_warn(rel_path, content)
+                status = f"{Colors.GREEN}clean{Colors.RESET}" if result.passed else f"{Colors.RED}{len(result.violations)} issue(s){Colors.RESET}"
+                print(f"  {rel_path}: {status}")
+                if warning:
+                    exit_code = max(exit_code, 2 if result.blocker_count else 1)
+
+            if once:
+                break
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        path = sentinel.save()
+        print(f"\n  {Colors.DIM}Audit trail saved to {path}{Colors.RESET}")
+
+    return exit_code
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="OpenHands Sentinel — Code quality guardian for AI agents",
@@ -156,6 +224,15 @@ Examples:
     scan_parser.add_argument("--max-file-lines", type=int, default=500, help="Max file lines")
     scan_parser.add_argument("--max-params", type=int, default=7, help="Max function parameters")
 
+    watch_parser = subparsers.add_parser("watch", help="Watch a directory and scan changed Python files")
+    watch_parser.add_argument("directory", default=".", nargs="?", help="Directory to watch")
+    watch_parser.add_argument("--max-lines", type=int, default=50, help="Max function lines")
+    watch_parser.add_argument("--max-complexity", type=int, default=10, help="Max cyclomatic complexity")
+    watch_parser.add_argument("--max-file-lines", type=int, default=500, help="Max file lines")
+    watch_parser.add_argument("--max-params", type=int, default=7, help="Max function parameters")
+    watch_parser.add_argument("--interval", type=float, default=1.0, help="Polling interval in seconds")
+    watch_parser.add_argument("--once", action="store_true", help="Run one watch iteration and exit")
+
     args = parser.parse_args()
 
     if args.command == "scan":
@@ -166,6 +243,15 @@ Examples:
             max_function_params=args.max_params,
         )
         exit_code = scan_directory(args.directory, config)
+        sys.exit(exit_code)
+    elif args.command == "watch":
+        config = SentinelConfig(
+            max_function_lines=args.max_lines,
+            max_complexity=args.max_complexity,
+            max_file_lines=args.max_file_lines,
+            max_function_params=args.max_params,
+        )
+        exit_code = watch_directory(args.directory, config, interval=args.interval, once=args.once)
         sys.exit(exit_code)
     else:
         parser.print_help()

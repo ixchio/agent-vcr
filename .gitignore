@@ -5,6 +5,10 @@ __pycache__/
 *.so
 *.egg-info/
 *.egg
+.eggs/
+pip-wheel-metadata/
+
+# Build artifacts
 dist/
 build/
 *.whl
@@ -23,9 +27,19 @@ env/
 
 # Testing
 .coverage
+.coverage.*
+coverage.xml
 .pytest_cache/
 htmlcov/
 .tox/
+.nox/
+.benchmarks/
+
+# Type/lint caches
+.mypy_cache/
+.ruff_cache/
+.dmypy.json
+dmypy.json
 
 # Agent VCR runtime
 .vcr/

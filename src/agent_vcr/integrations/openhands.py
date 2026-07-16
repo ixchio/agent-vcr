@@ -2,9 +2,9 @@ import logging
 import re
 import subprocess
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
-from agent_vcr.models import Frame, Session
+from agent_vcr.models import Frame, FrameMetadata, Session
 from agent_vcr.recorder import VCRRecorder
 
 logger = logging.getLogger(__name__)
@@ -19,11 +19,19 @@ class ACIDWorkspace:
     Combines Agent VCR state snapshotting with git-backed filesystem freezing to allow
     full-world rollbacks.
     """
-    def __init__(self, workspace_dir: str, recorder: Optional[VCRRecorder] = None) -> None:
+    def __init__(
+        self,
+        workspace_dir: str,
+        recorder: Optional[VCRRecorder] = None,
+        dirty_worktree_policy: Literal["fail", "allow"] = "fail",
+    ) -> None:
         self.workspace_dir = Path(workspace_dir).resolve()
         self.recorder = recorder or VCRRecorder(auto_save=True)
+        self.dirty_worktree_policy = dirty_worktree_policy
         self.session: Optional[Session] = None
         self.branch_name: Optional[str] = None
+        self.base_ref: Optional[str] = None
+        self._baseline_local_paths: set[str] = set()
 
         self.workspace_dir.mkdir(parents=True, exist_ok=True)
 
@@ -45,7 +53,7 @@ class ACIDWorkspace:
 
     def begin(self, session_id: Optional[str] = None) -> Session:
         """
-        BEGIN - Starts a session and git stashes the workspace state as a snapshot.
+        BEGIN - Starts a session and snapshots local, non-git-owned files.
         """
         self.session = self.recorder.start_session(session_id)
         if self.session is None:
@@ -54,25 +62,25 @@ class ACIDWorkspace:
         # Validate session ID before using it in git commands
         self._sanitize_session_id(self.session.session_id)
 
-        # Git initialize workspace if not already
-        if not (self.workspace_dir / ".git").exists():
-            subprocess.run(["git", "init"], cwd=self.workspace_dir, check=True)
-            subprocess.run(["git", "config", "user.name", "Agent VCR"], cwd=self.workspace_dir, check=True)
-            subprocess.run(["git", "config", "user.email", "vcr@example.com"], cwd=self.workspace_dir, check=True)
-            subprocess.run(["git", "branch", "-m", "main"], cwd=self.workspace_dir, check=True)
+        self._ensure_git_repo()
+        self.base_ref = self._current_ref()
+        self._baseline_local_paths = self._local_untracked_or_ignored_paths()
 
-            # Initial baseline commit
-            init_file = self.workspace_dir / ".acid_init"
-            if not init_file.exists():
-                init_file.touch()
-            subprocess.run(["git", "add", "-A"], cwd=self.workspace_dir, check=True)
-            subprocess.run(["git", "commit", "-m", "Initial ACID baseline"], cwd=self.workspace_dir, check=True)
+        dirty_tracked = self._dirty_tracked_paths()
+        if dirty_tracked and self.dirty_worktree_policy == "fail":
+            sample = ", ".join(dirty_tracked[:5])
+            more = "" if len(dirty_tracked) <= 5 else f", ... +{len(dirty_tracked) - 5} more"
+            raise RuntimeError(
+                "ACIDWorkspace refuses to start with dirty tracked files by default "
+                f"because rollback would discard them: {sample}{more}. "
+                "Commit/stash first, or pass dirty_worktree_policy='allow'."
+            )
 
         # ISOLATION: Create an isolated branch for this agent's uncommitted file changes.
         # The session ID is whitelist-validated by _sanitize_session_id() above,
         # so git argument injection (e.g. --orphan) is not possible here.
         self.branch_name = f"acid/{self.session.session_id}"
-        subprocess.run(["git", "checkout", "-b", self.branch_name], cwd=self.workspace_dir, check=True)
+        self._git(["checkout", "-b", self.branch_name])
 
         logger.info(f"ACID BEGIN: Session {self.session.session_id} started on branch {self.branch_name}")
         return self.session
@@ -81,18 +89,20 @@ class ACIDWorkspace:
         """
         SAVEPOINT - every frame is a savepoint, filesystem + memory state together
         """
-        # 1. Record state map via agent-vcr
+        # 1. Synchronize the filesystem state via git.
+        self._stage_transaction_files()
+        commit_msg = f"SAVEPOINT: {node_name}"
+        self._git(["commit", "--allow-empty", "-m", commit_msg])
+        commit_hash = self._git_stdout(["rev-parse", "HEAD"])
+
+        # 2. Record state map via agent-vcr with the commit hash already attached
+        # so it is durable even if the recorder flushes every frame.
         frame = self.recorder.record_step(
             node_name=node_name,
             input_state={},
-            output_state=step_data
+            output_state=step_data,
+            metadata=FrameMetadata(custom={"acid_commit_hash": commit_hash}),
         )
-
-        # 2. Synchronize the filesystem state via git
-        subprocess.run(["git", "add", "-A"], cwd=self.workspace_dir, check=True)
-        commit_msg = f"SAVEPOINT: {frame.frame_id}"
-
-        subprocess.run(["git", "commit", "--allow-empty", "-m", commit_msg], cwd=self.workspace_dir, check=True)
         logger.info(f"ACID SAVEPOINT: Filesystem & memory synced at frame {frame.frame_id}")
 
         return frame
@@ -106,7 +116,7 @@ class ACIDWorkspace:
 
         # 1. Rewind the VCRRecorder
         frames = self.recorder.get_frames()
-        if to_frame_index >= len(frames):
+        if to_frame_index < 0 or to_frame_index >= len(frames):
             raise ValueError(f"Frame index {to_frame_index} out of bounds")
 
         target_frame = frames[to_frame_index]
@@ -114,28 +124,20 @@ class ACIDWorkspace:
         self.session = self.recorder.get_session()
 
         # 2. Rewind the git workspace
-        commit_msg = f"SAVEPOINT: {target_frame.frame_id}"
-        log_out = subprocess.run(
-            ["git", "log", f"--grep={commit_msg}", "--format=%H"],
-            cwd=self.workspace_dir,
-            capture_output=True,
-            text=True,
-            check=True
-        )
-
-        target_hash = log_out.stdout.strip().splitlines()[0] if log_out.stdout.strip() else None
+        target_hash = target_frame.metadata.custom.get("acid_commit_hash")
+        if not isinstance(target_hash, str) or not target_hash:
+            commit_msg = f"SAVEPOINT: {target_frame.frame_id}"
+            log_out = self._git_stdout(["log", f"--grep={commit_msg}", "--format=%H"])
+            target_hash = log_out.splitlines()[0] if log_out else None
 
         if not target_hash:
             # Fallback for savepoints where FS didn't mutate, rewind to the closest previous hash
             logger.warning(f"No direct file mutation at frame {target_frame.frame_id}. Rolling back to latest FS state.")
-            subprocess.run(["git", "reset", "--hard"], cwd=self.workspace_dir, check=True)
+            self._git(["reset", "--hard"])
         else:
-            subprocess.run(["git", "reset", "--hard", target_hash], cwd=self.workspace_dir, check=True)
+            self._git(["reset", "--hard", target_hash])
 
-        clean_cmd = ["git", "clean", "-fdx"]
-        for exclude in self._git_clean_excludes():
-            clean_cmd.extend(["-e", exclude])
-        subprocess.run(clean_cmd, cwd=self.workspace_dir, check=True)
+        self._clean_generated_local_paths()
 
         logger.info("ACID ROLLBACK SUCCESS: Filesystem and memory correctly rewound.")
 
@@ -151,15 +153,126 @@ class ACIDWorkspace:
         # Save any final memory states
         self.recorder.save()
 
-        # Merge the branch back to main.
+        # Merge the branch back to the original branch/ref.
         # Branch names are safe — validated by _sanitize_session_id().
-        subprocess.run(["git", "checkout", "main"], cwd=self.workspace_dir, check=True)
-        subprocess.run(
-            ["git", "merge", "--no-ff", "-m", f"ACID COMMIT: {self.session.session_id}", self.branch_name],
-            cwd=self.workspace_dir,
-            check=True,
+        self._git(["checkout", self.base_ref or "main"])
+        self._git(["merge", "--no-ff", "-m", f"ACID COMMIT: {self.session.session_id}", self.branch_name])
+        logger.info(
+            "ACID COMMIT: Session %s successfully merged to %s.",
+            self.session.session_id,
+            self.base_ref or "main",
         )
-        logger.info(f"ACID COMMIT: Session {self.session.session_id} successfully merged to main.")
+
+    def _git(
+        self,
+        args: list[str],
+        *,
+        capture_output: bool = False,
+        check: bool = True,
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["git", *args],
+            cwd=self.workspace_dir,
+            capture_output=capture_output,
+            text=True,
+            check=check,
+        )
+
+    def _git_stdout(self, args: list[str]) -> str:
+        return self._git(args, capture_output=True).stdout.strip()
+
+    def _ensure_git_repo(self) -> None:
+        """Initialize git and create a baseline commit when the workspace is new."""
+        if not (self.workspace_dir / ".git").exists():
+            self._git(["init"])
+            self._git(["config", "user.name", "Agent VCR"])
+            self._git(["config", "user.email", "vcr@example.com"])
+            self._git(["branch", "-m", "main"])
+
+        self._ensure_local_git_excludes()
+
+        if self._git(["rev-parse", "--verify", "HEAD"], check=False).returncode != 0:
+            init_file = self.workspace_dir / ".acid_init"
+            if not init_file.exists():
+                init_file.touch()
+            self._git(["add", "-A"])
+            self._git(["commit", "-m", "Initial ACID baseline"])
+
+    def _ensure_local_git_excludes(self) -> None:
+        """Keep VCR audit files out of git commits without editing user .gitignore."""
+        exclude_path = self.workspace_dir / ".git" / "info" / "exclude"
+        exclude_path.parent.mkdir(parents=True, exist_ok=True)
+        existing = exclude_path.read_text() if exclude_path.exists() else ""
+        additions = [pattern for pattern in self._git_clean_excludes() if pattern not in existing]
+        if additions:
+            with open(exclude_path, "a") as f:
+                for pattern in additions:
+                    f.write(f"\n{pattern}")
+
+    def _current_ref(self) -> str:
+        branch = self._git_stdout(["branch", "--show-current"])
+        if branch:
+            return branch
+        return self._git_stdout(["rev-parse", "HEAD"])
+
+    def _dirty_tracked_paths(self) -> list[str]:
+        status = self._git_stdout(["status", "--porcelain=v1", "--untracked-files=no"])
+        paths = []
+        for line in status.splitlines():
+            if not line or not line[:2].strip():
+                continue
+            paths.append(line[3:].strip())
+        return paths
+
+    def _local_untracked_or_ignored_paths(self) -> set[str]:
+        """Return local paths not tracked by git, including ignored files."""
+        status = self._git_stdout(
+            ["status", "--porcelain=v1", "--untracked-files=all", "--ignored"]
+        )
+        paths: set[str] = set()
+        for line in status.splitlines():
+            if line.startswith("?? ") or line.startswith("!! "):
+                paths.add(line[3:].strip())
+        return paths
+
+    def _stage_transaction_files(self) -> None:
+        self._git(["add", "-A"])
+        staged = self._git_stdout(["diff", "--cached", "--name-only"])
+        protected = [
+            path
+            for path in staged.splitlines()
+            if self._is_baseline_local_path(path)
+        ]
+        if protected:
+            self._git(["reset", "-q", "--", *protected])
+
+    def _clean_generated_local_paths(self) -> None:
+        """Delete only local files introduced after begin(), preserving user-owned files."""
+        current_paths = self._local_untracked_or_ignored_paths()
+        generated = sorted(
+            path
+            for path in current_paths - self._baseline_local_paths
+            if not self._is_clean_excluded(path)
+        )
+        if not generated:
+            return
+        self._git(["clean", "-fdx", "--", *generated])
+
+    def _is_clean_excluded(self, path: str) -> bool:
+        normalized = path.rstrip("/") + ("/" if path.endswith("/") else "")
+        for exclude in self._git_clean_excludes():
+            pattern = exclude.rstrip("/") + "/"
+            if normalized == pattern or normalized.startswith(pattern):
+                return True
+        return False
+
+    def _is_baseline_local_path(self, path: str) -> bool:
+        normalized = path.rstrip("/")
+        for baseline_path in self._baseline_local_paths:
+            baseline = baseline_path.rstrip("/")
+            if normalized == baseline or normalized.startswith(f"{baseline}/"):
+                return True
+        return False
 
     def _git_clean_excludes(self) -> list[str]:
         """Exclude VCR audit files from ignored-file cleanup when they live in the workspace."""

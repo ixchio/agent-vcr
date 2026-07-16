@@ -484,6 +484,7 @@ class TestSentinel:
         good = "def handle(request, ctx):\n    pass\n"
         r2 = sentinel.check_file("handler.py", good)
         assert len(r2.violations) == 0
+        assert sentinel.stats.self_corrections == 1
 
 
 class TestSentinelConfig:
@@ -589,6 +590,15 @@ class TestSentinelCLI:
 
         exit_code = scan_directory(str(tmp_path), SentinelConfig())
         assert exit_code == 0  # only app.py scanned, which is clean
+
+    def test_watch_directory_once(self, tmp_path):
+        (tmp_path / "app.py").write_text("def hello():\n    return 1\n")
+
+        from openhands_sentinel.cli import watch_directory
+
+        exit_code = watch_directory(str(tmp_path), SentinelConfig(), interval=0.01, once=True)
+        assert exit_code == 0
+        assert (tmp_path / ".vcr").exists()
 
 
 # ═══════════════════════════════════════════════════

@@ -147,6 +147,10 @@ class Sentinel:
         start = time.perf_counter()
         result = self.analyzer.analyze(file_path, content)
         elapsed_ms = (time.perf_counter() - start) * 1000
+        previous_result = next(
+            (item for item in reversed(self._results_history) if item.file_path == file_path),
+            None,
+        )
 
         # Update stats
         self.stats.files_analyzed += 1
@@ -157,6 +161,12 @@ class Sentinel:
         self.stats.infos += sum(
             1 for v in result.violations if v.severity == Severity.INFO
         )
+        if (
+            previous_result is not None
+            and previous_result.violations
+            and not result.violations
+        ):
+            self.stats.self_corrections += 1
 
         self._results_history.append(result)
 

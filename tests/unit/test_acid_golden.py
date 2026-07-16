@@ -2,6 +2,7 @@
 
 import os
 import shutil
+import subprocess
 import tempfile
 
 import pytest
@@ -47,6 +48,24 @@ class TestACIDWorkspace:
 
         assert frame is not None
         assert frame.node_name == "coder"
+        assert "acid_commit_hash" in frame.metadata.custom
+
+    def test_savepoint_commit_hash_is_persisted_when_recorder_flushes_immediately(self):
+        recorder = VCRRecorder(
+            output_dir=os.path.join(self.workspace, ".vcr"),
+            buffer_size=1,
+            auto_save=True,
+        )
+        acid = ACIDWorkspace(self.workspace, recorder=recorder)
+        acid.begin(session_id="flush-hash")
+
+        acid.savepoint({"step": "durable hash"})
+        recorder.save()
+
+        vcr_file = os.path.join(self.workspace, ".vcr", "flush-hash.vcr")
+        with open(vcr_file) as f:
+            contents = f.read()
+        assert "acid_commit_hash" in contents
 
     def test_rollback_reverts_filesystem(self):
         acid = ACIDWorkspace(self.workspace)
@@ -114,6 +133,112 @@ class TestACIDWorkspace:
 
         assert not os.path.exists(ignored_file), "Ignored generated files must be removed"
         assert os.path.isdir(os.path.join(self.workspace, ".vcr")), "VCR audit directory must survive"
+
+    def test_rollback_preserves_preexisting_ignored_files(self):
+        gitignore = os.path.join(self.workspace, ".gitignore")
+        with open(gitignore, "w") as f:
+            f.write(".env\nignored-generated.txt\n")
+
+        env_file = os.path.join(self.workspace, ".env")
+        with open(env_file, "w") as f:
+            f.write("TOKEN=keep-me\n")
+
+        recorder = VCRRecorder(output_dir=os.path.join(self.workspace, ".vcr"), auto_save=False)
+        acid = ACIDWorkspace(self.workspace, recorder=recorder)
+        acid.begin(session_id="preserve-env")
+        acid.savepoint({"step": "baseline"})
+
+        generated = os.path.join(self.workspace, "ignored-generated.txt")
+        with open(generated, "w") as f:
+            f.write("agent junk\n")
+        acid.savepoint({"step": "generated ignored junk"})
+
+        acid.rollback(to_frame_index=0)
+
+        assert os.path.exists(env_file), "Pre-existing ignored files must survive rollback"
+        assert not os.path.exists(generated), "Agent-generated ignored files must be removed"
+
+    def test_rollback_preserves_preexisting_untracked_files_without_committing_them(self):
+        subprocess.run(["git", "init"], cwd=self.workspace, check=True)
+        subprocess.run(["git", "config", "user.name", "Agent VCR"], cwd=self.workspace, check=True)
+        subprocess.run(["git", "config", "user.email", "vcr@example.com"], cwd=self.workspace, check=True)
+
+        tracked = os.path.join(self.workspace, "tracked.py")
+        with open(tracked, "w") as f:
+            f.write("VALUE = 1\n")
+        subprocess.run(["git", "add", "-A"], cwd=self.workspace, check=True)
+        subprocess.run(["git", "commit", "-m", "baseline"], cwd=self.workspace, check=True)
+
+        local_notes = os.path.join(self.workspace, "notes.local")
+        with open(local_notes, "w") as f:
+            f.write("keep this local\n")
+
+        acid = ACIDWorkspace(self.workspace)
+        acid.begin(session_id="preserve-untracked")
+        acid.savepoint({"step": "baseline"})
+
+        generated = os.path.join(self.workspace, "generated.local")
+        with open(generated, "w") as f:
+            f.write("agent junk\n")
+        acid.savepoint({"step": "generated untracked junk"})
+
+        acid.rollback(to_frame_index=0)
+        acid.commit()
+
+        tracked_local = subprocess.run(
+            ["git", "ls-files", "--", "notes.local"],
+            cwd=self.workspace,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        assert os.path.exists(local_notes), "Pre-existing untracked files must survive rollback"
+        assert not os.path.exists(generated), "Agent-generated untracked files must be removed"
+        assert tracked_local == "", "Pre-existing untracked files must not be committed"
+
+    def test_begin_rejects_dirty_tracked_files_by_default(self):
+        subprocess.run(["git", "init"], cwd=self.workspace, check=True)
+        subprocess.run(["git", "config", "user.name", "Agent VCR"], cwd=self.workspace, check=True)
+        subprocess.run(["git", "config", "user.email", "vcr@example.com"], cwd=self.workspace, check=True)
+
+        tracked = os.path.join(self.workspace, "tracked.py")
+        with open(tracked, "w") as f:
+            f.write("VALUE = 1\n")
+        subprocess.run(["git", "add", "-A"], cwd=self.workspace, check=True)
+        subprocess.run(["git", "commit", "-m", "baseline"], cwd=self.workspace, check=True)
+
+        with open(tracked, "w") as f:
+            f.write("VALUE = 2\n")
+
+        acid = ACIDWorkspace(self.workspace)
+        with pytest.raises(RuntimeError, match="dirty tracked files"):
+            acid.begin(session_id="dirty-tracked")
+
+    def test_commit_returns_to_original_branch(self):
+        subprocess.run(["git", "init"], cwd=self.workspace, check=True)
+        subprocess.run(["git", "config", "user.name", "Agent VCR"], cwd=self.workspace, check=True)
+        subprocess.run(["git", "config", "user.email", "vcr@example.com"], cwd=self.workspace, check=True)
+        subprocess.run(["git", "branch", "-m", "trunk"], cwd=self.workspace, check=True)
+
+        tracked = os.path.join(self.workspace, "tracked.py")
+        with open(tracked, "w") as f:
+            f.write("VALUE = 1\n")
+        subprocess.run(["git", "add", "-A"], cwd=self.workspace, check=True)
+        subprocess.run(["git", "commit", "-m", "baseline"], cwd=self.workspace, check=True)
+
+        acid = ACIDWorkspace(self.workspace)
+        acid.begin(session_id="original-branch")
+        acid.savepoint({"step": "baseline"})
+        acid.commit()
+
+        branch = subprocess.run(
+            ["git", "branch", "--show-current"],
+            cwd=self.workspace,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        assert branch == "trunk"
 
     def test_commit_merges_to_main(self):
         acid = ACIDWorkspace(self.workspace)
@@ -246,7 +371,7 @@ class TestGoldenRunCache:
         cache.save_golden_run("build a todo app", recorder)
 
         def mock_executor(node_name, input_state):
-            return {"re_executed": True}
+            return {"re_executed": True, "node": node_name, "input": input_state}
 
         replay_recorder = VCRRecorder(output_dir=self.vcr_dir, auto_save=False)
         outputs, ledger = cache.replay(
@@ -257,9 +382,66 @@ class TestGoldenRunCache:
         )
 
         assert len(outputs) == 3
-        assert ledger.steps_replayed == 2  # planner + tester from cache
-        assert ledger.steps_rerun == 1     # coder re-executed
+        assert ledger.steps_replayed == 1  # planner from cache
+        assert ledger.steps_rerun == 2     # coder + downstream tester re-executed
         assert outputs[1]["re_executed"] is True
+        assert outputs[2]["node"] == "tester"
+        assert ledger.step_sources == ["golden_cache", "changed_step", "downstream_invalidated"]
+
+    def test_replay_partial_mode_keeps_old_downstream_behavior(self):
+        recorder = self._make_recorder_with_frames()
+        cache = GoldenRunCache(cache_dir=self.golden_dir)
+        cache.save_golden_run("build a todo app", recorder)
+
+        def mock_executor(node_name, input_state):
+            return {"re_executed": True}
+
+        replay_recorder = VCRRecorder(output_dir=self.vcr_dir, auto_save=False)
+        _, ledger = cache.replay(
+            "build a todo app",
+            step_executor=mock_executor,
+            changed_steps={1},
+            recorder=replay_recorder,
+            allow_partial_replay=True,
+        )
+
+        assert ledger.steps_replayed == 2
+        assert ledger.steps_rerun == 1
+
+    def test_changed_steps_require_executor(self):
+        recorder = self._make_recorder_with_frames()
+        cache = GoldenRunCache(cache_dir=self.golden_dir)
+        cache.save_golden_run("build a todo app", recorder)
+
+        with pytest.raises(ValueError, match="changed_steps requires step_executor"):
+            cache.replay("build a todo app", changed_steps={1})
+
+    def test_identity_participates_in_fingerprint(self):
+        recorder = self._make_recorder_with_frames()
+        cache = GoldenRunCache(cache_dir=self.golden_dir)
+
+        identity = GoldenRunCache.build_identity(
+            model="gpt-4o",
+            prompt_hash="prompt-a",
+            code_commit="abc123",
+            tool_schema_hash="tools-v1",
+        )
+        cache.save_golden_run("build a todo app", recorder, identity=identity)
+
+        assert cache.has_golden_run("build a todo app", identity=identity) is True
+        assert cache.has_golden_run(
+            "build a todo app",
+            identity={**identity, "prompt_hash": "prompt-b"},
+        ) is False
+
+        replay_recorder = VCRRecorder(output_dir=self.vcr_dir, auto_save=False)
+        _, ledger = cache.replay(
+            "build a todo app",
+            recorder=replay_recorder,
+            identity=identity,
+        )
+        assert ledger.cache_hit_reason is not None
+        assert "task_and_identity_match" in ledger.cache_hit_reason
 
     def test_cost_savings_calculation(self):
         recorder = self._make_recorder_with_frames()

@@ -24,7 +24,13 @@ Thank you for your interest in contributing to Agent VCR! We welcome bug reports
 We use `pytest` for testing. To run the full test suite with coverage:
 
 ```bash
-pytest tests/ -v --cov=agent_vcr --cov-report=term-missing
+pytest tests/ -v --cov=agent_vcr --cov=openhands_sentinel --cov-report=term-missing
+```
+
+For the same release-style checks used locally before publishing:
+
+```bash
+make verify
 ```
 
 ## Linting and Formatting
@@ -34,8 +40,13 @@ We use `ruff` for linting and formatting, and `mypy` for static type checking. T
 ```bash
 ruff check .
 ruff format .
-mypy src/agent_vcr/
+mypy src/agent_vcr/ src/openhands_sentinel/
 ```
+
+## Cleanup
+
+Generated caches, build output, benchmark scratch data, and local VCR recordings are ignored.
+Use `make clean` for Python/build artifacts and `make clean-runtime` for local `.vcr` sessions.
 
 ## Pull Request Process
 

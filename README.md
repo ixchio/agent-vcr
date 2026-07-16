@@ -67,6 +67,7 @@ acid.savepoint(state, node_name="tester")
 acid.rollback(to_frame_index=1)
 # git reset --hard
 # All 23 files: physically deleted from disk. Not hidden. Gone.
+# Pre-existing ignored files like .env are preserved.
 
 acid.commit()                            # merge only the clean branch
 ```
@@ -94,10 +95,16 @@ Agent succeeds? Save it. Run it again for free forever.
 from agent_vcr.golden_cache import GoldenRunCache
 
 cache = GoldenRunCache()
-cache.save_golden_run("Build a REST API with JWT auth", recorder)
+identity = GoldenRunCache.build_identity(
+    model="gpt-4o",
+    prompt_hash="prompt:v3",
+    code_commit="abc123",
+    tool_schema_hash="tools:v1",
+)
+cache.save_golden_run("Build a REST API with JWT auth", recorder, identity=identity)
 
 # Every future run of the same task:
-outputs, ledger = cache.replay("Build a REST API with JWT auth")
+outputs, ledger = cache.replay("Build a REST API with JWT auth", identity=identity)
 print(ledger)
 ```
 
@@ -286,6 +293,7 @@ Standalone scan:
 
 ```bash
 sentinel scan ./my-ai-project
+sentinel watch ./my-ai-project
 ```
 
 ---
@@ -324,8 +332,9 @@ vcr init --claude-code
 ## DAG Visualization
 
 ```bash
-vcr-server .vcr/
-# localhost:8000
+pip install "ai-agent-vcr[dashboard]"
+vcr-server --vcr-dir .vcr --auth-token local-secret
+# http://127.0.0.1:8000
 ```
 
 ```
@@ -474,8 +483,9 @@ acid.commit()
 
 ```python
 cache = GoldenRunCache(cache_dir=".vcr/golden")
-cache.save_golden_run(task_description, recorder)
-outputs, ledger = cache.replay(task_description)
+identity = GoldenRunCache.build_identity(model="gpt-4o", code_commit="abc123")
+cache.save_golden_run(task_description, recorder, identity=identity)
+outputs, ledger = cache.replay(task_description, identity=identity)
 cache.invalidate(task_description)
 cache.list_golden_runs()
 ```
@@ -543,7 +553,7 @@ The best growth comes from developers sharing the moment it saved them. If that'
 git clone https://github.com/ixchio/agent-vcr.git
 cd agent-vcr
 pip install -e ".[dev,tui]"
-pytest tests/unit/ -v
+make verify
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.

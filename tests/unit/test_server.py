@@ -77,6 +77,10 @@ class TestSessionsEndpoint:
         response = client.get("/api/sessions/nonexistent")
         assert response.status_code == 404
 
+    def test_rejects_invalid_session_id(self, client):
+        response = client.get("/api/sessions/bad*session")
+        assert response.status_code == 400
+
     def test_session_statistics(self, client):
         response = client.get("/api/sessions/test-session")
         data = response.json()
@@ -186,3 +190,19 @@ class TestPushEndpoint:
         assert response.status_code == 200
         assert response.json()["status"] == "pushed"
 
+
+class TestServerSecurity:
+    def test_default_host_is_localhost(self):
+        server = VCRServer()
+        assert server.host == "127.0.0.1"
+
+    def test_auth_token_protects_api(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            server = VCRServer(vcr_dir=tmpdir, auth_token="secret")
+            client = TestClient(server.app, raise_server_exceptions=False)
+
+            unauthorized = client.get("/api/sessions")
+            assert unauthorized.status_code == 401
+
+            authorized = client.get("/api/sessions", headers={"x-agent-vcr-token": "secret"})
+            assert authorized.status_code == 200

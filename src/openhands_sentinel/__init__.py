@@ -12,7 +12,7 @@ time-travel audit trail.
 from openhands_sentinel.analyzer import CodeAnalyzer, Severity, Violation
 from openhands_sentinel.sentinel import Sentinel, SentinelConfig
 
-__version__ = "0.1.0"
+__version__ = "0.8.0"
 __all__ = [
     "CodeAnalyzer",
     "Violation",

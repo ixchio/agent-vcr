@@ -5,25 +5,38 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import RedirectResponse
-from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from watchdog.events import FileSystemEventHandler
-from watchdog.observers import Observer
 
 from agent_vcr import __version__
 from agent_vcr.models import Frame, Session
 from agent_vcr.player import VCRPlayer
 
+_SERVER_IMPORT_ERROR: ImportError | None = None
+
+try:
+    from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+    from fastapi.middleware.cors import CORSMiddleware
+    from fastapi.responses import JSONResponse, RedirectResponse
+    from fastapi.staticfiles import StaticFiles
+    from watchdog.events import FileSystemEventHandler
+    from watchdog.observers import Observer
+except ImportError as exc:
+    _SERVER_IMPORT_ERROR = exc
+
+    class FileSystemEventHandler:  # type: ignore[no-redef]
+        """Fallback base so importing agent_vcr.server can show a helpful error."""
+
+        pass
 logger = logging.getLogger(__name__)
+
+_SAFE_SESSION_ID = re.compile(r"^[a-zA-Z0-9_.-]+$")
 
 
 class SessionListResponse(BaseModel):
@@ -150,13 +163,21 @@ class VCRServer:
     def __init__(
         self,
         vcr_dir: str = ".vcr",
-        host: str = "0.0.0.0",
+        host: str = "127.0.0.1",
         port: int = 8000,
         allowed_origins: list[str] | None = None,
+        auth_token: str | None = None,
     ):
+        if _SERVER_IMPORT_ERROR is not None:
+            raise RuntimeError(
+                "The dashboard server dependencies are not installed. "
+                'Install them with: pip install "ai-agent-vcr[dashboard]"'
+            ) from _SERVER_IMPORT_ERROR
+
         self.vcr_dir = Path(vcr_dir)
         self.host = host
         self.port = port
+        self.auth_token = auth_token
         self.watcher = VCRFileWatcher(self.vcr_dir)
         self.observer: Any | None = None
 
@@ -169,12 +190,6 @@ class VCRServer:
             lifespan=self._lifespan,
         )
 
-        # Hybrid CORS: If the caller supplies explicit origins, enable
-        # credentialed requests to those origins only.  Otherwise fall
-        # back to a permissive wildcard that works for dashboards but
-        # correctly disables credentials (the previous allow_origins=["*"]
-        # + allow_credentials=True combo is a known-bad pattern per the
-        # CORS spec — browsers silently block credentialed wildcard).
         if allowed_origins:
             self.app.add_middleware(
                 CORSMiddleware,
@@ -186,11 +201,17 @@ class VCRServer:
         else:
             self.app.add_middleware(
                 CORSMiddleware,
-                allow_origins=["*"],
+                allow_origins=[
+                    f"http://127.0.0.1:{self.port}",
+                    f"http://localhost:{self.port}",
+                ],
                 allow_credentials=False,
                 allow_methods=["*"],
                 allow_headers=["*"],
             )
+
+        if self.auth_token:
+            self._install_auth_middleware()
 
         # Serve the built React dashboard if it exists
         dashboard_dir = Path(__file__).parent / "dashboard"
@@ -201,6 +222,27 @@ class VCRServer:
             self._has_dashboard = False
 
         self._setup_routes()
+
+    def _install_auth_middleware(self) -> None:
+        """Require a token for API endpoints when auth_token is configured."""
+
+        @self.app.middleware("http")
+        async def require_vcr_token(request: Request, call_next: Any) -> Any:
+            if request.url.path.startswith("/api") and not self._request_authorized(request):
+                return JSONResponse({"detail": "Unauthorized"}, status_code=401)
+            return await call_next(request)
+
+    def _request_authorized(self, request: Request) -> bool:
+        supplied = request.headers.get("x-agent-vcr-token") or request.query_params.get("token")
+        authorization = request.headers.get("authorization")
+        if authorization and authorization.lower().startswith("bearer "):
+            supplied = authorization[7:]
+        return supplied == self.auth_token
+
+    def _session_file(self, session_id: str) -> Path:
+        if not _SAFE_SESSION_ID.fullmatch(session_id):
+            raise HTTPException(status_code=400, detail="Invalid session id")
+        return self.vcr_dir / f"{session_id}.vcr"
 
     @asynccontextmanager
     async def _lifespan(self, app: FastAPI) -> AsyncGenerator[None, None]:
@@ -291,7 +333,7 @@ class VCRServer:
         @self.app.get("/api/sessions/{session_id}", response_model=SessionDetailResponse)
         async def get_session(session_id: str) -> SessionDetailResponse:
             """Get details of a specific session."""
-            vcr_file = self.vcr_dir / f"{session_id}.vcr"
+            vcr_file = self._session_file(session_id)
 
             if not vcr_file.exists():
                 raise HTTPException(status_code=404, detail="Session not found")
@@ -319,7 +361,7 @@ class VCRServer:
         @self.app.get("/api/sessions/{session_id}/frames/{frame_index}")
         async def get_frame(session_id: str, frame_index: int) -> dict[str, Any]:
             """Get a specific frame from a session."""
-            vcr_file = self.vcr_dir / f"{session_id}.vcr"
+            vcr_file = self._session_file(session_id)
 
             if not vcr_file.exists():
                 raise HTTPException(status_code=404, detail="Session not found")
@@ -340,7 +382,7 @@ class VCRServer:
         @self.app.post("/api/sessions/{session_id}/resume")
         async def resume_session(session_id: str, request: ResumeRequest) -> dict[str, Any]:
             """Resume execution from a specific frame."""
-            vcr_file = self.vcr_dir / f"{session_id}.vcr"
+            vcr_file = self._session_file(session_id)
 
             if not vcr_file.exists():
                 raise HTTPException(status_code=404, detail="Session not found")
@@ -365,7 +407,7 @@ class VCRServer:
         @self.app.get("/api/sessions/{session_id}/export")
         async def export_session(session_id: str, export_format: str = "json") -> dict[str, Any]:
             """Export a session in various formats."""
-            vcr_file = self.vcr_dir / f"{session_id}.vcr"
+            vcr_file = self._session_file(session_id)
 
             if not vcr_file.exists():
                 raise HTTPException(status_code=404, detail="Session not found")
@@ -401,6 +443,18 @@ class VCRServer:
         @self.app.websocket("/ws/live")
         async def websocket_endpoint(websocket: WebSocket) -> None:
             """WebSocket endpoint for live updates."""
+            if self.auth_token:
+                supplied = (
+                    websocket.headers.get("x-agent-vcr-token")
+                    or websocket.query_params.get("token")
+                )
+                authorization = websocket.headers.get("authorization")
+                if authorization and authorization.lower().startswith("bearer "):
+                    supplied = authorization[7:]
+                if supplied != self.auth_token:
+                    await websocket.close(code=1008)
+                    return
+
             await websocket.accept()
             await self.watcher.connect(websocket)
 
@@ -458,12 +512,22 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(description="Agent VCR Server")
     parser.add_argument("--vcr-dir", default=".vcr", help="Directory for .vcr files")
-    parser.add_argument("--host", default="0.0.0.0", help="Host to bind to")
+    parser.add_argument("--host", default="127.0.0.1", help="Host to bind to")
     parser.add_argument("--port", type=int, default=8000, help="Port to bind to")
+    parser.add_argument(
+        "--auth-token",
+        default=None,
+        help="Optional token required for API and WebSocket access",
+    )
 
     args = parser.parse_args()
 
-    server = VCRServer(vcr_dir=args.vcr_dir, host=args.host, port=args.port)
+    server = VCRServer(
+        vcr_dir=args.vcr_dir,
+        host=args.host,
+        port=args.port,
+        auth_token=args.auth_token,
+    )
     server.run()
 
 
