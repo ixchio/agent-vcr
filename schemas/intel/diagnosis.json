@@ -1,0 +1,184 @@
+{
+  "$defs": {
+    "FailureKind": {
+      "enum": [
+        "transient",
+        "tool_misuse",
+        "policy",
+        "approval",
+        "output",
+        "unknown"
+      ],
+      "title": "FailureKind",
+      "type": "string"
+    },
+    "RecoveryAction": {
+      "description": "One ranked recovery step; safe ones are auto-executable.",
+      "properties": {
+        "action": {
+          "default": "retry",
+          "enum": [
+            "retry",
+            "resume",
+            "fork",
+            "rollback",
+            "skip",
+            "escalate"
+          ],
+          "title": "Action",
+          "type": "string"
+        },
+        "target": {
+          "default": "",
+          "title": "Target",
+          "type": "string"
+        },
+        "reason": {
+          "default": "",
+          "title": "Reason",
+          "type": "string"
+        },
+        "auto": {
+          "default": false,
+          "title": "Auto",
+          "type": "boolean"
+        }
+      },
+      "title": "RecoveryAction",
+      "type": "object"
+    },
+    "RecoveryPlan": {
+      "description": "Ranked recovery for a failed run.",
+      "properties": {
+        "subject": {
+          "title": "Subject",
+          "type": "string"
+        },
+        "failure_kind": {
+          "$ref": "#/$defs/FailureKind",
+          "default": "unknown"
+        },
+        "actions": {
+          "items": {
+            "$ref": "#/$defs/RecoveryAction"
+          },
+          "title": "Actions",
+          "type": "array"
+        },
+        "summary": {
+          "default": "",
+          "title": "Summary",
+          "type": "string"
+        }
+      },
+      "required": [
+        "subject"
+      ],
+      "title": "RecoveryPlan",
+      "type": "object"
+    },
+    "RiskScore": {
+      "description": "0\u2013100 risk for a session/agent (higher = riskier) + factors.",
+      "properties": {
+        "subject": {
+          "title": "Subject",
+          "type": "string"
+        },
+        "score": {
+          "default": 0.0,
+          "title": "Score",
+          "type": "number"
+        },
+        "level": {
+          "default": "LOW",
+          "enum": [
+            "LOW",
+            "MEDIUM",
+            "HIGH"
+          ],
+          "title": "Level",
+          "type": "string"
+        },
+        "factors": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "title": "Factors",
+          "type": "object"
+        },
+        "sessions_analyzed": {
+          "default": 0,
+          "title": "Sessions Analyzed",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "subject"
+      ],
+      "title": "RiskScore",
+      "type": "object"
+    }
+  },
+  "description": "'Why did my agent fail?' answer (\u00a749).",
+  "properties": {
+    "session_id": {
+      "title": "Session Id",
+      "type": "string"
+    },
+    "verdict": {
+      "default": "ok",
+      "enum": [
+        "ok",
+        "failed",
+        "degraded"
+      ],
+      "title": "Verdict",
+      "type": "string"
+    },
+    "timeline": {
+      "items": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "title": "Timeline",
+      "type": "array"
+    },
+    "likely_cause": {
+      "default": "",
+      "title": "Likely Cause",
+      "type": "string"
+    },
+    "cluster_key": {
+      "default": "",
+      "title": "Cluster Key",
+      "type": "string"
+    },
+    "risk": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RiskScore"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "recovery": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RecoveryPlan"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    }
+  },
+  "required": [
+    "session_id"
+  ],
+  "title": "Diagnosis",
+  "type": "object"
+}

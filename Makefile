@@ -34,7 +34,7 @@ clean:
 	rm -rf .coverage .coverage.* coverage.xml htmlcov
 	rm -rf .pytest_cache .mypy_cache .ruff_cache .benchmarks
 	rm -rf build dist *.egg-info
-	find . -type d -name __pycache__ -prune -exec rm -rf {} +
+	find src tests examples -type d -name __pycache__ -prune -exec rm -rf {} +
 
 clean-runtime:
 	rm -rf .vcr

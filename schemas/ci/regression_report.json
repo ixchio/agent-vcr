@@ -1,0 +1,242 @@
+{
+  "$defs": {
+    "CaseResult": {
+      "description": "Verdict for one dataset case.",
+      "properties": {
+        "case": {
+          "title": "Case",
+          "type": "string"
+        },
+        "verdict": {
+          "$ref": "#/$defs/CaseVerdict",
+          "default": "pass"
+        },
+        "reasons": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Reasons",
+          "type": "array"
+        },
+        "diff": {
+          "$ref": "#/$defs/SessionDiff"
+        }
+      },
+      "required": [
+        "case"
+      ],
+      "title": "CaseResult",
+      "type": "object"
+    },
+    "CaseVerdict": {
+      "enum": [
+        "pass",
+        "degraded",
+        "fail"
+      ],
+      "title": "CaseVerdict",
+      "type": "string"
+    },
+    "RiskLevel": {
+      "enum": [
+        "LOW",
+        "MEDIUM",
+        "HIGH"
+      ],
+      "title": "RiskLevel",
+      "type": "string"
+    },
+    "SessionDiff": {
+      "description": "Baseline-vs-candidate comparison (\u00a710.2 regression dimensions).",
+      "properties": {
+        "baseline_frames": {
+          "default": 0,
+          "title": "Baseline Frames",
+          "type": "integer"
+        },
+        "candidate_frames": {
+          "default": 0,
+          "title": "Candidate Frames",
+          "type": "integer"
+        },
+        "states_match": {
+          "default": true,
+          "title": "States Match",
+          "type": "boolean"
+        },
+        "state_diff": {
+          "additionalProperties": true,
+          "title": "State Diff",
+          "type": "object"
+        },
+        "added_tools": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Added Tools",
+          "type": "array"
+        },
+        "removed_tools": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Removed Tools",
+          "type": "array"
+        },
+        "added_models": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Added Models",
+          "type": "array"
+        },
+        "removed_models": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Removed Models",
+          "type": "array"
+        },
+        "cost_delta_usd": {
+          "default": 0.0,
+          "title": "Cost Delta Usd",
+          "type": "number"
+        },
+        "cost_delta_pct": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cost Delta Pct"
+        },
+        "latency_delta_ms": {
+          "default": 0.0,
+          "title": "Latency Delta Ms",
+          "type": "number"
+        },
+        "latency_delta_pct": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Latency Delta Pct"
+        },
+        "token_delta": {
+          "default": 0,
+          "title": "Token Delta",
+          "type": "integer"
+        },
+        "token_delta_pct": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Token Delta Pct"
+        },
+        "baseline_errors": {
+          "default": 0,
+          "title": "Baseline Errors",
+          "type": "integer"
+        },
+        "candidate_errors": {
+          "default": 0,
+          "title": "Candidate Errors",
+          "type": "integer"
+        },
+        "missing_checkpoints": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Missing Checkpoints",
+          "type": "array"
+        }
+      },
+      "title": "SessionDiff",
+      "type": "object"
+    }
+  },
+  "description": "Full Agent CI report \u2014 JSON-serializable, PR-comment renderable.",
+  "properties": {
+    "dataset": {
+      "title": "Dataset",
+      "type": "string"
+    },
+    "dataset_version": {
+      "default": 0,
+      "title": "Dataset Version",
+      "type": "integer"
+    },
+    "created_at": {
+      "title": "Created At",
+      "type": "string"
+    },
+    "passed": {
+      "default": 0,
+      "title": "Passed",
+      "type": "integer"
+    },
+    "degraded": {
+      "default": 0,
+      "title": "Degraded",
+      "type": "integer"
+    },
+    "failed": {
+      "default": 0,
+      "title": "Failed",
+      "type": "integer"
+    },
+    "missing": {
+      "default": 0,
+      "title": "Missing",
+      "type": "integer"
+    },
+    "missing_cases": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Missing Cases",
+      "type": "array"
+    },
+    "risk": {
+      "$ref": "#/$defs/RiskLevel",
+      "default": "LOW"
+    },
+    "total_cost_delta_usd": {
+      "default": 0.0,
+      "title": "Total Cost Delta Usd",
+      "type": "number"
+    },
+    "total_latency_delta_ms": {
+      "default": 0.0,
+      "title": "Total Latency Delta Ms",
+      "type": "number"
+    },
+    "results": {
+      "items": {
+        "$ref": "#/$defs/CaseResult"
+      },
+      "title": "Results",
+      "type": "array"
+    }
+  },
+  "required": [
+    "dataset"
+  ],
+  "title": "RegressionReport",
+  "type": "object"
+}

@@ -4,6 +4,8 @@ from pathlib import Path
 
 import pytest
 
+pytest.importorskip("textual")
+
 from agent_vcr.tui import StateViewer, VCRApp
 
 pytestmark = pytest.mark.asyncio

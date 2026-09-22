@@ -1,0 +1,77 @@
+{
+  "description": "A VCR recording session.",
+  "properties": {
+    "schema_version": {
+      "default": "1.0.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "session_id": {
+      "title": "Session Id",
+      "type": "string"
+    },
+    "parent_session_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Parent Session Id"
+    },
+    "forked_from_frame": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Forked From Frame"
+    },
+    "created_at": {
+      "format": "date-time",
+      "title": "Created At",
+      "type": "string"
+    },
+    "updated_at": {
+      "format": "date-time",
+      "title": "Updated At",
+      "type": "string"
+    },
+    "metadata": {
+      "additionalProperties": true,
+      "title": "Metadata",
+      "type": "object"
+    },
+    "tags": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Tags",
+      "type": "array"
+    },
+    "frame_count": {
+      "default": 0,
+      "title": "Frame Count",
+      "type": "integer"
+    },
+    "total_tokens": {
+      "default": 0,
+      "title": "Total Tokens",
+      "type": "integer"
+    },
+    "total_cost_usd": {
+      "default": 0.0,
+      "title": "Total Cost Usd",
+      "type": "number"
+    }
+  },
+  "title": "Session",
+  "type": "object"
+}

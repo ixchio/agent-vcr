@@ -5,6 +5,81 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.0] - 2026-09-09
+
+### Added
+- Reliability intelligence (`agent_vcr.intelligence`): failure clustering with volatile-span normalization, 0–100 risk scoring (errors/denials/drift/cost/latency), deterministic failure classification, ranked recovery plans (auto only when side-effect free), evidence-based model routing, cost breakdowns with ghost-cacheable duplicate detection, and one-call `diagnose` ("why did my agent fail?").
+- `record_error` accepts optional model attribution (sync + async) for routing evidence.
+- `vcr intel failures|risk|why|recover|routes|costs` CLI; project-scoped `/intel/*` cloud endpoints.
+- JSON Schemas for cluster, risk score, and diagnosis under `schemas/intel/`.
+
+## [Unreleased]
+
+### Fixed
+- Cloud login accepts scoped project tokens (403 on the admin listing counts as proof of validity).
+- Session uploads stream in 1 MB chunks with a mid-stream 100 MB cap (413) instead of buffering unbounded bodies.
+- Project/token registry mutations are inter-process locked (flock, fail-open); body exceptions always propagate.
+- Schedules normalize naive/aware datetimes to UTC (mixed usage no longer crashes) and pre-parse cron expressions (impossible schedules resolve fast).
+- CLI prints clean `Error:` + exit 1 for cloud/run/dataset failures instead of tracebacks.
+- Session headers stay accurate across buffered saves and crash-resume attaches (atomic rewrite on count divergence).
+- `Scheduler.list` renamed `all()` (builtin shadow); test suite no longer creates `.vcr` in the repo checkout.
+
+## [1.4.0] - 2026-09-09
+
+### Added
+- Workflow engine (`agent_vcr.workflows`): durable DAG runs on the VCR kernel — conditions, parallel fan-out/join, `for_each` loops with caps, retries with backoff, timeouts, approvals, checkpoints, saga compensation.
+- Durable state: `RunStore` pins the full definition snapshot per run and persists after every top-level step; `step_once`/`resume`/`attach_session` recover crashes without re-executing completed work.
+- Compensation runs in reverse completion order, survives partial failures, and never re-runs after an abort-crash (error-persisted resume path).
+- `WorkflowRegistry` with content-based version bumps; `Scheduler` with interval/cron(minimal real parser)/one-shot `at` schedules, `tick` + `run_pending`.
+- Server workflow API: registry, webhook triggers with secrets (`409` without handlers), run inspection, resume; `vcr-server --handlers`.
+- `vcr workflow validate/run/list/runs/show/resume/schedule put|list|remove|tick` CLI.
+- Fixed a real durability bug found along the way: JSONL session headers went stale on append/attach — `save()` now rewrites header + frames atomically when counts diverge.
+- JSON Schemas for workflow definition and run record under `schemas/workflows/`.
+
+## [1.3.0] - 2026-09-09
+
+### Added
+- SuperAgent runtime (`agent_vcr.superagent`): policy-gated DAG execution on the VCR kernel — policy → budget → approval → execute → verify → checkpoint, every transition recorded.
+- Executable plans (`Plan`/`PlanStep` with deps, `$ref` input wiring, retries, `abort|retry|skip` failure modes); `PlanBuilder` validation (cycles, unknown refs, bound checks, topological order).
+- `LLMPlanner`: LiteLLM-backed plan generation with validation-feedback repair retries; strict JSON parsing unit-tested without credentials.
+- `ToolGateway`: registry, strict parameter validation, real per-call timeouts, decorator + ToolSpec registration.
+- `MemoryStore`: namespaced working memory with secret redaction (persisted views never touch credentials), search, snapshot, save/load.
+- `Verifier` (equals/contains/no_error/required/forbid keys), `Policy` (forbid/approval/max-steps/irreversible gates), `BudgetTracker` (token/cost/latency caps), `AutoApprover` + `CallbackApprover` (fail-closed).
+- `SuperAgent.run` with retry, skip-cascade, nested sub-agents via `as_handler`, `RunReport`; `vcr superagent run --plan --handlers` CLI with real stdin approvals.
+- JSON Schemas for plan and run report under `schemas/superagent/`.
+
+## [1.2.0] - 2026-09-09
+
+### Added
+- VCR Cloud: project registry with slug-validated namespaces under `<root>/projects/<id>/sessions/`.
+- Scoped API tokens (`owner` read+write / `member` read-only), sha256-hashed at rest, constant-time verification, mint/list/revoke endpoints; legacy global token and admin token honored everywhere.
+- Execution ingestion gate: multipart upload parses + `verify_integrity` before visibility; dedup (200), conflict (409 + `?overwrite`), corrupt (422), 100 MB cap.
+- Pull (`download` byte-identical), paginated/searchable listing (header-only fast path), owner-gated delete, server-side Ghost FULL replay endpoint.
+- `CloudClient` (stdlib urllib, timeouts, `CloudError` statuses) + `vcr cloud login/status/projects/sessions/push/pull/replay` with `0600` credential profiles and `--token-stdin`.
+- `GET /api/health` liveness probe; `vcr-server --data-dir/--admin-token`.
+- JSON Schemas for project and token under `schemas/cloud/`.
+
+## [1.1.0] - 2026-09-09
+
+### Added
+- Agent CI: versioned replay datasets (`ReplayDataset`, `TestCase`, `Expectation` test annotations) stored under `.vcr/datasets/`.
+- Regression engine (`run_regression`, `compare_sessions`, `evaluate_candidate`) with PASS/DEGRADED/FAIL verdicts, cost/latency/token deltas, LOW/MEDIUM/HIGH risk, and PR-style markdown reports.
+- `vcr dataset create/add/list/show/remove` and `vcr ci run` CLI with `--fail-on` gates, JSON/markdown reports, `$GITHUB_STEP_SUMMARY` and `::error::`/`::warning::` annotations.
+- Composite GitHub Action (`action.yml`) plus `examples/agent-ci.yml` workflow and `examples/agent_ci_candidates.py` demo helper.
+- Dogfood `agent-ci` CI job proving the gate passes clean runs and blocks regressions.
+- JSON Schemas for dataset and regression report under `schemas/ci/`.
+
+## [1.0.0] - 2026-09-08
+
+### Added
+- Frozen `execution/v1` schema with `schema_version`, forward-compatible readers, and exported JSON Schemas under `schemas/`.
+- Canonical `StateDiff` helpers shared by recorder (JSON-patch) and player (added/removed/modified).
+- Explicit checkpoint API: `record_checkpoint` / `list_checkpoints` / `goto_checkpoint` (sync + async).
+- Player durability: `load(strict=...)`, `skipped_lines`, `verify_integrity`, `rebuild_manifest`, fsync'd session headers.
+- Replay Bundle (`.vcrb`): portable `execution.vcr` + identity manifest with sha256 verification; `vcr bundle export/import/verify`, `vcr reproduce`.
+- Ghost Replay modes: `FULL` / `HYBRID` / `LIVE` / `BRANCH` via `replay_with_mode`.
+- `ACIDWorkspace` hardening: `abort()`, `savepoints()`, `status()`, context-manager support.
+
 ## [0.8.0] - 2026-07-15
 
 ### Added

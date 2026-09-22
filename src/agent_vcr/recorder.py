@@ -21,6 +21,7 @@ from agent_vcr.models import (  # noqa: E402
     FrameMetadata,
     FrameType,
     Session,
+    StateDiff,
     StateSerializer,
     VCRCache,
 )
@@ -48,6 +49,7 @@ class VCRRecorder:
         self._previous_state: dict | None = None
         self._lock = threading.RLock()
         self._cache = VCRCache()
+        self._header_frame_count: int | None = None
 
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -223,12 +225,18 @@ class VCRRecorder:
         input_state: dict,
         error: Exception,
         latency_ms: float,
+        model: str | None = None,
     ) -> Frame:
-        """Record an error during execution."""
+        """Record an error during execution.
+
+        Args:
+            model: Optional model attribution (feeds routing evidence).
+        """
         metadata = FrameMetadata(
             latency_ms=latency_ms,
             error_message=str(error),
             error_type=type(error).__name__,
+            model=model,
         )
 
         return self.record_step(
@@ -239,8 +247,44 @@ class VCRRecorder:
             frame_type=FrameType.ERROR,
         )
 
+    def record_checkpoint(
+        self,
+        state: dict[str, Any],
+        label: str = "checkpoint",
+        node_name: str | None = None,
+        metadata: FrameMetadata | None = None,
+    ) -> Frame:
+        """Record an explicit named checkpoint (Phase 0 checkpoint API).
+
+        Checkpoints are addressable restore points: ``player.goto_checkpoint``
+        / ``list_checkpoints`` resolve them by ``label`` stored in
+        ``metadata.custom["checkpoint_label"]``.
+
+        Args:
+            state: Snapshot to persist as both input and output state.
+            label: StableCheckpoint name (e.g. ``"before_payment"``).
+            node_name: Optional frame name; defaults to ``checkpoint:<label>``.
+            metadata: Optional metadata (custom dict is preserved).
+        """
+        meta = metadata or FrameMetadata()
+        custom = dict(meta.custom)
+        custom["checkpoint_label"] = label
+        meta.custom = custom
+        snapshot = StateSerializer.deserialize(StateSerializer.serialize(state))
+        return self.record_step(
+            node_name=node_name or f"checkpoint:{label}",
+            input_state=snapshot,
+            output_state=snapshot,
+            metadata=meta,
+            frame_type=FrameType.CHECKPOINT,
+        )
+
+    def create_checkpoint(self, *args: Any, **kwargs: Any) -> Frame:
+        """Alias for :meth:`record_checkpoint` (ergonomics)."""
+        return self.record_checkpoint(*args, **kwargs)
+
     def save(self) -> Path:
-        """Flush all pending frames to disk."""
+        """Flush all pending frames to disk (header kept accurate)."""
         with self._lock:
             if self._session is None:
                 raise RuntimeError("No active session.")
@@ -250,20 +294,109 @@ class VCRRecorder:
                 self._write_session_header()
 
             self._flush_frames()
+            if self._header_frame_count != self._session.frame_count:
+                self._rewrite_file()
             self._update_session_manifest()
 
             logger.info("Saved session %s to %s", self._session.session_id, path)
             return path
 
-    def get_session(self) -> Session | None:
-        """Get the current session."""
-        return self._session
+    def attach_session(self, session_id: str) -> Session:
+        """Attach to an existing ``.vcr`` file for append (crash-resume path).
+
+        Loads the session header + all frames into the in-memory cache so
+        totals continue monotonically; the file itself is never truncated —
+        :meth:`save` appends because the header already exists. Raises
+        ``FileNotFoundError`` when no recording exists for the id.
+        """
+        from agent_vcr.player import VCRPlayer  # local: player imports recorder
+
+        with self._lock:
+            if self._session is not None:
+                raise RuntimeError("Recorder already has an active session")
+            path = self.output_dir / f"{session_id}.vcr"
+            if not path.exists():
+                raise FileNotFoundError(f"VCR file not found: {path}")
+            player = VCRPlayer.load(path)
+            if player.session.session_id != session_id:
+                raise ValueError(f"Session id mismatch in {path}")
+            self._session = player.session
+            self._frames = []
+            self._previous_state = None
+            self._cache = VCRCache()
+            self._cache.add_session(self._session)
+            for frame in player.frames:
+                self._cache.add_frame(self._session.session_id, frame)
+            self._header_frame_count = len(player.frames)
+            try:
+                last_output = player.frames[-1].output_state if player.frames else None
+                self._previous_state = last_output
+            except IndexError:
+                self._previous_state = None
+            return self._session
+
+    @staticmethod
+    def rebuild_manifest(output_dir: str | Path) -> dict:
+        """Rebuild ``manifest.json`` by scanning all ``*.vcr`` files.
+
+        Recovery path for a corrupt/deleted manifest (Phase 0 durability).
+        Each file's first ``session`` line is trusted; files without a
+        header are skipped. Writes atomically and returns the manifest.
+        """
+        from pathlib import Path as _Path
+
+        out = _Path(output_dir)
+        sessions: list[dict] = []
+        skipped: list[str] = []
+        for path in sorted(out.glob("*.vcr")):
+            try:
+                with open(path) as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            record = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        if record.get("type") == "session":
+                            data = record.get("data", {})
+                            data.setdefault("session_id", path.stem)
+                            sessions.append(data)
+                            break
+                    else:
+                        skipped.append(path.name)
+            except OSError:
+                skipped.append(path.name)
+        manifest = {
+            "sessions": sessions,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "rebuilt": True,
+            "skipped_files": skipped,
+        }
+        manifest_path = out / "manifest.json"
+        fd, tmp_path = tempfile.mkstemp(
+            dir=str(out), suffix=".tmp", prefix="manifest_"
+        )
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump(manifest, f, indent=2)
+            os.replace(tmp_path, str(manifest_path))
+        except Exception:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp_path)
+            raise
+        return manifest
 
     def get_frames(self) -> list[Frame]:
         """Get all recorded frames (including already-flushed ones)."""
         if self._session:
             return self._cache.get_frames(self._session.session_id)
         return self._frames.copy()
+
+    def get_session(self) -> Session | None:
+        """Get the current session."""
+        return self._session
 
     @property
     def frames(self) -> list[Frame]:
@@ -331,7 +464,7 @@ class VCRRecorder:
         return self.output_dir / f"{self._session.session_id}.vcr"
 
     def _write_session_header(self) -> None:
-        """Write the session header to the file."""
+        """Write the session header to the file (durable: flush + fsync)."""
         if self._session is None:
             return
 
@@ -339,9 +472,14 @@ class VCRRecorder:
         with open(path, "w") as f:
             header = {
                 "type": "session",
+                "schema": "execution/v1",
                 "data": self._session.model_dump(),
             }
             f.write(json.dumps(header, separators=(",", ":")) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+        if self._session is not None:
+            self._header_frame_count = self._session.frame_count
 
     def _flush_frames(self) -> None:
         """Write buffered frames to disk.
@@ -365,6 +503,41 @@ class VCRRecorder:
             os.fsync(f.fileno())
 
         self._frames = []
+
+    def _rewrite_file(self) -> None:
+        """Rewrite header + all frames atomically (fixes header staleness).
+
+        The JSONL header embeds ``frame_count`` at write time, so any
+        frames appended afterwards (buffered saves, crash-resume attach)
+        leave it stale. Rewriting from the in-memory cache restores the
+        ``verify_integrity`` contract. Runs only when counts diverge.
+        """
+        if self._session is None:
+            return
+        path = self._get_session_path()
+        frames = self._cache.get_frames(self._session.session_id)
+        fd, tmp_path = tempfile.mkstemp(
+            dir=str(self.output_dir), suffix=".tmp", prefix="vcr_"
+        )
+        try:
+            with os.fdopen(fd, "w") as f:
+                header = {
+                    "type": "session",
+                    "schema": "execution/v1",
+                    "data": self._session.model_dump(),
+                }
+                f.write(json.dumps(header, separators=(",", ":")) + "\n")
+                for frame in frames:
+                    line = {"type": "frame", "data": frame.model_dump()}
+                    f.write(json.dumps(line, separators=(",", ":")) + "\n")
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, str(path))
+            self._header_frame_count = self._session.frame_count
+        except Exception:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp_path)
+            raise
 
     def _update_session_manifest(self) -> None:
         """Update the session manifest file using atomic write to prevent corruption."""
@@ -413,17 +586,5 @@ class VCRRecorder:
             raise
 
     def _compute_diff(self, before: dict, after: dict) -> list[dict]:
-        """Compute the diff between two states."""
-        diff: list[dict] = []
-
-        for key in after:
-            if key not in before:
-                diff.append({"op": "add", "path": f"/{key}", "value": after[key]})
-            elif before[key] != after[key]:
-                diff.append({"op": "replace", "path": f"/{key}", "value": after[key]})
-
-        for key in before:
-            if key not in after:
-                diff.append({"op": "remove", "path": f"/{key}"})
-
-        return diff
+        """Compute the diff between two states (canonical JSON-patch view)."""
+        return StateDiff.to_json_patch(before, after)

@@ -1,0 +1,427 @@
+{
+  "$defs": {
+    "CompensateSpec": {
+      "description": "Saga compensation for one leaf step.",
+      "properties": {
+        "ref": {
+          "title": "Ref",
+          "type": "string"
+        },
+        "kind": {
+          "default": "tool",
+          "enum": [
+            "tool",
+            "agent"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "inputs": {
+          "additionalProperties": true,
+          "title": "Inputs",
+          "type": "object"
+        }
+      },
+      "required": [
+        "ref"
+      ],
+      "title": "CompensateSpec",
+      "type": "object"
+    },
+    "CompletedCompensation": {
+      "description": "A compensation owed (pushed on leaf success, popped on abort).",
+      "properties": {
+        "step_path": {
+          "title": "Step Path",
+          "type": "string"
+        },
+        "ref": {
+          "title": "Ref",
+          "type": "string"
+        },
+        "kind": {
+          "default": "tool",
+          "title": "Kind",
+          "type": "string"
+        },
+        "inputs": {
+          "additionalProperties": true,
+          "title": "Inputs",
+          "type": "object"
+        }
+      },
+      "required": [
+        "step_path",
+        "ref"
+      ],
+      "title": "CompletedCompensation",
+      "type": "object"
+    },
+    "ConditionSpec": {
+      "description": "Predicate over resolved outputs: <ref> <op> <value>.",
+      "properties": {
+        "ref": {
+          "title": "Ref",
+          "type": "string"
+        },
+        "op": {
+          "default": "==",
+          "enum": [
+            "==",
+            "!=",
+            ">",
+            ">=",
+            "<",
+            "<=",
+            "in",
+            "not_in",
+            "truthy",
+            "falsy"
+          ],
+          "title": "Op",
+          "type": "string"
+        },
+        "value": {
+          "default": null,
+          "title": "Value"
+        }
+      },
+      "required": [
+        "ref"
+      ],
+      "title": "ConditionSpec",
+      "type": "object"
+    },
+    "RunStatus": {
+      "enum": [
+        "running",
+        "committed",
+        "aborted"
+      ],
+      "title": "RunStatus",
+      "type": "string"
+    },
+    "StepKind": {
+      "enum": [
+        "tool",
+        "agent",
+        "checkpoint",
+        "condition",
+        "parallel",
+        "for_each",
+        "approval"
+      ],
+      "title": "StepKind",
+      "type": "string"
+    },
+    "TriggerSpec": {
+      "description": "How a workflow run starts: manual call, webhook, or schedule name.",
+      "properties": {
+        "type": {
+          "default": "manual",
+          "enum": [
+            "manual",
+            "webhook",
+            "schedule"
+          ],
+          "title": "Type",
+          "type": "string"
+        },
+        "schedule": {
+          "default": "",
+          "title": "Schedule",
+          "type": "string"
+        },
+        "secret": {
+          "default": "",
+          "title": "Secret",
+          "type": "string"
+        }
+      },
+      "title": "TriggerSpec",
+      "type": "object"
+    },
+    "WorkflowDef": {
+      "description": "Versioned workflow definition (the reproducible unit).",
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "version": {
+          "default": 1,
+          "title": "Version",
+          "type": "integer"
+        },
+        "description": {
+          "default": "",
+          "title": "Description",
+          "type": "string"
+        },
+        "triggers": {
+          "items": {
+            "$ref": "#/$defs/TriggerSpec"
+          },
+          "title": "Triggers",
+          "type": "array"
+        },
+        "steps": {
+          "items": {
+            "$ref": "#/$defs/WorkflowStep"
+          },
+          "title": "Steps",
+          "type": "array"
+        },
+        "max_total_cost_usd": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Total Cost Usd"
+        },
+        "labels": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Labels",
+          "type": "object"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "WorkflowDef",
+      "type": "object"
+    },
+    "WorkflowStep": {
+      "description": "One node in a workflow definition.",
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/StepKind",
+          "default": "tool"
+        },
+        "ref": {
+          "default": "",
+          "title": "Ref",
+          "type": "string"
+        },
+        "inputs": {
+          "additionalProperties": true,
+          "title": "Inputs",
+          "type": "object"
+        },
+        "depends_on": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Depends On",
+          "type": "array"
+        },
+        "timeout_s": {
+          "default": 120.0,
+          "title": "Timeout S",
+          "type": "number"
+        },
+        "max_retries": {
+          "default": 0,
+          "title": "Max Retries",
+          "type": "integer"
+        },
+        "retry_delay_s": {
+          "default": 0.0,
+          "title": "Retry Delay S",
+          "type": "number"
+        },
+        "on_failure": {
+          "default": "abort",
+          "enum": [
+            "abort",
+            "retry",
+            "skip"
+          ],
+          "title": "On Failure",
+          "type": "string"
+        },
+        "check": {
+          "additionalProperties": true,
+          "title": "Check",
+          "type": "object"
+        },
+        "requires_approval": {
+          "default": false,
+          "title": "Requires Approval",
+          "type": "boolean"
+        },
+        "checkpoint_after": {
+          "default": false,
+          "title": "Checkpoint After",
+          "type": "boolean"
+        },
+        "condition": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ConditionSpec"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "then_steps": {
+          "items": {
+            "$ref": "#/$defs/WorkflowStep"
+          },
+          "title": "Then Steps",
+          "type": "array"
+        },
+        "else_steps": {
+          "items": {
+            "$ref": "#/$defs/WorkflowStep"
+          },
+          "title": "Else Steps",
+          "type": "array"
+        },
+        "branches": {
+          "additionalProperties": {
+            "items": {
+              "$ref": "#/$defs/WorkflowStep"
+            },
+            "type": "array"
+          },
+          "title": "Branches",
+          "type": "object"
+        },
+        "for_each": {
+          "default": "",
+          "title": "For Each",
+          "type": "string"
+        },
+        "item_var": {
+          "default": "item",
+          "title": "Item Var",
+          "type": "string"
+        },
+        "body": {
+          "items": {
+            "$ref": "#/$defs/WorkflowStep"
+          },
+          "title": "Body",
+          "type": "array"
+        },
+        "max_iterations": {
+          "default": 100,
+          "title": "Max Iterations",
+          "type": "integer"
+        },
+        "compensate": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CompensateSpec"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "title": "WorkflowStep",
+      "type": "object"
+    }
+  },
+  "description": "Durable run state \u2014 the crash-recovery contract (one JSON file).",
+  "properties": {
+    "run_id": {
+      "title": "Run Id",
+      "type": "string"
+    },
+    "workflow": {
+      "title": "Workflow",
+      "type": "string"
+    },
+    "workflow_version": {
+      "title": "Workflow Version",
+      "type": "integer"
+    },
+    "definition": {
+      "$ref": "#/$defs/WorkflowDef"
+    },
+    "status": {
+      "$ref": "#/$defs/RunStatus",
+      "default": "running"
+    },
+    "inputs": {
+      "additionalProperties": true,
+      "title": "Inputs",
+      "type": "object"
+    },
+    "outputs": {
+      "additionalProperties": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "title": "Outputs",
+      "type": "object"
+    },
+    "completed_top_steps": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Completed Top Steps",
+      "type": "array"
+    },
+    "compensations": {
+      "items": {
+        "$ref": "#/$defs/CompletedCompensation"
+      },
+      "title": "Compensations",
+      "type": "array"
+    },
+    "compensated": {
+      "default": false,
+      "title": "Compensated",
+      "type": "boolean"
+    },
+    "error": {
+      "default": "",
+      "title": "Error",
+      "type": "string"
+    },
+    "session_id": {
+      "default": "",
+      "title": "Session Id",
+      "type": "string"
+    },
+    "created_at": {
+      "default": "",
+      "title": "Created At",
+      "type": "string"
+    },
+    "updated_at": {
+      "default": "",
+      "title": "Updated At",
+      "type": "string"
+    }
+  },
+  "required": [
+    "run_id",
+    "workflow",
+    "workflow_version",
+    "definition"
+  ],
+  "title": "RunRecord",
+  "type": "object"
+}

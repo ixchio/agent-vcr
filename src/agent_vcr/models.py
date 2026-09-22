@@ -1,4 +1,15 @@
-"""Core data models for Agent VCR."""
+"""Core data models for Agent VCR.
+
+Phase 0 frozen schema: ``execution/v1`` (schema version ``1.0.0``).
+
+Backward-compatibility contract:
+- Every persisted record carries ``schema_version`` with a default, so
+  pre-1.0 ``.vcr`` files (no version field) still load.
+- ``model_config(extra="ignore")`` on Session/Frame so future fields
+  never break old readers; old files never break new readers.
+- Canonical diff helpers live in :class:`StateDiff` — single source of
+  truth for recorder (JSON-patch list) and player (added/removed dict).
+"""
 
 from __future__ import annotations
 
@@ -7,7 +18,10 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, ClassVar
 
-from pydantic import BaseModel, Field, field_serializer
+from pydantic import BaseModel, ConfigDict, Field, field_serializer
+
+SCHEMA_NAME = "execution/v1"
+SCHEMA_VERSION = "1.0.0"
 
 
 class FrameType(str, Enum):
@@ -45,6 +59,9 @@ class FrameMetadata(BaseModel):
 class Frame(BaseModel):
     """A single frame in a VCR session recording."""
 
+    model_config = ConfigDict(extra="ignore")
+
+    schema_version: str = Field(default=SCHEMA_VERSION)
     frame_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     session_id: str
     parent_frame_id: str | None = None
@@ -64,6 +81,9 @@ class Frame(BaseModel):
 class Session(BaseModel):
     """A VCR recording session."""
 
+    model_config = ConfigDict(extra="ignore")
+
+    schema_version: str = Field(default=SCHEMA_VERSION)
     session_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     parent_session_id: str | None = None
     forked_from_frame: int | None = None
@@ -89,6 +109,52 @@ class ResumeConfig(BaseModel):
     mode: ResumeMode = ResumeMode.FORK
     skip_nodes: list[str] = Field(default_factory=list)
     inject_mocks: dict[str, Any] = Field(default_factory=dict)
+
+
+class StateDiff:
+    """Canonical state-diff helpers (Phase 0 single source of truth).
+
+    Two views of the same diff:
+    - :meth:`compute` — ``{"added","removed","modified","unchanged"}`` dict
+      used by ``VCRPlayer.compare_frames``.
+    - :meth:`to_json_patch` — RFC-6902-style ``add/remove/replace`` list
+      stored on ``Frame.state_diff`` in diff mode.
+    """
+
+    @staticmethod
+    def compute(
+        before: dict[str, Any], after: dict[str, Any]
+    ) -> dict[str, dict[str, Any]]:
+        diff: dict[str, dict[str, Any]] = {
+            "added": {},
+            "removed": {},
+            "modified": {},
+            "unchanged": {},
+        }
+        for key in set(before) | set(after):
+            if key not in before:
+                diff["added"][key] = after[key]
+            elif key not in after:
+                diff["removed"][key] = before[key]
+            elif before[key] != after[key]:
+                diff["modified"][key] = {"before": before[key], "after": after[key]}
+            else:
+                diff["unchanged"][key] = before[key]
+        return diff
+
+    @staticmethod
+    def to_json_patch(
+        before: dict[str, Any], after: dict[str, Any]
+    ) -> list[dict[str, Any]]:
+        patch: list[dict[str, Any]] = []
+        for key in set(before) | set(after):
+            if key not in before:
+                patch.append({"op": "add", "path": f"/{key}", "value": after[key]})
+            elif key not in after:
+                patch.append({"op": "remove", "path": f"/{key}"})
+            elif before[key] != after[key]:
+                patch.append({"op": "replace", "path": f"/{key}", "value": after[key]})
+        return patch
 
 
 class StateSerializer:

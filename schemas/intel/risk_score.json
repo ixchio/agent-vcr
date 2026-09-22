@@ -1,0 +1,41 @@
+{
+  "description": "0\u2013100 risk for a session/agent (higher = riskier) + factors.",
+  "properties": {
+    "subject": {
+      "title": "Subject",
+      "type": "string"
+    },
+    "score": {
+      "default": 0.0,
+      "title": "Score",
+      "type": "number"
+    },
+    "level": {
+      "default": "LOW",
+      "enum": [
+        "LOW",
+        "MEDIUM",
+        "HIGH"
+      ],
+      "title": "Level",
+      "type": "string"
+    },
+    "factors": {
+      "additionalProperties": {
+        "type": "number"
+      },
+      "title": "Factors",
+      "type": "object"
+    },
+    "sessions_analyzed": {
+      "default": 0,
+      "title": "Sessions Analyzed",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "subject"
+  ],
+  "title": "RiskScore",
+  "type": "object"
+}

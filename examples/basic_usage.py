@@ -15,7 +15,7 @@ def main():
     recorder = VCRRecorder()
 
     # Start a session
-    session = recorder.start_session("my_first_session")
+    session = recorder.start_session()
     print(f"Started session: {session.session_id}")
 
     # Record some steps

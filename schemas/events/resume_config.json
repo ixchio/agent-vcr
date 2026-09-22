@@ -1,0 +1,59 @@
+{
+  "$defs": {
+    "ResumeMode": {
+      "description": "Modes for resuming execution.",
+      "enum": [
+        "fork",
+        "replay",
+        "mock"
+      ],
+      "title": "ResumeMode",
+      "type": "string"
+    }
+  },
+  "description": "Configuration for resuming execution from a frame.",
+  "properties": {
+    "from_frame": {
+      "title": "From Frame",
+      "type": "integer"
+    },
+    "new_session_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "New Session Id"
+    },
+    "state_overrides": {
+      "additionalProperties": true,
+      "title": "State Overrides",
+      "type": "object"
+    },
+    "mode": {
+      "$ref": "#/$defs/ResumeMode",
+      "default": "fork"
+    },
+    "skip_nodes": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Skip Nodes",
+      "type": "array"
+    },
+    "inject_mocks": {
+      "additionalProperties": true,
+      "title": "Inject Mocks",
+      "type": "object"
+    }
+  },
+  "required": [
+    "from_frame"
+  ],
+  "title": "ResumeConfig",
+  "type": "object"
+}

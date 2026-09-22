@@ -1,0 +1,17 @@
+.git/
+.github/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.vcr/
+build/
+dist/
+htmlcov/
+tests/
+docs/
+*.vcr
+*.py[cod]
+*.log
+.env
+.env.*
+!/.env.hosted.example

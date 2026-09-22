@@ -1,0 +1,21 @@
+{
+  "name": "hello-agent-vcr",
+  "description": "A zero-key, local workflow with output wiring and a checkpoint.",
+  "steps": [
+    {
+      "id": "greet",
+      "kind": "tool",
+      "ref": "greet",
+      "inputs": {"name": "Agent VCR"}
+    },
+    {
+      "id": "uppercase",
+      "kind": "tool",
+      "ref": "uppercase",
+      "inputs": {"value": "$greet.message"},
+      "depends_on": ["greet"],
+      "checkpoint_after": true,
+      "check": {"required_keys": ["message"]}
+    }
+  ]
+}

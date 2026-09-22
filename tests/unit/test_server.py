@@ -192,7 +192,8 @@ class TestPushEndpoint:
 
 
 class TestServerSecurity:
-    def test_default_host_is_localhost(self):
+    def test_default_host_is_localhost(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)  # don't create .vcr in the repo checkout
         server = VCRServer()
         assert server.host == "127.0.0.1"
 

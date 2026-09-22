@@ -1,10 +1,12 @@
 [build-system]
-requires = ["hatchling"]
+# Hatchling 1.30+ emits Core Metadata 2.5, which current PyPI/Twine tooling
+# still rejects. Keep release artifacts on the supported 2.4 format.
+requires = ["hatchling>=1.27,<1.30"]
 build-backend = "hatchling.build"
 
 [project]
 name = "ai-agent-vcr"
-version = "0.8.0"
+version = "1.5.0"
 description = "ACID transactions, time-travel debugging, and zero-cost Ghost Replay for AI agents. Rollback filesystem + state. Works with LangGraph, CrewAI, or raw Python."
 readme = "README.md"
 license = "MIT"
@@ -63,7 +65,18 @@ langchain = ["langchain>=0.1.0"]
 crewai = ["crewai>=0.28.0"]
 openhands = ["openhands-ai>=0.30.0"]
 tui = ["rich>=13.0.0", "textual>=0.40.0"]
-dashboard = ["fastapi>=0.104.0", "uvicorn>=0.24.0", "websockets>=12.0", "watchdog>=3.0.0"]
+dashboard = ["fastapi>=0.104.0", "uvicorn>=0.24.0", "websockets>=12.0", "watchdog>=3.0.0", "python-multipart>=0.0.9"]
+hosted = ["PyJWT[crypto]>=2.10.1", "psycopg[binary]>=3.2.0", "stripe>=12.0.0"]
+sandbox = ["e2b>=2.46.0"]
+vector = ["qdrant-client>=1.19.0"]
+llm = ["litellm>=1.100.0"]
+inngest = ["inngest>=0.5.0"]
+cloud = [
+    "e2b>=2.46.0",
+    "qdrant-client>=1.19.0",
+    "litellm>=1.100.0",
+    "inngest>=0.5.0",
+]
 dev = [
     "pytest>=7.4.0",
     "pytest-asyncio>=0.21.0",
@@ -81,6 +94,7 @@ dev = [
     "uvicorn>=0.24.0",
     "websockets>=12.0",
     "watchdog>=3.0.0",
+    "python-multipart>=0.0.9",
 ]
 all = [
     "langgraph>=0.0.20",
@@ -93,6 +107,14 @@ all = [
     "uvicorn>=0.24.0",
     "websockets>=12.0",
     "watchdog>=3.0.0",
+    "python-multipart>=0.0.9",
+    "litellm>=1.100.0",
+    "e2b>=2.46.0",
+    "qdrant-client>=1.19.0",
+    "inngest>=0.5.0",
+    "PyJWT[crypto]>=2.10.1",
+    "psycopg[binary]>=3.2.0",
+    "stripe>=12.0.0",
 ]
 
 [project.scripts]
@@ -156,14 +178,39 @@ python_version = "3.10"
 warn_return_any = false
 warn_unused_configs = true
 disallow_untyped_defs = true
+ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
-module = ["langgraph.*", "openhands.*"]
+module = [
+    "langgraph",
+    "langgraph.*",
+    "openhands",
+    "openhands.*",
+    "litellm",
+    "litellm.*",
+    "textual",
+    "textual.*",
+    "aiofiles",
+    "aiofiles.*",
+    "e2b",
+    "e2b.*",
+    "qdrant_client",
+    "qdrant_client.*",
+    "inngest",
+    "inngest.*",
+    "jwt",
+    "jwt.*",
+    "psycopg",
+    "psycopg.*",
+    "stripe",
+    "stripe.*",
+]
 ignore_errors = true
 ignore_missing_imports = true
 follow_imports = "skip"
 
 [tool.pytest.ini_options]
+pythonpath = ["src"]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]

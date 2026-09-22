@@ -1,0 +1,149 @@
+{
+  "$defs": {
+    "PlanStep": {
+      "description": "One executable node: tool call or sub-agent invocation.",
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/StepKind",
+          "default": "tool"
+        },
+        "ref": {
+          "title": "Ref",
+          "type": "string"
+        },
+        "inputs": {
+          "additionalProperties": true,
+          "title": "Inputs",
+          "type": "object"
+        },
+        "depends_on": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Depends On",
+          "type": "array"
+        },
+        "checkpoint_after": {
+          "default": false,
+          "title": "Checkpoint After",
+          "type": "boolean"
+        },
+        "requires_approval": {
+          "default": false,
+          "title": "Requires Approval",
+          "type": "boolean"
+        },
+        "timeout_s": {
+          "default": 120.0,
+          "title": "Timeout S",
+          "type": "number"
+        },
+        "max_cost_usd": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Cost Usd"
+        },
+        "max_retries": {
+          "default": 0,
+          "title": "Max Retries",
+          "type": "integer"
+        },
+        "on_failure": {
+          "default": "abort",
+          "enum": [
+            "abort",
+            "retry",
+            "skip"
+          ],
+          "title": "On Failure",
+          "type": "string"
+        },
+        "check": {
+          "additionalProperties": true,
+          "title": "Check",
+          "type": "object"
+        }
+      },
+      "required": [
+        "id",
+        "ref"
+      ],
+      "title": "PlanStep",
+      "type": "object"
+    },
+    "StepKind": {
+      "enum": [
+        "tool",
+        "agent"
+      ],
+      "title": "StepKind",
+      "type": "string"
+    }
+  },
+  "description": "Validated executable DAG with policy bounds.",
+  "properties": {
+    "goal": {
+      "title": "Goal",
+      "type": "string"
+    },
+    "version": {
+      "default": 1,
+      "title": "Version",
+      "type": "integer"
+    },
+    "steps": {
+      "items": {
+        "$ref": "#/$defs/PlanStep"
+      },
+      "title": "Steps",
+      "type": "array"
+    },
+    "max_total_cost_usd": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Max Total Cost Usd"
+    },
+    "max_steps": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Max Steps"
+    },
+    "labels": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "title": "Labels",
+      "type": "object"
+    }
+  },
+  "required": [
+    "goal"
+  ],
+  "title": "Plan",
+  "type": "object"
+}

@@ -1,8 +1,10 @@
+from __future__ import annotations
+
 import logging
 import re
 import subprocess
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Literal
 
 from agent_vcr.models import Frame, FrameMetadata, Session
 from agent_vcr.recorder import VCRRecorder
@@ -22,18 +24,33 @@ class ACIDWorkspace:
     def __init__(
         self,
         workspace_dir: str,
-        recorder: Optional[VCRRecorder] = None,
+        recorder: VCRRecorder | None = None,
         dirty_worktree_policy: Literal["fail", "allow"] = "fail",
     ) -> None:
         self.workspace_dir = Path(workspace_dir).resolve()
         self.recorder = recorder or VCRRecorder(auto_save=True)
         self.dirty_worktree_policy = dirty_worktree_policy
-        self.session: Optional[Session] = None
-        self.branch_name: Optional[str] = None
-        self.base_ref: Optional[str] = None
+        self.session: Session | None = None
+        self.branch_name: str | None = None
+        self.base_ref: str | None = None
         self._baseline_local_paths: set[str] = set()
 
         self.workspace_dir.mkdir(parents=True, exist_ok=True)
+
+    def __enter__(self) -> ACIDWorkspace:
+        """Context-manager entry — calls :meth:`begin` with a fresh session."""
+        self.begin()
+        return self
+
+    def __exit__(self, exc_type: object, exc_val: object, exc_tb: object) -> None:
+        """Commit on clean exit, abort (rewind + branch cleanup) on exception."""
+        if exc_type is None:
+            self.commit()
+        else:
+            try:
+                self.abort()
+            except Exception:
+                logger.warning("ACID abort on exit failed", exc_info=True)
 
     @staticmethod
     def _sanitize_session_id(session_id: str) -> str:
@@ -51,7 +68,7 @@ class ACIDWorkspace:
             )
         return session_id
 
-    def begin(self, session_id: Optional[str] = None) -> Session:
+    def begin(self, session_id: str | None = None) -> Session:
         """
         BEGIN - Starts a session and snapshots local, non-git-owned files.
         """
@@ -162,6 +179,46 @@ class ACIDWorkspace:
             self.session.session_id,
             self.base_ref or "main",
         )
+
+    def savepoints(self) -> list[dict]:
+        """List filesystem savepoints (frame index + git commit hash)."""
+        return [
+            {
+                "index": i,
+                "node_name": frame.node_name,
+                "frame_id": frame.frame_id,
+                "acid_commit_hash": frame.metadata.custom.get("acid_commit_hash"),
+            }
+            for i, frame in enumerate(self.recorder.get_frames())
+        ]
+
+    def status(self) -> dict:
+        """Inspectable transaction status (session, branch, savepoint count)."""
+        session = self.recorder.get_session()
+        return {
+            "session_id": session.session_id if session else None,
+            "branch": self.branch_name,
+            "base_ref": self.base_ref,
+            "savepoints": len(self.recorder.get_frames()),
+            "workspace": str(self.workspace_dir),
+        }
+
+    def abort(self) -> None:
+        """ABORT — discard the transaction: rewind files, drop the branch.
+
+        Safe to call after ``begin()`` even with zero savepoints. Never
+        touches the base ref's committed history; only the acid branch
+        (plus generated untracked files) is removed.
+        """
+        if not self.session or self.branch_name is None:
+            raise RuntimeError("No active transaction to abort.")
+
+        self._git(["checkout", self.base_ref or "main"])
+        self._clean_generated_local_paths()
+        self._git(["branch", "-D", self.branch_name], check=False)
+        logger.info("ACID ABORT: Session %s discarded.", self.session.session_id)
+        self.session = None
+        self.branch_name = None
 
     def _git(
         self,

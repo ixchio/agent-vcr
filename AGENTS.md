@@ -44,3 +44,24 @@
 - Type hints required (mypy strict)
 - Imports at top of file
 - Python 3.9+ compatibility (uses `from __future__ import annotations`)
+
+## Sync & Concurrency Standards
+These patterns are **required** for all async code. No exceptions.
+
+- **Shared mutable state → `asyncio.Lock`**: Never access shared dicts/lists from coroutines without a lock. Wrap reads AND writes.
+- **Signaling between coroutines → `asyncio.Event`**: Use `event.set()` / `await event.wait()` instead of polling with `asyncio.sleep`.
+- **Producer/consumer → `asyncio.Queue`**: Never use raw `list.append` for cross-coroutine data passing. Use `Queue(maxsize=N)` for backpressure. Always `await queue.join()` before shutdown to drain — zero lost frames.
+- **File writes → atomic (`tmp` + `os.replace`)**: Write to a `.tmp` sibling first, then `os.replace(tmp, dest)` (POSIX atomic). On failure, unlink `.tmp`. Never write directly to the final path mid-stream.
+- **All I/O → `asyncio.wait_for(coro, timeout=N)`**: Every network call, file op, and subprocess must have a timeout. No hung processes.
+- **Idempotent operations**: Check-then-skip before recording/writing. If the frame/key already exists, return early — never error on duplicate. Safe retries = reliability.
+- **Graceful shutdown order**: (1) stop accepting new work, (2) `await queue.join()`, (3) `task.cancel()` + `asyncio.gather(*tasks, return_exceptions=True)`.
+
+### Quick Reference
+| Rule | Why |
+|---|---|
+| Lock around every shared dict/set/list | Race conditions corrupt recordings |
+| `asyncio.Queue` not `list.append` | Thread/coroutine-safe, backpressure built-in |
+| Write `.tmp` → `os.replace()` | Crash-safe, atomic on POSIX |
+| `await queue.join()` before exit | No lost frames |
+| `asyncio.wait_for()` on every I/O | No hung processes |
+| Idempotent writes (check-then-skip) | Safe retries = bulletproof replay |

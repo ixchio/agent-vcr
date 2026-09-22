@@ -1,0 +1,187 @@
+{
+  "name": "Agent VCR Template",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "1",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$node[\"Config\"].json.vcr_host}}/api/workflows/{{$node[\"Config\"].json.workflow_name}}/trigger",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-agent-vcr-token",
+              "value": "={{$node[\"Config\"].json.api_token}}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "inputs",
+              "value": "{}"
+            },
+            {
+              "name": "callback_url",
+              "value": "={{$execution.resumeUrl}}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "2",
+      "name": "Trigger Agent VCR",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [450, 300]
+    },
+    {
+      "parameters": {
+        "resume": "webhook"
+      },
+      "id": "3",
+      "name": "Wait (On Webhook Call)",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1,
+      "position": [650, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{$json.status}}",
+              "value2": "committed"
+            }
+          ]
+        }
+      },
+      "id": "4",
+      "name": "IF",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [850, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{$node[\"Config\"].json.vcr_host}}/api/projects/{{$node[\"Config\"].json.project_id}}/intel/why/{{$json.session_id}}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-agent-vcr-token",
+              "value": "={{$node[\"Config\"].json.api_token}}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "5",
+      "name": "Get Failure Intel",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1050, 400]
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "vcr_host",
+              "value": "http://localhost:8000"
+            },
+            {
+              "name": "workflow_name",
+              "value": "my_workflow"
+            },
+            {
+              "name": "api_token",
+              "value": "my_token"
+            },
+            {
+              "name": "project_id",
+              "value": "my_project"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "0",
+      "name": "Config",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 2,
+      "position": [50, 300]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Config": {
+      "main": [
+        [
+          {
+            "node": "Manual Trigger",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Trigger Agent VCR",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Trigger Agent VCR": {
+      "main": [
+        [
+          {
+            "node": "Wait (On Webhook Call)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait (On Webhook Call)": {
+      "main": [
+        [
+          {
+            "node": "IF",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Get Failure Intel",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {},
+  "versionId": "1"
+}

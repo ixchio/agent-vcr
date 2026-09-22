@@ -1,0 +1,56 @@
+{
+  "description": "One repeated failure shape across sessions.",
+  "properties": {
+    "key": {
+      "title": "Key",
+      "type": "string"
+    },
+    "error_type": {
+      "title": "Error Type",
+      "type": "string"
+    },
+    "node_name": {
+      "title": "Node Name",
+      "type": "string"
+    },
+    "template": {
+      "title": "Template",
+      "type": "string"
+    },
+    "occurrences": {
+      "default": 0,
+      "title": "Occurrences",
+      "type": "integer"
+    },
+    "sessions": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Sessions",
+      "type": "array"
+    },
+    "first_seen": {
+      "default": "",
+      "title": "First Seen",
+      "type": "string"
+    },
+    "last_seen": {
+      "default": "",
+      "title": "Last Seen",
+      "type": "string"
+    },
+    "sample_message": {
+      "default": "",
+      "title": "Sample Message",
+      "type": "string"
+    }
+  },
+  "required": [
+    "key",
+    "error_type",
+    "node_name",
+    "template"
+  ],
+  "title": "FailureCluster",
+  "type": "object"
+}

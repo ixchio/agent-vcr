@@ -1,0 +1,95 @@
+{
+  "$defs": {
+    "StepOutcome": {
+      "description": "Recorded outcome of one executed step.",
+      "properties": {
+        "step_id": {
+          "title": "Step Id",
+          "type": "string"
+        },
+        "status": {
+          "default": "ok",
+          "enum": [
+            "ok",
+            "failed",
+            "skipped",
+            "blocked",
+            "denied"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "attempts": {
+          "default": 1,
+          "title": "Attempts",
+          "type": "integer"
+        },
+        "output": {
+          "additionalProperties": true,
+          "title": "Output",
+          "type": "object"
+        },
+        "reasons": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Reasons",
+          "type": "array"
+        }
+      },
+      "required": [
+        "step_id"
+      ],
+      "title": "StepOutcome",
+      "type": "object"
+    }
+  },
+  "description": "Final report of a SuperAgent run (also persisted in session metadata).",
+  "properties": {
+    "session_id": {
+      "title": "Session Id",
+      "type": "string"
+    },
+    "goal": {
+      "title": "Goal",
+      "type": "string"
+    },
+    "status": {
+      "default": "committed",
+      "enum": [
+        "committed",
+        "aborted"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "outcomes": {
+      "items": {
+        "$ref": "#/$defs/StepOutcome"
+      },
+      "title": "Outcomes",
+      "type": "array"
+    },
+    "total_tokens": {
+      "default": 0,
+      "title": "Total Tokens",
+      "type": "integer"
+    },
+    "total_cost_usd": {
+      "default": 0.0,
+      "title": "Total Cost Usd",
+      "type": "number"
+    },
+    "total_latency_ms": {
+      "default": 0.0,
+      "title": "Total Latency Ms",
+      "type": "number"
+    }
+  },
+  "required": [
+    "session_id",
+    "goal"
+  ],
+  "title": "RunReport",
+  "type": "object"
+}

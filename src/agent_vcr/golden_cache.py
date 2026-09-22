@@ -16,6 +16,7 @@ import json
 import logging
 import time
 from datetime import datetime, timezone
+from enum import Enum
 from pathlib import Path
 from typing import Any, Callable
 
@@ -27,6 +28,24 @@ from agent_vcr.player import VCRPlayer
 from agent_vcr.recorder import VCRRecorder
 
 logger = logging.getLogger(__name__)
+
+
+class GhostReplayMode(str, Enum):
+    """Ghost Replay modes (Phase 1 flagship API, design doc §11.3).
+
+    - ``FULL``: reproduce entirely from captured interactions (zero cost).
+    - ``HYBRID``: reuse cached steps, re-run changed steps *and* everything
+      downstream (safe default — downstream outputs may depend on changes).
+    - ``LIVE``: re-run only the listed steps against live externals, replay
+      everything else from cache (fast; caller asserts independence).
+    - ``BRANCH``: fork at ``from_frame`` — replay history before the frame,
+      re-run it and everything after (time-travel debugging).
+    """
+
+    FULL = "full"
+    HYBRID = "hybrid"
+    LIVE = "live"
+    BRANCH = "branch"
 
 
 class CostLedger:
@@ -190,6 +209,7 @@ class GoldenRunCache:
         recorder: VCRRecorder | None = None,
         identity: dict[str, Any] | None = None,
         allow_partial_replay: bool = False,
+        mode_label: str = "golden_replay",
     ) -> tuple[list[dict], CostLedger]:
         """
         Replay a golden run. Steps not in `changed_steps` are replayed from
@@ -241,9 +261,9 @@ class GoldenRunCache:
                 "replay_of": golden_info["session_id"],
                 "golden_fingerprint": fingerprint,
                 "golden_identity": normalized_identity,
-                "mode": "golden_replay",
+                "mode": mode_label,
             },
-            tags=["golden_replay"],
+            tags=[mode_label],
         )
 
         outputs: list[dict] = []
@@ -315,6 +335,70 @@ class GoldenRunCache:
         )
 
         return outputs, ledger
+
+    def replay_with_mode(
+        self,
+        task: str,
+        mode: GhostReplayMode | str,
+        step_executor: Callable[[str, dict], dict] | None = None,
+        changed_steps: set[int] | None = None,
+        from_frame: int | None = None,
+        recorder: VCRRecorder | None = None,
+        identity: dict[str, Any] | None = None,
+    ) -> tuple[list[dict], CostLedger]:
+        """Replay a golden run in a named mode (Phase 1 flagship API).
+
+        Args:
+            task: Task description identifying the golden run.
+            mode: One of ``FULL`` / ``HYBRID`` / ``LIVE`` / ``BRANCH``.
+            step_executor: Required for every mode except ``FULL``.
+            changed_steps: Frame indices to re-run (HYBRID/LIVE).
+            from_frame: Fork point (BRANCH only).
+            recorder: Optional recorder for the replay session.
+            identity: Identity inputs selecting the golden run.
+        """
+        mode = GhostReplayMode(mode)
+        label = f"ghost_{mode.value}"
+
+        if mode == GhostReplayMode.FULL:
+            if changed_steps or from_frame is not None:
+                raise ValueError("FULL replay takes no changed_steps/from_frame")
+            return self.replay(task, recorder=recorder, identity=identity, mode_label=label)
+
+        if step_executor is None:
+            raise ValueError(f"{mode.name} replay requires step_executor")
+
+        if mode == GhostReplayMode.BRANCH:
+            if from_frame is None:
+                raise ValueError("BRANCH replay requires from_frame")
+            if changed_steps:
+                raise ValueError("BRANCH replay takes from_frame, not changed_steps")
+            return self.replay(
+                task,
+                step_executor=step_executor,
+                changed_steps={from_frame},
+                recorder=recorder,
+                identity=identity,
+                mode_label=label,
+            )
+        if mode == GhostReplayMode.LIVE:
+            return self.replay(
+                task,
+                step_executor=step_executor,
+                changed_steps=changed_steps or set(),
+                recorder=recorder,
+                identity=identity,
+                allow_partial_replay=True,
+                mode_label=label,
+            )
+        return self.replay(
+            task,
+            step_executor=step_executor,
+            changed_steps=changed_steps or set(),
+            recorder=recorder,
+            identity=identity,
+            mode_label=label,
+        )
 
     def list_golden_runs(self) -> list[dict]:
         """List all cached golden runs."""

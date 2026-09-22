@@ -1,0 +1,83 @@
+# Agent VCR — Agent CI GitHub Action
+#
+# Runs replay regression (`vcr ci`) on every PR: compares candidate agent
+# recordings against golden baselines with zero LLM cost.
+#
+# Usage in your agent repo:
+#
+#   - uses: ixchio/agent-vcr@v1
+#     with:
+#       dataset: refunds
+#       candidates-dir: .vcr/candidates
+name: "Agent VCR CI"
+description: "Replay agent recordings against golden baselines — pass/degraded/fail + risk report"
+author: "ixchio"
+
+inputs:
+  dataset:
+    description: "Replay dataset name (created with `vcr dataset create/add`)"
+    required: true
+  candidates-dir:
+    description: "Directory of <case-name>.vcr candidate recordings"
+    required: false
+    default: ".vcr/candidates"
+  datasets-dir:
+    description: "Directory holding dataset JSON files"
+    required: false
+    default: ".vcr/datasets"
+  golden-dir:
+    description: "Golden-run cache directory"
+    required: false
+    default: ".vcr/golden"
+  fail-on:
+    description: "Gate threshold: degraded | failed | never"
+    required: false
+    default: "failed"
+  package:
+    description: "Pip spec to install (default: latest release)"
+    required: false
+    default: "ai-agent-vcr"
+  python-version:
+    description: "Python version for the check"
+    required: false
+    default: "3.12"
+
+outputs:
+  report:
+    description: "Path to the JSON regression report"
+    value: ${{ steps.ci.outputs.report }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - name: Install Agent VCR
+      shell: bash
+      run: pip install "${{ inputs.package }}"
+
+    - name: Run replay regression
+      id: ci
+      shell: bash
+      run: |
+        vcr ci run \
+          --dataset "${{ inputs.dataset }}" \
+          --candidates "${{ inputs.candidates-dir }}" \
+          --datasets-dir "${{ inputs.datasets-dir }}" \
+          --golden-dir "${{ inputs.golden-dir }}" \
+          --fail-on "${{ inputs.fail-on }}" \
+          --report agent-ci-report.json \
+          --markdown agent-ci-report.md
+        echo "report=agent-ci-report.json" >> "$GITHUB_OUTPUT"
+
+    - name: Upload regression report
+      if: always()
+      uses: actions/upload-artifact@b9a4f79d0f3c3c1a7f8e932b6536562a39b807 # v4
+      with:
+        name: agent-ci-report
+        path: |
+          agent-ci-report.json
+          agent-ci-report.md

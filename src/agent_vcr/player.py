@@ -17,6 +17,7 @@ from agent_vcr.models import (  # noqa: E402
     ResumeConfig,
     ResumeMode,
     Session,
+    StateDiff,
     StateSerializer,
 )
 from agent_vcr.recorder import VCRRecorder  # noqa: E402
@@ -25,14 +26,30 @@ from agent_vcr.recorder import VCRRecorder  # noqa: E402
 class VCRPlayer:
     """Plays back recorded VCR sessions with time-travel capabilities."""
 
-    def __init__(self, session: Session, frames: list[Frame]):
+    def __init__(
+        self,
+        session: Session,
+        frames: list[Frame],
+        *,
+        source_path: str | Path | None = None,
+        skipped_lines: int = 0,
+    ):
         self.session = session
         self.frames = frames
         self._current_index = 0
+        self.source_path = Path(source_path) if source_path is not None else None
+        self.skipped_lines = skipped_lines
 
     @classmethod
-    def load(cls, filepath: str | Path) -> VCRPlayer:
-        """Load a VCR file and reconstruct the session."""
+    def load(cls, filepath: str | Path, *, strict: bool = False) -> VCRPlayer:
+        """Load a VCR file and reconstruct the session.
+
+        Args:
+            filepath: Path to the ``.vcr`` JSONL file.
+            strict: If True, raise on the first malformed line instead of
+                skipping it. Default False preserves the historic
+                skip-and-warn recovery behavior (see ``skipped_lines``).
+        """
         filepath = Path(filepath)
 
         if not filepath.exists():
@@ -41,6 +58,7 @@ class VCRPlayer:
         logger.info("Loading VCR file: %s", filepath)
         session: Session | None = None
         frames: list[Frame] = []
+        skipped = 0
 
         with open(filepath) as f:
             for line_num, line in enumerate(f, 1):
@@ -58,8 +76,19 @@ class VCRPlayer:
                     elif record_type == "frame":
                         frame = Frame(**data)
                         frames.append(frame)
-                except json.JSONDecodeError:
+                except json.JSONDecodeError as err:
+                    if strict:
+                        raise ValueError(
+                            f"Malformed JSON at line {line_num} in {filepath}"
+                        ) from err
                     logger.warning("Skipping malformed JSON at line %d in %s", line_num, filepath)
+                    skipped += 1
+                    continue
+                except Exception:
+                    if strict:
+                        raise
+                    logger.warning("Skipping invalid record at line %d in %s", line_num, filepath)
+                    skipped += 1
                     continue
 
         if session is None:
@@ -68,7 +97,7 @@ class VCRPlayer:
         frames.sort(key=lambda f: f.timestamp)
         logger.info("Loaded session %s with %d frames", session.session_id, len(frames))
 
-        return cls(session, frames)
+        return cls(session, frames, source_path=filepath, skipped_lines=skipped)
 
     @classmethod
     def load_by_id(cls, session_id: str, vcr_dir: str = ".vcr") -> VCRPlayer:
@@ -147,6 +176,64 @@ class VCRPlayer:
     def list_nodes(self) -> list[str]:
         """List all node names in the session."""
         return list(dict.fromkeys(frame.node_name for frame in self.frames))
+
+    def list_checkpoints(self) -> list[dict[str, Any]]:
+        """List explicit checkpoints (Phase 0 checkpoint API).
+
+        Returns list of ``{"index", "label", "node_name", "frame_id"}``.
+        Includes both ``record_checkpoint`` frames (``checkpoint:<label>``)
+        and fork markers (``fork:*`` with ``custom.source == "fork"``).
+        """
+        from agent_vcr.models import FrameType
+
+        out: list[dict[str, Any]] = []
+        for i, frame in enumerate(self.frames):
+            if frame.frame_type != FrameType.CHECKPOINT:
+                continue
+            label = (frame.metadata.custom or {}).get("checkpoint_label")
+            if label is None and frame.node_name.startswith("checkpoint:"):
+                label = frame.node_name.split("checkpoint:", 1)[1]
+            out.append(
+                {
+                    "index": i,
+                    "label": label,
+                    "node_name": frame.node_name,
+                    "frame_id": frame.frame_id,
+                }
+            )
+        return out
+
+    def goto_checkpoint(self, label: str) -> dict[str, Any]:
+        """Jump to a named checkpoint and return its output state."""
+        for cp in self.list_checkpoints():
+            if cp["label"] == label:
+                return self.goto_frame(cp["index"])
+        raise KeyError(f"Checkpoint {label!r} not found")
+
+    def verify_integrity(self) -> dict[str, Any]:
+        """Verify session durability invariants (Phase 0 data-integrity API).
+
+        Checks: every frame belongs to this session, timestamps are
+        non-decreasing in file order, ``session.frame_count`` matches the
+        loaded frame count (warns on mismatch from pre-1.0 files).
+        """
+        issues: list[str] = []
+        for i, frame in enumerate(self.frames):
+            if frame.session_id != self.session.session_id:
+                issues.append(f"frame {i} session mismatch: {frame.session_id!r}")
+            if i > 0 and frame.timestamp < self.frames[i - 1].timestamp:
+                issues.append(f"frame {i} timestamp goes backwards")
+        if self.session.frame_count and self.session.frame_count != len(self.frames):
+            issues.append(
+                f"frame_count {self.session.frame_count} != loaded {len(self.frames)}"
+            )
+        return {
+            "ok": not issues,
+            "issues": issues,
+            "frame_count": len(self.frames),
+            "skipped_lines": self.skipped_lines,
+            "session_id": self.session.session_id,
+        }
 
     def get_node_executions(self, node_name: str) -> list[Frame]:
         """Get all executions of a specific node."""
@@ -325,27 +412,5 @@ class VCRPlayer:
     def _compute_state_diff(
         self, state_a: dict[str, Any], state_b: dict[str, Any]
     ) -> dict[str, Any]:
-        """Compute differences between two states."""
-        diff: dict[str, Any] = {
-            "added": {},
-            "removed": {},
-            "modified": {},
-            "unchanged": {},
-        }
-
-        all_keys = set(state_a.keys()) | set(state_b.keys())
-
-        for key in all_keys:
-            if key not in state_a:
-                diff["added"][key] = state_b[key]
-            elif key not in state_b:
-                diff["removed"][key] = state_a[key]
-            elif state_a[key] != state_b[key]:
-                diff["modified"][key] = {
-                    "before": state_a[key],
-                    "after": state_b[key],
-                }
-            else:
-                diff["unchanged"][key] = state_a[key]
-
-        return diff
+        """Compute differences between two states (canonical via StateDiff)."""
+        return StateDiff.compute(state_a, state_b)  # type: ignore[return-value]

@@ -17,7 +17,7 @@
 pip install ai-agent-vcr
 ```
 
-No API keys. No cloud. No vendor lock-in.
+No required API keys. Local-first by default. Optional cloud sync when you need it.
 Works with [TERX](https://github.com/ixchio/terx) — memory layer for browser agents.
 
 <br>
@@ -173,45 +173,114 @@ Repeat for every bug       Done. $0.00 extra.
 
 ## Quick Start
 
-### Record
+### Run this checkout locally
 
-```python
-from agent_vcr import VCRRecorder
+Use this path when you want the full feature set in this repository. It is isolated from
+your system Python and requires no model credentials for the examples.
 
-recorder = VCRRecorder()
-recorder.start_session("my_run")
+```bash
+git clone https://github.com/ixchio/agent-vcr.git
+cd agent-vcr
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -e ".[tui,dashboard]"
 
-state = {"query": "build a REST API"}
-state = planner(state)
-recorder.record_step("planner", input_state, state)
+# Creates the local recording directory. Safe to run again.
+vcr init
 
-state = coder(state)
-recorder.record_step("coder", input_state, state)
-
-recorder.save()  # → .vcr/my_run.vcr
+# Records a tiny deterministic agent and prints the new .vcr path.
+python examples/basic_usage.py
 ```
 
-Or use the context manager — frames are saved even if the agent crashes:
+On Windows PowerShell, activate the environment with
+`\.venv\Scripts\Activate.ps1`. If you only need the published core package, install it
+with `python -m pip install ai-agent-vcr` instead.
 
-```python
-with VCRRecorder() as recorder:
-    recorder.start_session("my_run")
-    # ... your agent code ...
+The example writes a JSONL session beneath `.vcr/`. Inspect the path that it prints:
+
+```bash
+vcr tui .vcr/<session-id>.vcr
+
+# Optional local dashboard
+vcr-server --vcr-dir .vcr --auth-token local-dev-token
+# Open http://127.0.0.1:8000/dashboard
 ```
 
-### Rewind & Fix
+### Optional: hosted accounts and billing
+
+The repository includes an opt-in company-hosting foundation: Railway runs the container,
+Supabase Auth verifies user tokens, Railway Postgres records account state, and Stripe hosts
+subscription checkout. It is off by default and needs no cloud credentials for local use.
+
+Follow the [Railway hosted-control-plane guide](docs/deployment/railway.md) when the company is
+ready to create its Railway, Supabase, and Stripe accounts. It includes the exact environment
+variables, webhook endpoint, database migration, and verification commands. Do not expose the
+legacy self-hosted project store as a public multi-user recordings API until its tenant storage
+and authorization layer is in place.
+
+### Record your own agent
+
+The core integration is four explicit operations: capture the state before and after an
+agent step, save the session, and load it when you need to inspect or resume it.
 
 ```python
-player = VCRPlayer.load(".vcr/my_run.vcr")
+from agent_vcr import ResumeConfig, VCRPlayer, VCRRecorder
 
-diff = player.compare_frames(5, 6)
-# {'added': {'bad_file': '...'}, 'modified': {'plan': '...'}}
 
-player.resume(
-    agent_callable=coder,
-    config=ResumeConfig(from_frame=5, state_overrides={"plan": "fixed"})
+def planner(state: dict) -> dict:
+    return {**state, "plan": "use a migration before changing the schema"}
+
+
+recorder = VCRRecorder(output_dir=".vcr")
+session = recorder.start_session()
+
+before = {"request": "add an invoices table"}
+after = planner(before)
+recorder.record_step("planner", before, after)
+recording = recorder.save()
+print(f"Recorded {session.session_id} at {recording}")
+
+player = VCRPlayer.load(recording)
+assert player.goto_frame(0)["plan"].startswith("use a migration")
+
+# Make a new child session from the recorded input with a corrected plan.
+new_session_id = player.resume(
+    planner,
+    ResumeConfig(
+        from_frame=0,
+        state_overrides={"request": "add invoices with an idempotent migration"},
+    ),
 )
+print(f"Forked session: {new_session_id}")
 ```
+
+Use `with VCRRecorder() as recorder:` when a surrounding exception should still flush
+the frames already captured.
+
+### Run a first durable workflow
+
+This repository includes a no-key workflow example. It validates a versioned workflow,
+records each tool call, creates a checkpoint, and prints the run id.
+
+```bash
+vcr workflow run \
+  --file examples/hello_workflow.json \
+  --handlers examples/workflow_handlers.py
+
+vcr workflow runs --workflow hello-agent-vcr
+```
+
+For a broken or interrupted run, inspect the recording first, then resume only the
+unfinished workflow:
+
+```bash
+vcr intel why .vcr/<session-id>.vcr
+vcr workflow resume <run-id> --handlers examples/workflow_handlers.py
+```
+
+The detailed workflow format, approvals, compensation actions, schedules, and recovery
+behavior are documented in [docs/workflow.md](docs/workflow.md).
 
 ---
 
@@ -513,24 +582,26 @@ python examples/basic_usage.py
 
 ---
 
-## Roadmap
+## Delivery Status
 
-- [x] Core recording and playback
-- [x] Time-travel resume with state injection
-- [x] LangGraph + CrewAI integrations
-- [x] Async recorder and player
-- [x] Terminal TUI debugger (`vcr`)
-- [x] Claude Code hook scaffolding (`vcr init --claude-code`)
-- [x] Live dashboard with DAG visualization
-- [x] ACID Transactions (git-backed filesystem rollback)
-- [x] Ghost Replay (zero-cost replay of successful runs)
-- [x] Sentinel — real-time code quality guardian
-- [x] Context manager (`with VCRRecorder() as r:`)
-- [ ] Claude Code / Cursor integration
-- [ ] AutoGen integration
-- [ ] Replay regression tests (golden paths as CI assertions)
-- [ ] Collaborative debugging (share sessions)
-- [ ] Cloud storage backend (S3, GCS)
+The source checkout implements the design document's phased local-first foundation:
+
+- [x] **Phase 0–1:** versioned JSONL execution schema, checkpoints, time travel,
+  filesystem rollback, Ghost Replay, replay bundles, TUI, and dashboard.
+- [x] **Phase 2:** replay datasets, nine-dimension regression checks, GitHub Action, and
+  a dogfood CI gate.
+- [x] **Phase 3:** project-scoped local cloud store, hashed tokens, push/pull/replay API,
+  and live execution streaming. This is self-hosted storage, not a managed SaaS.
+- [x] **Phase 4–5:** policy-gated SuperAgent plans, approvals, budgets, durable workflows,
+  retries, checkpoints, parallel branches, schedules, and reverse compensation.
+- [x] **Phase 6–7 foundations:** failure clustering, risk/cost/model-routing analysis,
+  local and E2B sandbox adapters, vector-memory interfaces, and pluggable workflow backends.
+- [~] **Hosted-control-plane foundation:** Railway Docker deployment, Supabase JWT verification,
+  Stripe Checkout/webhook ledger, and Postgres account state are ready to wire to company
+  accounts. Tenant-scoped remote recording storage, RBAC/SSO, autoscaling, managed secrets,
+  and production operations remain future work.
+- [ ] **Additional framework bindings:** Claude Code hooks are available; Cursor, AutoGen,
+  and broader hosted integrations are not yet shipped.
 
 ---
 

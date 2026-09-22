@@ -1,0 +1,52 @@
+# Example: Agent CI for your agent repo
+#
+# 1. Record golden runs once (locally) and commit .vcr/datasets + .vcr/golden:
+#
+#      vcr dataset create refunds
+#      vcr dataset add refunds --task "refund order" --vcr ./golden.vcr \
+#          --max-cost 0.30 --expect-state '{"refunded": true}' \
+#          --forbid-tools payments_live --require-checkpoints before_payment
+#
+# 2. In CI, produce candidate recordings with your updated agent, then gate:
+name: Agent CI
+
+on:
+  pull_request:
+  push:
+    branches: ["main"]
+
+jobs:
+  replay-regression:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      # Your job: run the updated agent and save one <case-name>.vcr
+      # per dataset case into .vcr/candidates/ (see examples/).
+      - name: Produce candidate recordings
+        run: |
+          python examples/agent_ci_candidates.py \
+            --candidates-dir .vcr/candidates
+
+      - uses: ixchio/agent-vcr@v1
+        with:
+          dataset: refunds
+          candidates-dir: .vcr/candidates
+          fail-on: failed
+
+      - name: Comment report on PR
+        if: github.event_name == 'pull_request' && always()
+        uses: actions/github-script@60a0d83039c74a4a6f47d1c60f2c05bdbb70c74 # v7
+        with:
+          script: |
+            const fs = require('fs');
+            const md = fs.readFileSync('agent-ci-report.md', 'utf8');
+            github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: md,
+            });

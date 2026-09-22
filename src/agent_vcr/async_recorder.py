@@ -19,6 +19,7 @@ from agent_vcr.models import (
     FrameMetadata,
     FrameType,
     Session,
+    StateDiff,
     StateSerializer,
     VCRCache,
 )
@@ -218,12 +219,14 @@ class AsyncVCRRecorder:
         input_state: dict[str, Any],
         error: Exception,
         latency_ms: float = 0.0,
+        model: str | None = None,
     ) -> Frame:
-        """Record an error during execution."""
+        """Record an error during execution (model attribution optional)."""
         metadata = FrameMetadata(
             error_type=type(error).__name__,
             error_message=str(error),
             latency_ms=latency_ms,
+            model=model,
         )
         return await self.record_step(
             node_name=node_name,
@@ -231,6 +234,27 @@ class AsyncVCRRecorder:
             output_state={"error": str(error)},
             metadata=metadata,
             frame_type=FrameType.ERROR,
+        )
+
+    async def record_checkpoint(
+        self,
+        state: dict[str, Any],
+        label: str = "checkpoint",
+        node_name: str | None = None,
+        metadata: FrameMetadata | None = None,
+    ) -> Frame:
+        """Record an explicit named checkpoint (async mirror of sync API)."""
+        meta = metadata or FrameMetadata()
+        custom = dict(meta.custom)
+        custom["checkpoint_label"] = label
+        meta.custom = custom
+        snapshot = StateSerializer.deserialize(StateSerializer.serialize(state))
+        return await self.record_step(
+            node_name=node_name or f"checkpoint:{label}",
+            input_state=snapshot,
+            output_state=snapshot,
+            metadata=meta,
+            frame_type=FrameType.CHECKPOINT,
         )
 
     async def save(self) -> Path:
@@ -316,8 +340,12 @@ class AsyncVCRRecorder:
     # --- Private methods ---
 
     def _generate_session_id(self) -> str:
-        import uuid
-        return str(uuid.uuid4())
+        import os
+        from datetime import datetime, timezone
+
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        unique_id = os.urandom(4).hex()
+        return f"{timestamp}_{unique_id}"
 
     def _get_session_path(self) -> Path:
         if self._session is None:
@@ -330,10 +358,13 @@ class AsyncVCRRecorder:
         path = self._get_session_path()
         record = {
             "type": "session",
+            "schema": "execution/v1",
             "data": json.loads(self._session.model_dump_json()),
         }
         async with aiofiles.open(path, "w") as f:
             await f.write(json.dumps(record) + "\n")
+            await f.flush()
+        await asyncio.to_thread(self._fsync_path, path)
 
     async def _flush_frames(self) -> None:
         """Write buffered frames to disk.
@@ -414,16 +445,5 @@ class AsyncVCRRecorder:
             raise
 
     def _compute_diff(self, before: dict, after: dict) -> list[dict]:
-        """Compute the diff between two states."""
-        diffs = []
-        all_keys = set(before.keys()) | set(after.keys())
-
-        for key in all_keys:
-            if key not in before:
-                diffs.append({"op": "add", "path": f"/{key}", "value": after[key]})
-            elif key not in after:
-                diffs.append({"op": "remove", "path": f"/{key}"})
-            elif before[key] != after[key]:
-                diffs.append({"op": "replace", "path": f"/{key}", "value": after[key]})
-
-        return diffs
+        """Compute the diff between two states (canonical JSON-patch view)."""
+        return StateDiff.to_json_patch(before, after)

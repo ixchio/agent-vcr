@@ -36,6 +36,13 @@ def test_init_claude_code_is_idempotent(tmp_path):
         assert commands.count(f"python -m agent_vcr.hooks.claude_code {event}") == 1
 
 
+def test_cli_init_creates_local_workspace(tmp_path, capsys):
+    cli.main(["init", "--project-dir", str(tmp_path)])
+
+    assert (tmp_path / ".vcr").is_dir()
+    assert "workspace ready" in capsys.readouterr().out
+
+
 def test_claude_code_hook_records_vcr_frame(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
 

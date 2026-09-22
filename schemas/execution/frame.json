@@ -1,0 +1,195 @@
+{
+  "$defs": {
+    "FrameMetadata": {
+      "description": "Metadata associated with a frame.",
+      "properties": {
+        "model": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Model"
+        },
+        "latency_ms": {
+          "default": 0.0,
+          "title": "Latency Ms",
+          "type": "number"
+        },
+        "tokens_used": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tokens Used"
+        },
+        "tokens_input": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tokens Input"
+        },
+        "tokens_output": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tokens Output"
+        },
+        "cost_usd": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cost Usd"
+        },
+        "error_type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Error Type"
+        },
+        "error_message": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Error Message"
+        },
+        "custom": {
+          "additionalProperties": true,
+          "title": "Custom",
+          "type": "object"
+        }
+      },
+      "title": "FrameMetadata",
+      "type": "object"
+    },
+    "FrameType": {
+      "description": "Types of frames that can be recorded.",
+      "enum": [
+        "node",
+        "tool",
+        "llm",
+        "error",
+        "checkpoint"
+      ],
+      "title": "FrameType",
+      "type": "string"
+    }
+  },
+  "description": "A single frame in a VCR session recording.",
+  "properties": {
+    "schema_version": {
+      "default": "1.0.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "frame_id": {
+      "title": "Frame Id",
+      "type": "string"
+    },
+    "session_id": {
+      "title": "Session Id",
+      "type": "string"
+    },
+    "parent_frame_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Parent Frame Id"
+    },
+    "timestamp": {
+      "format": "date-time",
+      "title": "Timestamp",
+      "type": "string"
+    },
+    "frame_type": {
+      "$ref": "#/$defs/FrameType",
+      "default": "node"
+    },
+    "node_name": {
+      "title": "Node Name",
+      "type": "string"
+    },
+    "input_state": {
+      "additionalProperties": true,
+      "title": "Input State",
+      "type": "object"
+    },
+    "output_state": {
+      "additionalProperties": true,
+      "title": "Output State",
+      "type": "object"
+    },
+    "metadata": {
+      "$ref": "#/$defs/FrameMetadata"
+    },
+    "state_diff": {
+      "anyOf": [
+        {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "State Diff"
+    }
+  },
+  "required": [
+    "session_id",
+    "node_name",
+    "input_state",
+    "output_state"
+  ],
+  "title": "Frame",
+  "type": "object"
+}

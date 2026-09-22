@@ -1,0 +1,187 @@
+{
+  "$defs": {
+    "Expectation": {
+      "description": "Test annotations for one case: budgets, safety rails, expected state.",
+      "properties": {
+        "max_cost_usd": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Cost Usd"
+        },
+        "max_latency_ms": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Latency Ms"
+        },
+        "max_tokens": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Tokens"
+        },
+        "require_no_errors": {
+          "default": true,
+          "title": "Require No Errors",
+          "type": "boolean"
+        },
+        "expect_state": {
+          "additionalProperties": true,
+          "title": "Expect State",
+          "type": "object"
+        },
+        "forbid_tools": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Forbid Tools",
+          "type": "array"
+        },
+        "require_checkpoints": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Require Checkpoints",
+          "type": "array"
+        },
+        "max_cost_delta": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 0.5,
+          "title": "Max Cost Delta"
+        },
+        "max_latency_delta": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 1.0,
+          "title": "Max Latency Delta"
+        },
+        "max_token_delta": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": 0.5,
+          "title": "Max Token Delta"
+        }
+      },
+      "title": "Expectation",
+      "type": "object"
+    },
+    "TestCase": {
+      "description": "One annotated regression case: golden reference + expectations.",
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "task": {
+          "title": "Task",
+          "type": "string"
+        },
+        "fingerprint": {
+          "title": "Fingerprint",
+          "type": "string"
+        },
+        "identity": {
+          "additionalProperties": true,
+          "title": "Identity",
+          "type": "object"
+        },
+        "tags": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Tags",
+          "type": "array"
+        },
+        "expect": {
+          "$ref": "#/$defs/Expectation"
+        },
+        "created_at": {
+          "title": "Created At",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "task",
+        "fingerprint"
+      ],
+      "title": "TestCase",
+      "type": "object"
+    }
+  },
+  "description": "On-disk dataset envelope (versioned for forward migration).",
+  "properties": {
+    "dataset_version": {
+      "default": "1.0",
+      "title": "Dataset Version",
+      "type": "string"
+    },
+    "name": {
+      "title": "Name",
+      "type": "string"
+    },
+    "version": {
+      "default": 1,
+      "title": "Version",
+      "type": "integer"
+    },
+    "cases": {
+      "items": {
+        "$ref": "#/$defs/TestCase"
+      },
+      "title": "Cases",
+      "type": "array"
+    },
+    "created_at": {
+      "title": "Created At",
+      "type": "string"
+    },
+    "updated_at": {
+      "title": "Updated At",
+      "type": "string"
+    }
+  },
+  "required": [
+    "name"
+  ],
+  "title": "DatasetFile",
+  "type": "object"
+}
