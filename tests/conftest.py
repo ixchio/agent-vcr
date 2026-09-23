@@ -1,12 +1,35 @@
 """Shared test fixtures for Agent VCR tests."""
 
+import asyncio
 import tempfile
+from collections.abc import Generator
 
 import pytest
 
 from agent_vcr.models import FrameMetadata
 from agent_vcr.player import VCRPlayer
 from agent_vcr.recorder import VCRRecorder
+
+
+@pytest.fixture(autouse=True)
+def main_thread_event_loop() -> Generator[None, None, None]:
+    """Provide a fresh default loop for synchronous ASGI tests on Python 3.9."""
+    created_loop = None
+    try:
+        asyncio.get_event_loop()
+    except RuntimeError:
+        created_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(created_loop)
+
+    yield
+
+    if created_loop is not None:
+        try:
+            if asyncio.get_event_loop() is created_loop:
+                asyncio.set_event_loop(None)
+        except RuntimeError:
+            pass
+        created_loop.close()
 
 
 @pytest.fixture

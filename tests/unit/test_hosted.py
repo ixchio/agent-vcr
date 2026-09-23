@@ -72,7 +72,11 @@ def test_supabase_verifier_checks_key_issuer_audience_and_expiry(monkeypatch):
     verifier._keys = {"key-1": {"kid": "key-1", "alg": "RS256", "kty": "RSA"}}
     verifier._expires_at = time.monotonic() + 60
 
-    user = asyncio.run(verifier.verify("valid-token"))
+    loop = asyncio.new_event_loop()
+    try:
+        user = loop.run_until_complete(verifier.verify("valid-token"))
+    finally:
+        loop.close()
 
     assert user == HostedUser(id="user-123", email="dev@example.com")
     assert received["key"] == "public-key"
