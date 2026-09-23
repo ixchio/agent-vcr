@@ -9,7 +9,7 @@ name = "ai-agent-vcr"
 version = "1.5.0"
 description = "ACID transactions, time-travel debugging, and zero-cost Ghost Replay for AI agents. Rollback filesystem + state. Works with LangGraph, CrewAI, or raw Python."
 readme = "README.md"
-license = "MIT"
+license = "LicenseRef-QueryXLabs-Proprietary"
 requires-python = ">=3.9"
 authors = [
     {name = "ixchio", email = "amankumarpandeyin@gmail.com"},
@@ -39,7 +39,7 @@ keywords = [
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
+    "License :: Other/Proprietary License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",

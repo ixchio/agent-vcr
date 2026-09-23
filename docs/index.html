@@ -6,7 +6,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Agent VCR — ACID Transactions & Time-Travel Debugging for AI Agents</title>
     <meta name="description"
-        content="ACID transactions, time-travel debugging, and zero-cost Ghost Replay for AI agents. Rollback filesystem + state with git reset --hard. Works with LangGraph, CrewAI, or raw Python. Open source, fully local.">
+        content="ACID transactions, time-travel debugging, and Ghost Replay for AI agents. Rollback filesystem and state with git-backed savepoints. Local-first proprietary software.">
     <meta name="keywords" content="AI agent debugging, LangGraph time travel, agent rollback, ACID transactions AI, Ghost Replay, CrewAI debugging, LLM observability, agent-vcr, ai-agent-vcr, agent checkpoint, prompt debugging, agentic workflow testing">
     <meta name="author" content="ixchio">
     <meta name="robots" content="index, follow">
@@ -22,7 +22,7 @@
     <!-- Twitter Card -->
     <meta name="twitter:card" content="summary_large_image">
     <meta name="twitter:title" content="Agent VCR — ACID Transactions for AI Agents">
-    <meta name="twitter:description" content="git reset --hard deletes hallucinated files, not just state. Time-travel debugging + Ghost Replay + Sentinel. Open source.">
+    <meta name="twitter:description" content="Git-backed filesystem rollback, time-travel debugging, Ghost Replay, and Sentinel for AI agents.">
     <meta name="twitter:image" content="https://ixchio.github.io/agent-vcr/demo.gif">
 
     <!-- Structured Data -->
@@ -36,9 +36,8 @@
         "operatingSystem": "Cross-platform",
         "description": "ACID transactions, time-travel debugging, and zero-cost Ghost Replay for AI agents. Rollback filesystem + state. Works with LangGraph, CrewAI, or raw Python.",
         "url": "https://ixchio.github.io/agent-vcr/",
-        "downloadUrl": "https://pypi.org/project/ai-agent-vcr/",
-        "softwareVersion": "0.8.0",
-        "license": "https://opensource.org/licenses/MIT",
+        "softwareVersion": "1.5.0",
+        "license": "https://github.com/ixchio/agent-vcr/blob/main/LICENSE",
         "author": {
             "@type": "Person",
             "name": "ixchio",
@@ -46,11 +45,7 @@
         },
         "codeRepository": "https://github.com/ixchio/agent-vcr",
         "programmingLanguage": "Python",
-        "offers": {
-            "@type": "Offer",
-            "price": "0",
-            "priceCurrency": "USD"
-        }
+        "copyrightHolder": "QueryXLabs and ixchio"
     }
     </script>
 
@@ -87,7 +82,7 @@
     <!-- HERO -->
     <section class="hero" id="hero">
         <div class="hero-inner">
-            <div class="hero-pill">v0.8.0 · Open Source · MIT License · 🛡️ Sentinel · 👻 Ghost Replay</div>
+            <div class="hero-pill">v1.5.0 · Local-first · Proprietary · 🛡️ Sentinel · 👻 Ghost Replay</div>
             <h1 class="hero-title">
                 ACID transactions<br>
                 <span class="hero-title-accent">for AI agents.</span>
@@ -190,7 +185,7 @@
                                 <span class="dots"><span></span><span></span><span></span></span>
                                 <span class="code-label">terminal</span>
                             </div>
-                            <pre><code>pip install ai-agent-vcr</code></pre>
+                            <pre><code>Install from your licensed distribution</code></pre>
                         </div>
                     </div>
                 </div>
@@ -888,7 +883,7 @@ print(ledger)
                 <h2>Stop re-running your whole chain.</h2>
                 <p>Install Agent VCR and start debugging from the exact frame that broke.</p>
                 <div class="code-block inline-install">
-                    <pre><code>pip install ai-agent-vcr</code></pre>
+                    <pre><code>Contact QueryXLabs for licensed access</code></pre>
                 </div>
                 <div class="cta-links">
                     <a href="https://github.com/ixchio/agent-vcr" class="btn-solid large" target="_blank">View on
@@ -896,7 +891,7 @@ print(ledger)
                     <a href="https://github.com/ixchio/agent-vcr/issues" class="btn-ghost large" target="_blank">Report
                         a bug</a>
                 </div>
-                <p class="cta-note">MIT License · No signup required · Works offline</p>
+                <p class="cta-note">Proprietary software · Local-first runtime</p>
             </div>
         </div>
     </section>
@@ -910,7 +905,7 @@ print(ledger)
             </div>
             <div class="footer-links">
                 <a href="https://github.com/ixchio/agent-vcr" target="_blank">GitHub</a>
-                <a href="https://pypi.org/project/ai-agent-vcr/" target="_blank">PyPI</a>
+                <a href="https://github.com/ixchio/agent-vcr/blob/main/LICENSE" target="_blank">License</a>
                 <a href="https://github.com/ixchio/agent-vcr/issues" target="_blank">Issues</a>
                 <a href="https://github.com/ixchio/agent-vcr/blob/main/CONTRIBUTING.md" target="_blank">Contributing</a>
             </div>

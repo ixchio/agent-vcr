@@ -4,10 +4,9 @@
 
 Agent VCR records agent state, tool calls, and checkpoints so a failed run becomes an artifact you can inspect, rewind, replay, compare, or roll back—instead of a reason to start again from zero.
 
-[![PyPI](https://img.shields.io/pypi/v/ai-agent-vcr?style=flat-square&label=PyPI)](https://pypi.org/project/ai-agent-vcr/)
 [![CI](https://img.shields.io/github/actions/workflow/status/ixchio/agent-vcr/ci.yml?style=flat-square&label=CI)](https://github.com/ixchio/agent-vcr/actions)
 [![Python](https://img.shields.io/badge/python-3.9%2B-blue?style=flat-square)](https://www.python.org/downloads/)
-[![License](https://img.shields.io/badge/license-MIT-yellow?style=flat-square)](LICENSE)
+[![License](https://img.shields.io/badge/license-proprietary-red?style=flat-square)](LICENSE)
 
 ```bash
 git clone https://github.com/ixchio/agent-vcr.git
@@ -21,7 +20,8 @@ vcr init
 python examples/basic_usage.py
 ```
 
-No model key is required for the local examples. Install `ai-agent-vcr` from PyPI for the published package; use this checkout for the functionality on `main`.
+No model key is required for the local examples. This repository is proprietary software;
+access, use, and distribution are governed by [LICENSE](LICENSE).
 
 ## Why Agent VCR
 
@@ -255,6 +255,6 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md) before ope
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+Proprietary Software License — see [LICENSE](LICENSE).
 
-<sub>Created by <a href="https://github.com/ixchio">ixchio</a>.</sub>
+<sub>Copyright © 2026 QueryXLabs and <a href="https://github.com/ixchio">ixchio</a>. All rights reserved.</sub>
