@@ -14,6 +14,8 @@ permissions:
 jobs:
   codeql:
     name: CodeQL
+    # Turn this on after Code Scanning is enabled in repository settings.
+    if: vars.ENABLE_CODEQL == 'true'
     runs-on: ubuntu-latest
     permissions:
       security-events: write
@@ -41,26 +43,3 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48 # v4
-
-  scorecard:
-    name: OpenSSF Scorecard
-    runs-on: ubuntu-latest
-    permissions:
-      security-events: write
-      id-token: write
-      contents: read
-
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-        with:
-          persist-credentials: false
-
-      - uses: ossf/scorecard-action@62b2cac7ed8198b15735ed49ab1e5cf35480ba46 # v2.4.0
-        with:
-          results_file: scorecard.sarif
-          results_format: sarif
-          publish_results: true
-
-      - uses: github/codeql-action/upload-sarif@02c5e83432fe5497fd85b873b6c9f16a8578e1d9 # v3
-        with:
-          sarif_file: scorecard.sarif
