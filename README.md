@@ -223,6 +223,7 @@ It intentionally does **not** publish local recordings as a shared cloud product
 | --- | --- |
 | Documentation index | [docs/README.md](docs/README.md) |
 | Architecture and data contracts | [docs/architecture.md](docs/architecture.md) |
+| SuperAgent runtime | [docs/superagent.md](docs/superagent.md) |
 | Workflows | [docs/workflow.md](docs/workflow.md) |
 | Development and verification | [docs/development.md](docs/development.md) |
 | Railway hosted control plane | [docs/deployment/railway.md](docs/deployment/railway.md) |

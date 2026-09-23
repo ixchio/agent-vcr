@@ -36,7 +36,7 @@ pip install --upgrade pip setuptools wheel build
 | `tui` | `rich>=13.0.0`, `textual>=0.40.0` | Terminal user interface for time-travel session inspection (`vcr inspect`). |
 | `dashboard` | `fastapi`, `uvicorn`, `websockets`, `watchdog`, `python-multipart` | Local WebSocket/HTTP streaming server (`vcr-server`) and web viewer. |
 | `sandbox` | `e2b>=2.46.0` | Firecracker microVM isolation adapter (`E2BSandbox`). |
-| `vector` | `qdrant-client>=1.19.0` | Semantic long-term agent memory (`VectorMemoryStore`). |
+| `vector` | `qdrant-client>=1.19.0` | Semantic long-term agent memory (`QdrantVectorStore`). |
 | `llm` | `litellm>=1.100.0` | Multi-provider LLM gateway for the SuperAgent planner. |
 | `inngest` | `inngest>=0.5.0` | Distributed event-driven workflow backend with step memoization. |
 | `cloud` | `e2b`, `qdrant-client`, `litellm`, `inngest` | Meta-package bundling all cloud runtime dependencies. |
@@ -90,7 +90,7 @@ agent-vcr/
 │   │   ├── tui.py              # Textual terminal time-travel debugger
 │   │   ├── superagent/         # SuperAgent execution runtime
 │   │   │   ├── agent.py        # SuperAgent execution pipeline
-│   │   │   ├── planner.py      # PlanIR DAG builder, LiteLLM repair loop
+│   │   │   ├── planner.py      # Plan DAG builder, LiteLLM repair loop
 │   │   │   ├── router.py       # ToolGateway schema validation & timeout enforcement
 │   │   │   ├── policy.py       # Static Policy rules & BudgetTracker ledger
 │   │   │   ├── verifier.py     # Declarative output assertions

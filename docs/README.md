@@ -24,6 +24,7 @@ intentionally preserves `.venv/` and `.vcr/`.
 
 - [Architecture](architecture.md) — runtime tiers, data model, and subsystem boundaries.
 - [Development](development.md) — local setup, quality gates, and repository conventions.
+- [SuperAgent runtime](superagent.md) — plan execution, policies, budgets, approvals, and VCR traces.
 - [Workflows](workflow.md) — workflow definitions, execution, recovery, and operations.
 - [Railway deployment](deployment/railway.md) — optional Supabase Auth and Stripe control-plane
   setup. It remains opt-in and does not alter local-first use.

@@ -1,6 +1,7 @@
 # Agent VCR & SuperAgent: System Architecture Specification
 
-> **Version:** `1.5.0` (`ai-agent-vcr` on PyPI)
+> **Version:** `1.5.0`
+> **Distribution:** Proprietary software of QueryXLabs and ixchio
 > **Schema Contract:** `execution/v1` (frozen)
 > **Target Audience:** Principal Systems Engineers, Infrastructure Architects, Agent Developers
 
@@ -25,8 +26,6 @@ Agent VCR introduces **Time-Travel Infrastructure** for autonomous AI systems. T
 Observability tells you WHAT happened.
 Agent VCR lets you GO BACK, CHANGE EXECUTION, and RESUME.
 ```
-
----
 
 ## 2. Layered Architecture Topology
 
@@ -54,12 +53,12 @@ Agent VCR is structured into five distinct, loosely coupled architectural tiers:
                                             ▼
 ┌────────────────────────────────────────────────────────────────────────────────────────┐
 │                      TIER 3: SUPERAGENT EXECUTION RUNTIME                              │
-│  - PlanIR DAG Builder & LiteLLM Planner (Strict schema repair loops)                   │
-│  - ToolGateway (Schema enforcement, rate limiting, per-call thread timeouts)           │
+│  - Plan DAG Builder & LiteLLM Planner (Strict schema repair loops)                      │
+│  - ToolGateway (Schema enforcement and per-call thread timeouts)                        │
 │  - Policy & Budget Enforcement (Static rules + dynamic token/USD/latency caps)         │
 │  - Verifier Engine (Pre/Post-condition assertion contracts)                           │
 │  - Human-in-the-Loop Approvals (Fail-closed Approver protocol)                        │
-│  - Memory Hierarchy (Redacted MemoryStore + Qdrant VectorMemoryStore)                 │
+│  - Memory Hierarchy (Redacted MemoryStore + Qdrant Vector Store)                       │
 └───────────────────────────────────────────┬────────────────────────────────────────────┘
                                             │
                                             ▼
@@ -81,6 +80,22 @@ Agent VCR is structured into five distinct, loosely coupled architectural tiers:
 │  - Golden Run Cache (Task fingerprinting -> Zero-token Ghost Replay)                   │
 └────────────────────────────────────────────────────────────────────────────────────────┘
 ```
+
+### 2.1 SuperAgent execution flow
+
+SuperAgent is the Tier 3 control loop for an explicit tool-and-agent plan. It validates the
+plan DAG before any handler runs, then processes each step in dependency order:
+
+```text
+PlanBuilder → resolve $step.output inputs → Policy → Budget → Approval
+            → ToolGateway or sub-agent (timeout) → Verifier → VCR checkpoint
+```
+
+The VCR session records the plan, gate decisions, redacted approval inputs, handler output,
+verification verdict, and checkpoints. On an aborting failure, the intelligence layer may
+propose a bounded safe retry; durable resume, schedules, branching, and compensating actions
+belong to the workflow engine. See [SuperAgent runtime](superagent.md) for the executable plan
+contract and local CLI/API flow.
 
 ---
 
