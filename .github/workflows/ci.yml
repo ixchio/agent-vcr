@@ -104,7 +104,8 @@ jobs:
         fi
         echo "Gate correctly blocked the regression"
 
-  benchmark-pr:    name: PR Benchmark Check
+  benchmark-pr:
+    name: PR Benchmark Check
     needs: build
     runs-on: ubuntu-latest
     permissions:
