@@ -333,4 +333,4 @@ Issues and pull requests are welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.
 
 Agent VCR is open-source software released under the [MIT License](LICENSE).
 
-<sub>Copyright © 2026 QueryXLabs and <a href="https://github.com/ixchio">ixchio</a>.</sub>
+<sub>Copyright © 2026 GOD and <a href="https://github.com/ixchio">ixchio</a>.</sub>
