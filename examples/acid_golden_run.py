@@ -12,6 +12,10 @@ This script demonstrates the full 4-layer stack that nobody else has:
     Layer 3: agent-vcr — Records everything (JSONL on disk)
     Layer 4: Golden Run Cache — Same task, 80% fewer tokens, instant
 
+ACIDWorkspace also escrows eligible untracked and ignored files under private Git metadata at each
+savepoint. Rollback can therefore restore a modified or deleted local `.env` without putting its
+contents in Git commits or the VCR recording.
+
 Usage:
     python examples/acid_golden_run.py
 """

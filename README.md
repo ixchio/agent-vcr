@@ -95,15 +95,20 @@ async recorders and players use the same execution schema.
 ### Roll back state and files together
 
 `ACIDWorkspace` uses isolated Git branches and commits as savepoints. A rollback restores the
-recorded agent state and tracked filesystem state while preserving files that existed before the
-transaction.
+recorded agent state, tracked files, and eligible untracked or ignored files to the selected
+savepoint. Local files such as `.env` are content-escrowed under private Git metadata; their bytes
+never enter Git commits or `.vcr` recordings.
 
 ```python
 from agent_vcr import VCRRecorder
 from agent_vcr.integrations.openhands import ACIDWorkspace
 
 recorder = VCRRecorder()
-workspace = ACIDWorkspace("/path/to/clean/repository", recorder=recorder)
+workspace = ACIDWorkspace(
+    "/path/to/clean/repository",
+    recorder=recorder,
+    max_untracked_file_bytes=10 * 1024 * 1024,
+)
 
 workspace.begin(session_id="issue-42")
 workspace.savepoint({"phase": "planned"}, node_name="planner")
@@ -115,7 +120,11 @@ workspace.commit()                    # merge only after verification
 ```
 
 By default, Agent VCR refuses to begin from a dirty tracked worktree. Filesystem recovery is
-powerful, so the integration makes the unsafe case explicit instead of guessing.
+powerful, so the integration makes the unsafe case explicit instead of guessing. Escrow payloads
+use private `0700` directories and `0600` content-addressed blobs under `.git/vcr-escrow/`, and are
+removed on commit or abort. Files larger than the configured limit, special files, and excluded
+trees (`.venv`, `venv`, `node_modules`, cache directories, and `.vcr`) are preserved as-is instead
+of being copied or deleted.
 
 ### Replay known-good work with zero model calls
 

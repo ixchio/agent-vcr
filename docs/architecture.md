@@ -185,7 +185,14 @@ with ACIDWorkspace("/path/to/repo") as ws:
 
 - **Branch Isolation:** Each session runs on an isolated git branch: `acid/<session_id>`. This prevents multi-agent pipelines operating on the same repository from colliding.
 - **Injection Protection:** Session IDs are strictly validated against `^[a-zA-Z0-9_\-\.]+$` to block git argument injection (such as `--orphan` flags).
-- **Filesystem Rollback:** On abort, `ACIDWorkspace` executes `git reset --hard <base_ref>`, deletes untracked files introduced during the transaction, but preserves pre-existing untracked files and VCR audit artifacts.
+- **Filesystem Rollback:** Tracked paths are restored from the savepoint commit. Eligible
+  untracked and ignored regular files and symlinks are captured in a per-savepoint,
+  content-addressed escrow under `.git/vcr-escrow/`; rollback removes later local paths and
+  atomically restores deleted, modified, renamed, type-changed, mode-changed, or symlink-drifted
+  paths. Escrow bytes never enter Git objects, commits, or VCR recordings.
+- **Safety Boundary:** Local files default to a 10 MiB escrow cap. Oversized files, special files,
+  `.venv`, `venv`, `node_modules`, `__pycache__`, tool caches, and `.vcr` are never removed by local
+  cleanup, but their contents are not recoverable when they are outside the escrow boundary.
 
 ### 3.5 Sentinel AST Code Guardian
 

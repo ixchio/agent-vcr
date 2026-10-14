@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Made ACID rollback content-aware for eligible pre-existing untracked and ignored files. Per-savepoint private escrow now restores bytes, permissions, symlinks, deletions, renames, and type changes without writing local secrets to Git objects or VCR recordings.
+- Added bounded local-file handling: 10 MiB default file cap, dependency/cache exclusions, preservation of skipped paths, atomic restores, and escrow cleanup on commit or abort.
+
 ## [1.5.1] - 2026-10-14
 
 ### Changed

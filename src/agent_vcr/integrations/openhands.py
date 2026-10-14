@@ -1,9 +1,18 @@
 from __future__ import annotations
 
+import contextlib
+import hashlib
 import logging
+import os
 import re
+import shutil
+import stat
 import subprocess
-from pathlib import Path
+import tempfile
+import uuid
+from collections.abc import Iterable
+from dataclasses import dataclass
+from pathlib import Path, PurePosixPath
 from typing import Literal
 
 from agent_vcr.models import Frame, FrameMetadata, Session
@@ -13,27 +22,75 @@ logger = logging.getLogger(__name__)
 
 # Strict whitelist: only alphanumerics, hyphens, underscores, and dots.
 _SAFE_SESSION_ID = re.compile(r"^[a-zA-Z0-9_\-\.]+$")
+_DEFAULT_LOCAL_EXCLUDES = frozenset(
+    {
+        ".git",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+        ".vcr",
+        ".venv",
+        "__pycache__",
+        "node_modules",
+        "venv",
+    }
+)
+_COPY_CHUNK_BYTES = 1024 * 1024
+
+
+@dataclass(frozen=True)
+class _LocalFileMetadata:
+    """Content and filesystem metadata for one locally owned path."""
+
+    kind: Literal["regular", "symlink"]
+    sha256: str
+    mode: int
+    symlink_target: str | None
+    size: int
+
+
+@dataclass(frozen=True)
+class _LocalSnapshot:
+    """Rollback boundary for files which are not represented by Git commits."""
+
+    manifest: dict[str, _LocalFileMetadata]
+    skipped_paths: dict[str, str]
+    directories: frozenset[str]
 
 
 class ACIDWorkspace:
     """
     Provides ACID transaction semantics for agent execution.
-    Combines Agent VCR state snapshotting with git-backed filesystem freezing to allow
-    full-world rollbacks.
+    Combines Agent VCR state snapshotting with Git-backed filesystem savepoints and a
+    private content escrow for untracked and ignored files.
     """
     def __init__(
         self,
         workspace_dir: str,
         recorder: VCRRecorder | None = None,
         dirty_worktree_policy: Literal["fail", "allow"] = "fail",
+        max_untracked_file_bytes: int = 10 * 1024 * 1024,
+        untracked_exclude_dirs: Iterable[str] | None = None,
     ) -> None:
+        if max_untracked_file_bytes < 0:
+            raise ValueError("max_untracked_file_bytes must be non-negative")
+
         self.workspace_dir = Path(workspace_dir).resolve()
         self.recorder = recorder or VCRRecorder(auto_save=True)
         self.dirty_worktree_policy = dirty_worktree_policy
+        self.max_untracked_file_bytes = max_untracked_file_bytes
+        self.untracked_exclude_dirs = frozenset(
+            _DEFAULT_LOCAL_EXCLUDES | set(untracked_exclude_dirs or ())
+        )
         self.session: Session | None = None
         self.branch_name: str | None = None
         self.base_ref: str | None = None
-        self._baseline_local_paths: set[str] = set()
+        self._baseline_local_manifest: dict[str, _LocalFileMetadata] = {}
+        self._initial_local_snapshot: _LocalSnapshot | None = None
+        self._local_snapshots: dict[str, _LocalSnapshot] = {}
+        self._filesystem_savepoints: dict[str, str] = {}
+        self._escrow_dir: Path | None = None
+        self._escrow_blobs_dir: Path | None = None
 
         self.workspace_dir.mkdir(parents=True, exist_ok=True)
 
@@ -81,7 +138,6 @@ class ACIDWorkspace:
 
         self._ensure_git_repo()
         self.base_ref = self._current_ref()
-        self._baseline_local_paths = self._local_untracked_or_ignored_paths()
 
         dirty_tracked = self._dirty_tracked_paths()
         if dirty_tracked and self.dirty_worktree_policy == "fail":
@@ -93,11 +149,19 @@ class ACIDWorkspace:
                 "Commit/stash first, or pass dirty_worktree_policy='allow'."
             )
 
-        # ISOLATION: Create an isolated branch for this agent's uncommitted file changes.
-        # The session ID is whitelist-validated by _sanitize_session_id() above,
-        # so git argument injection (e.g. --orphan) is not possible here.
-        self.branch_name = f"acid/{self.session.session_id}"
-        self._git(["checkout", "-b", self.branch_name])
+        try:
+            self._create_escrow(self.session.session_id)
+            self._initial_local_snapshot = self._snapshot_local_state()
+            self._baseline_local_manifest = dict(self._initial_local_snapshot.manifest)
+
+            # ISOLATION: Create an isolated branch for this agent's committed changes.
+            self.branch_name = f"acid/{self.session.session_id}"
+            self._git(["checkout", "-b", self.branch_name])
+        except Exception:
+            self._cleanup_escrow()
+            self._initial_local_snapshot = None
+            self._baseline_local_manifest = {}
+            raise
 
         logger.info(f"ACID BEGIN: Session {self.session.session_id} started on branch {self.branch_name}")
         return self.session
@@ -111,6 +175,7 @@ class ACIDWorkspace:
         commit_msg = f"SAVEPOINT: {node_name}"
         self._git(["commit", "--allow-empty", "-m", commit_msg])
         commit_hash = self._git_stdout(["rev-parse", "HEAD"])
+        local_snapshot = self._snapshot_local_state()
 
         # 2. Record state map via agent-vcr with the commit hash already attached
         # so it is durable even if the recorder flushes every frame.
@@ -120,6 +185,8 @@ class ACIDWorkspace:
             output_state=step_data,
             metadata=FrameMetadata(custom={"acid_commit_hash": commit_hash}),
         )
+        self._local_snapshots[frame.frame_id] = local_snapshot
+        self._filesystem_savepoints[frame.frame_id] = commit_hash
         logger.info(f"ACID SAVEPOINT: Filesystem & memory synced at frame {frame.frame_id}")
 
         return frame
@@ -137,11 +204,17 @@ class ACIDWorkspace:
             raise ValueError(f"Frame index {to_frame_index} out of bounds")
 
         target_frame = frames[to_frame_index]
-        self.recorder = self.recorder.fork(from_frame=to_frame_index)
-        self.session = self.recorder.get_session()
+        target_snapshot = self._local_snapshots.get(target_frame.frame_id)
+        if target_snapshot is None:
+            raise RuntimeError(
+                "Local-file escrow metadata is unavailable for the requested savepoint."
+            )
 
         # 2. Rewind the git workspace
-        target_hash = target_frame.metadata.custom.get("acid_commit_hash")
+        target_hash = self._filesystem_savepoints.get(target_frame.frame_id)
+        if target_hash is None:
+            metadata_hash = target_frame.metadata.custom.get("acid_commit_hash")
+            target_hash = metadata_hash if isinstance(metadata_hash, str) else None
         if not isinstance(target_hash, str) or not target_hash:
             commit_msg = f"SAVEPOINT: {target_frame.frame_id}"
             log_out = self._git_stdout(["log", f"--grep={commit_msg}", "--format=%H"])
@@ -154,7 +227,17 @@ class ACIDWorkspace:
         else:
             self._git(["reset", "--hard", target_hash])
 
-        self._clean_generated_local_paths()
+        self._restore_local_snapshot(target_snapshot)
+
+        # 3. Fork the in-memory recording only after filesystem restoration succeeds.
+        self.recorder = self.recorder.fork(from_frame=to_frame_index)
+        self.session = self.recorder.get_session()
+        fork_frames = self.recorder.get_frames()
+        if fork_frames:
+            fork_frame = fork_frames[0]
+            self._local_snapshots[fork_frame.frame_id] = target_snapshot
+            if target_hash:
+                self._filesystem_savepoints[fork_frame.frame_id] = target_hash
 
         logger.info("ACID ROLLBACK SUCCESS: Filesystem and memory correctly rewound.")
 
@@ -174,6 +257,7 @@ class ACIDWorkspace:
         # Branch names are safe — validated by _sanitize_session_id().
         self._git(["checkout", self.base_ref or "main"])
         self._git(["merge", "--no-ff", "-m", f"ACID COMMIT: {self.session.session_id}", self.branch_name])
+        self._cleanup_escrow()
         logger.info(
             "ACID COMMIT: Session %s successfully merged to %s.",
             self.session.session_id,
@@ -187,7 +271,8 @@ class ACIDWorkspace:
                 "index": i,
                 "node_name": frame.node_name,
                 "frame_id": frame.frame_id,
-                "acid_commit_hash": frame.metadata.custom.get("acid_commit_hash"),
+                "acid_commit_hash": self._filesystem_savepoints.get(frame.frame_id)
+                or frame.metadata.custom.get("acid_commit_hash"),
             }
             for i, frame in enumerate(self.recorder.get_frames())
         ]
@@ -213,9 +298,14 @@ class ACIDWorkspace:
         if not self.session or self.branch_name is None:
             raise RuntimeError("No active transaction to abort.")
 
+        if self._initial_local_snapshot is None:
+            raise RuntimeError("Initial local-file escrow metadata is unavailable.")
+
+        self._git(["reset", "--hard"])
         self._git(["checkout", self.base_ref or "main"])
-        self._clean_generated_local_paths()
+        self._restore_local_snapshot(self._initial_local_snapshot)
         self._git(["branch", "-D", self.branch_name], check=False)
+        self._cleanup_escrow()
         logger.info("ACID ABORT: Session %s discarded.", self.session.session_id)
         self.session = None
         self.branch_name = None
@@ -238,9 +328,21 @@ class ACIDWorkspace:
     def _git_stdout(self, args: list[str]) -> str:
         return self._git(args, capture_output=True).stdout.strip()
 
+    def _git_bytes(self, args: list[str]) -> bytes:
+        result = subprocess.run(
+            ["git", *args],
+            cwd=self.workspace_dir,
+            capture_output=True,
+            check=True,
+        )
+        return result.stdout
+
     def _ensure_git_repo(self) -> None:
         """Initialize git and create a baseline commit when the workspace is new."""
-        if not (self.workspace_dir / ".git").exists():
+        is_repo = self._git(
+            ["rev-parse", "--is-inside-work-tree"], capture_output=True, check=False
+        )
+        if is_repo.returncode != 0:
             self._git(["init"])
             self._git(["config", "user.name", "Agent VCR"])
             self._git(["config", "user.email", "vcr@example.com"])
@@ -252,12 +354,14 @@ class ACIDWorkspace:
             init_file = self.workspace_dir / ".acid_init"
             if not init_file.exists():
                 init_file.touch()
-            self._git(["add", "-A"])
+            # A new workspace may already contain local credentials or configuration.
+            # Seed Git with only Agent VCR's marker; begin() will escrow every other path.
+            self._git(["add", "--", init_file.name])
             self._git(["commit", "-m", "Initial ACID baseline"])
 
     def _ensure_local_git_excludes(self) -> None:
         """Keep VCR audit files out of git commits without editing user .gitignore."""
-        exclude_path = self.workspace_dir / ".git" / "info" / "exclude"
+        exclude_path = self._git_private_path("info/exclude")
         exclude_path.parent.mkdir(parents=True, exist_ok=True)
         existing = exclude_path.read_text() if exclude_path.exists() else ""
         additions = [pattern for pattern in self._git_clean_excludes() if pattern not in existing]
@@ -283,57 +387,389 @@ class ACIDWorkspace:
 
     def _local_untracked_or_ignored_paths(self) -> set[str]:
         """Return local paths not tracked by git, including ignored files."""
-        status = self._git_stdout(
-            ["status", "--porcelain=v1", "--untracked-files=all", "--ignored"]
+        status = self._git_bytes(
+            ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignored"]
         )
         paths: set[str] = set()
-        for line in status.splitlines():
-            if line.startswith("?? ") or line.startswith("!! "):
-                paths.add(line[3:].strip())
+        for record in status.split(b"\0"):
+            if record.startswith((b"?? ", b"!! ")):
+                paths.add(self._normalize_relative_path(os.fsdecode(record[3:])))
         return paths
 
     def _stage_transaction_files(self) -> None:
-        self._git(["add", "-A"])
-        staged = self._git_stdout(["diff", "--cached", "--name-only"])
-        protected = [
+        # Resetting a path after ``git add -A`` is too late: Git has already written its
+        # content as an unreachable object. Never present baseline-local bytes to Git.
+        self._git(["add", "-u"])
+        untracked = self._git_bytes(["ls-files", "--others", "--exclude-standard", "-z"])
+        generated = [
             path
-            for path in staged.splitlines()
-            if self._is_baseline_local_path(path)
+            for path in (
+                self._normalize_relative_path(os.fsdecode(raw))
+                for raw in untracked.split(b"\0")
+                if raw
+            )
+            if not self._is_baseline_local_path(path) and not self._is_clean_excluded(path)
         ]
-        if protected:
-            self._git(["reset", "-q", "--", *protected])
+        for offset in range(0, len(generated), 128):
+            self._git(["add", "--", *generated[offset : offset + 128]])
 
-    def _clean_generated_local_paths(self) -> None:
-        """Delete only local files introduced after begin(), preserving user-owned files."""
-        current_paths = self._local_untracked_or_ignored_paths()
-        generated = sorted(
-            path
-            for path in current_paths - self._baseline_local_paths
-            if not self._is_clean_excluded(path)
+    def _create_escrow(self, session_id: str) -> None:
+        root = self._git_private_path("vcr-escrow")
+        root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        os.chmod(root, 0o700)
+
+        session_dir = root / f"{session_id}-{uuid.uuid4().hex}"
+        session_dir.mkdir(mode=0o700)
+        blobs_dir = session_dir / "blobs"
+        blobs_dir.mkdir(mode=0o700)
+        self._escrow_dir = session_dir
+        self._escrow_blobs_dir = blobs_dir
+
+    def _cleanup_escrow(self) -> None:
+        """Remove this transaction's private escrow; safe to call repeatedly."""
+        escrow_dir = self._escrow_dir
+        self._escrow_dir = None
+        self._escrow_blobs_dir = None
+        if escrow_dir is not None and escrow_dir.exists():
+            shutil.rmtree(escrow_dir)
+
+    def _snapshot_local_state(self) -> _LocalSnapshot:
+        """Escrow restorable untracked/ignored content for one rollback boundary."""
+        candidates, skipped = self._scan_local_paths()
+        manifest: dict[str, _LocalFileMetadata] = {}
+
+        for relative_path in sorted(candidates):
+            path = self._workspace_path(relative_path)
+            file_stat = path.lstat()
+            if stat.S_ISLNK(file_stat.st_mode):
+                target = os.readlink(path)
+                target_bytes = os.fsencode(target)
+                manifest[relative_path] = _LocalFileMetadata(
+                    kind="symlink",
+                    sha256=hashlib.sha256(target_bytes).hexdigest(),
+                    mode=stat.S_IMODE(file_stat.st_mode),
+                    symlink_target=target,
+                    size=len(target_bytes),
+                )
+                continue
+
+            entry = self._escrow_regular_file(path)
+            if entry is None:
+                skipped[relative_path] = "oversized"
+            else:
+                manifest[relative_path] = entry
+
+        non_exclusion_skips = {
+            path: reason for path, reason in skipped.items() if reason != "excluded"
+        }
+        if non_exclusion_skips:
+            logger.warning(
+                "ACID escrow preserved %d local path(s) without content snapshots: %s",
+                len(non_exclusion_skips),
+                ", ".join(sorted(non_exclusion_skips)[:5]),
+            )
+
+        return _LocalSnapshot(
+            manifest=manifest,
+            skipped_paths=skipped,
+            directories=frozenset(self._existing_directory_paths()),
         )
-        if not generated:
+
+    def _scan_local_paths(self) -> tuple[dict[str, os.stat_result], dict[str, str]]:
+        candidates: dict[str, os.stat_result] = {}
+        skipped: dict[str, str] = {}
+
+        def visit(relative_path: str) -> None:
+            path = self._workspace_path(relative_path)
+            try:
+                file_stat = path.lstat()
+            except FileNotFoundError:
+                return
+
+            if self._is_clean_excluded(relative_path):
+                skipped[relative_path] = "excluded"
+                return
+            if stat.S_ISDIR(file_stat.st_mode):
+                with os.scandir(path) as entries:
+                    names = sorted(entry.name for entry in entries)
+                for name in names:
+                    visit(f"{relative_path}/{name}" if relative_path else name)
+                return
+            if stat.S_ISREG(file_stat.st_mode) or stat.S_ISLNK(file_stat.st_mode):
+                candidates[relative_path] = file_stat
+                return
+            skipped[relative_path] = "special-file"
+
+        for relative_path in sorted(self._local_untracked_or_ignored_paths()):
+            visit(relative_path)
+        return candidates, skipped
+
+    def _escrow_regular_file(self, source: Path) -> _LocalFileMetadata | None:
+        if self._escrow_blobs_dir is None:
+            raise RuntimeError("Local-file escrow has not been initialized.")
+
+        descriptor = os.open(source, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        temp_descriptor, temp_name = tempfile.mkstemp(
+            prefix=".vcr-blob-", dir=self._escrow_blobs_dir
+        )
+        temp_path = Path(temp_name)
+        digest = hashlib.sha256()
+        total = 0
+        try:
+            before = os.fstat(descriptor)
+            with os.fdopen(descriptor, "rb") as input_file, os.fdopen(
+                temp_descriptor, "wb"
+            ) as output_file:
+                descriptor = -1
+                temp_descriptor = -1
+                while chunk := input_file.read(_COPY_CHUNK_BYTES):
+                    total += len(chunk)
+                    if total > self.max_untracked_file_bytes:
+                        return None
+                    digest.update(chunk)
+                    output_file.write(chunk)
+                output_file.flush()
+                os.fsync(output_file.fileno())
+                after = os.fstat(input_file.fileno())
+
+            before_signature = (
+                before.st_size,
+                before.st_mtime_ns,
+                stat.S_IMODE(before.st_mode),
+            )
+            after_signature = (
+                after.st_size,
+                after.st_mtime_ns,
+                stat.S_IMODE(after.st_mode),
+            )
+            if before_signature != after_signature or total != after.st_size:
+                raise RuntimeError(f"Local file changed while being escrowed: {source}")
+
+            sha256 = digest.hexdigest()
+            blob_path = self._escrow_blobs_dir / sha256
+            os.chmod(temp_path, 0o600)
+            if blob_path.exists():
+                temp_path.unlink()
+            else:
+                os.replace(temp_path, blob_path)
+                os.chmod(blob_path, 0o600)
+            return _LocalFileMetadata(
+                kind="regular",
+                sha256=sha256,
+                mode=stat.S_IMODE(after.st_mode),
+                symlink_target=None,
+                size=total,
+            )
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+            if temp_descriptor >= 0:
+                os.close(temp_descriptor)
+            temp_path.unlink(missing_ok=True)
+
+    def _restore_local_snapshot(self, snapshot: _LocalSnapshot) -> None:
+        """Prune generated local files and atomically restore escrowed paths."""
+        candidates, _ = self._scan_local_paths()
+        for relative_path, file_stat in sorted(candidates.items()):
+            if relative_path in snapshot.manifest or self._snapshot_preserves(
+                snapshot, relative_path
+            ):
+                continue
+            if stat.S_ISREG(file_stat.st_mode) and (
+                file_stat.st_size > self.max_untracked_file_bytes
+            ):
+                continue
+            self._remove_path(self._workspace_path(relative_path))
+
+        current_directories = self._existing_directory_paths()
+        for relative_path in sorted(
+            current_directories - set(snapshot.directories),
+            key=lambda value: (value.count("/"), value),
+            reverse=True,
+        ):
+            if self._is_clean_excluded(relative_path) or self._snapshot_preserves(
+                snapshot, relative_path
+            ):
+                continue
+            with contextlib.suppress(OSError):
+                self._workspace_path(relative_path).rmdir()
+
+        for relative_path in sorted(snapshot.directories, key=lambda value: value.count("/")):
+            self._ensure_directory(self._workspace_path(relative_path))
+
+        for relative_path, entry in sorted(snapshot.manifest.items()):
+            destination = self._workspace_path(relative_path)
+            if not self._local_entry_matches(destination, entry):
+                self._restore_local_entry(destination, entry)
+
+    def _restore_local_entry(self, destination: Path, entry: _LocalFileMetadata) -> None:
+        self._ensure_directory(destination.parent)
+        if destination.exists() and destination.is_dir() and not destination.is_symlink():
+            shutil.rmtree(destination)
+
+        if entry.kind == "symlink":
+            if entry.symlink_target is None:
+                raise RuntimeError(f"Escrow metadata is missing a symlink target: {destination}")
+            temp_path = destination.parent / f".vcr-restore-{uuid.uuid4().hex}"
+            try:
+                os.symlink(entry.symlink_target, temp_path)
+                os.replace(temp_path, destination)
+            finally:
+                if os.path.lexists(temp_path):
+                    temp_path.unlink()
             return
-        self._git(["clean", "-fdx", "--", *generated])
+
+        if self._escrow_blobs_dir is None:
+            raise RuntimeError("Local-file escrow has already been cleaned up.")
+        blob_path = self._escrow_blobs_dir / entry.sha256
+        if not blob_path.is_file() or self._sha256_file(blob_path) != entry.sha256:
+            raise RuntimeError(f"Escrow blob is missing or corrupt: {entry.sha256}")
+
+        descriptor, temp_name = tempfile.mkstemp(prefix=".vcr-restore-", dir=destination.parent)
+        temp_path = Path(temp_name)
+        try:
+            with os.fdopen(descriptor, "wb") as output_file, blob_path.open("rb") as input_file:
+                shutil.copyfileobj(input_file, output_file, length=_COPY_CHUNK_BYTES)
+                output_file.flush()
+                os.fsync(output_file.fileno())
+            os.chmod(temp_path, entry.mode)
+            os.replace(temp_path, destination)
+        finally:
+            temp_path.unlink(missing_ok=True)
+
+    def _local_entry_matches(self, path: Path, entry: _LocalFileMetadata) -> bool:
+        try:
+            file_stat = path.lstat()
+        except FileNotFoundError:
+            return False
+        if entry.kind == "symlink":
+            if not stat.S_ISLNK(file_stat.st_mode):
+                return False
+            target = os.readlink(path)
+            return (
+                target == entry.symlink_target
+                and hashlib.sha256(os.fsencode(target)).hexdigest() == entry.sha256
+            )
+        if not stat.S_ISREG(file_stat.st_mode):
+            return False
+        return (
+            file_stat.st_size == entry.size
+            and stat.S_IMODE(file_stat.st_mode) == entry.mode
+            and self._sha256_file(path) == entry.sha256
+        )
+
+    @staticmethod
+    def _sha256_file(path: Path) -> str:
+        digest = hashlib.sha256()
+        with path.open("rb") as input_file:
+            while chunk := input_file.read(_COPY_CHUNK_BYTES):
+                digest.update(chunk)
+        return digest.hexdigest()
+
+    def _existing_directory_paths(self) -> set[str]:
+        directories: set[str] = set()
+
+        def visit(directory: Path, relative_parent: str) -> None:
+            with os.scandir(directory) as entries:
+                names = sorted(entry.name for entry in entries)
+            for name in names:
+                relative_path = f"{relative_parent}/{name}" if relative_parent else name
+                path = directory / name
+                try:
+                    file_stat = path.lstat()
+                except FileNotFoundError:
+                    continue
+                if not stat.S_ISDIR(file_stat.st_mode) or self._is_clean_excluded(relative_path):
+                    continue
+                directories.add(relative_path)
+                visit(path, relative_path)
+
+        visit(self.workspace_dir, "")
+        return directories
+
+    def _ensure_directory(self, directory: Path) -> None:
+        if directory == self.workspace_dir:
+            return
+        relative = directory.relative_to(self.workspace_dir)
+        current = self.workspace_dir
+        for part in relative.parts:
+            current /= part
+            if os.path.lexists(current):
+                if current.is_symlink() or not current.is_dir():
+                    self._remove_path(current)
+                    current.mkdir()
+            else:
+                current.mkdir()
+
+    @staticmethod
+    def _remove_path(path: Path) -> None:
+        if not os.path.lexists(path):
+            return
+        if path.is_symlink() or not path.is_dir():
+            path.unlink()
+        else:
+            shutil.rmtree(path)
+
+    def _workspace_path(self, relative_path: str) -> Path:
+        normalized = self._normalize_relative_path(relative_path)
+        return self.workspace_dir.joinpath(*PurePosixPath(normalized).parts)
+
+    @staticmethod
+    def _normalize_relative_path(path: str) -> str:
+        normalized = PurePosixPath(path.rstrip("/"))
+        if normalized.is_absolute() or not normalized.parts or ".." in normalized.parts:
+            raise ValueError(f"Unsafe workspace-relative path: {path!r}")
+        return normalized.as_posix()
+
+    def _git_private_path(self, relative_path: str) -> Path:
+        git_path = Path(self._git_stdout(["rev-parse", "--git-path", relative_path]))
+        if not git_path.is_absolute():
+            git_path = self.workspace_dir / git_path
+        return git_path
 
     def _is_clean_excluded(self, path: str) -> bool:
-        normalized = path.rstrip("/") + ("/" if path.endswith("/") else "")
-        for exclude in self._git_clean_excludes():
-            pattern = exclude.rstrip("/") + "/"
-            if normalized == pattern or normalized.startswith(pattern):
+        normalized = self._normalize_relative_path(path)
+        parts = PurePosixPath(normalized).parts
+        for exclude in self.untracked_exclude_dirs:
+            exclude_path = PurePosixPath(exclude.strip("/"))
+            if len(exclude_path.parts) == 1 and exclude_path.as_posix() in parts:
+                return True
+            exclude_normalized = exclude_path.as_posix()
+            if normalized == exclude_normalized or normalized.startswith(f"{exclude_normalized}/"):
+                return True
+
+        for exclude in self._dynamic_clean_excludes():
+            if normalized == exclude or normalized.startswith(f"{exclude}/"):
                 return True
         return False
 
     def _is_baseline_local_path(self, path: str) -> bool:
-        normalized = path.rstrip("/")
-        for baseline_path in self._baseline_local_paths:
-            baseline = baseline_path.rstrip("/")
-            if normalized == baseline or normalized.startswith(f"{baseline}/"):
-                return True
-        return False
+        if self._initial_local_snapshot is None:
+            return False
+        normalized = self._normalize_relative_path(path)
+        return normalized in self._baseline_local_manifest or self._snapshot_preserves(
+            self._initial_local_snapshot, normalized
+        )
+
+    @staticmethod
+    def _snapshot_preserves(snapshot: _LocalSnapshot, path: str) -> bool:
+        return any(
+            path == skipped or path.startswith(f"{skipped}/")
+            for skipped in snapshot.skipped_paths
+        )
 
     def _git_clean_excludes(self) -> list[str]:
-        """Exclude VCR audit files from ignored-file cleanup when they live in the workspace."""
-        excludes = [".vcr/"]
+        """Return patterns stored in the repository-local Git exclude file."""
+        excludes = [
+            exclude.strip("/") + "/"
+            for exclude in sorted(self.untracked_exclude_dirs - {".git"})
+        ]
+
+        excludes.extend(f"{path}/" for path in self._dynamic_clean_excludes())
+        return list(dict.fromkeys(excludes))
+
+    def _dynamic_clean_excludes(self) -> list[str]:
+        excludes: list[str] = []
 
         recorder_dir = self.recorder.output_dir
         if not recorder_dir.is_absolute():
@@ -344,7 +780,7 @@ class ACIDWorkspace:
         except ValueError:
             return excludes
 
-        pattern = relative.as_posix().rstrip("/") + "/"
+        pattern = relative.as_posix().rstrip("/")
         if pattern not in excludes:
             excludes.append(pattern)
         return excludes

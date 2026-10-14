@@ -2,8 +2,10 @@
 
 import os
 import shutil
+import stat
 import subprocess
 import tempfile
+from pathlib import Path
 
 import pytest
 
@@ -26,6 +28,20 @@ class TestACIDWorkspace:
     def teardown_method(self):
         shutil.rmtree(self.workspace, ignore_errors=True)
 
+    def _init_repo(self) -> Path:
+        workspace = Path(self.workspace)
+        subprocess.run(["git", "init"], cwd=workspace, check=True)
+        subprocess.run(
+            ["git", "config", "user.name", "Agent VCR"], cwd=workspace, check=True
+        )
+        subprocess.run(
+            ["git", "config", "user.email", "vcr@example.com"], cwd=workspace, check=True
+        )
+        (workspace / "tracked.py").write_text("VALUE = 1\n")
+        subprocess.run(["git", "add", "-A"], cwd=workspace, check=True)
+        subprocess.run(["git", "commit", "-m", "baseline"], cwd=workspace, check=True)
+        return workspace
+
     def test_begin_creates_git_repo(self):
         acid = ACIDWorkspace(self.workspace)
         acid.begin(session_id="test-001")
@@ -33,6 +49,31 @@ class TestACIDWorkspace:
         assert os.path.exists(os.path.join(self.workspace, ".git"))
         assert acid.session is not None
         assert acid.session.session_id == "test-001"
+
+    def test_new_workspace_does_not_write_preexisting_secret_to_git_objects(self):
+        workspace = Path(self.workspace)
+        env_file = workspace / ".env"
+        env_file.write_text("TOKEN=preexisting-secret\n")
+
+        acid = ACIDWorkspace(str(workspace))
+        acid.begin(session_id="new-workspace-secret")
+        acid.savepoint({"step": "baseline"})
+
+        tracked = subprocess.run(
+            ["git", "ls-files", "--", ".env"],
+            cwd=workspace,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+        git_objects = subprocess.run(
+            ["git", "cat-file", "--batch-all-objects", "--batch"],
+            cwd=workspace,
+            capture_output=True,
+            check=True,
+        ).stdout
+        assert tracked == ""
+        assert b"preexisting-secret" not in git_objects
 
     def test_begin_creates_isolation_branch(self):
         acid = ACIDWorkspace(self.workspace)
@@ -195,6 +236,207 @@ class TestACIDWorkspace:
         assert os.path.exists(local_notes), "Pre-existing untracked files must survive rollback"
         assert not os.path.exists(generated), "Agent-generated untracked files must be removed"
         assert tracked_local == "", "Pre-existing untracked files must not be committed"
+
+    def test_rollback_restores_modified_ignored_file_without_leaking_secret(self):
+        workspace = self._init_repo()
+        secret = b"API_TOKEN=original-secret-value\n\x00binary-tail\n"
+        env_file = workspace / ".env"
+        env_file.write_bytes(secret)
+
+        recorder = VCRRecorder(output_dir=str(workspace / ".vcr"), auto_save=False)
+        acid = ACIDWorkspace(str(workspace), recorder=recorder)
+        acid.begin(session_id="restore-env")
+
+        assert acid._escrow_dir is not None
+        assert stat.S_IMODE(acid._escrow_dir.stat().st_mode) == 0o700
+        blobs = list((acid._escrow_dir / "blobs").iterdir())
+        assert blobs
+        assert all(stat.S_IMODE(blob.stat().st_mode) == 0o600 for blob in blobs)
+
+        acid.savepoint({"step": "baseline"})
+        env_file.write_bytes(b"API_TOKEN=agent-overwrite\n")
+        acid.savepoint({"step": "mutated secret"})
+
+        acid.rollback(to_frame_index=0)
+        assert env_file.read_bytes() == secret
+
+        acid.recorder.save()
+        git_log = subprocess.run(
+            ["git", "log", "-p", "--all"],
+            cwd=workspace,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+        assert "original-secret-value" not in git_log
+        assert "agent-overwrite" not in git_log
+        git_objects = subprocess.run(
+            ["git", "cat-file", "--batch-all-objects", "--batch"],
+            cwd=workspace,
+            capture_output=True,
+            check=True,
+        ).stdout
+        assert b"original-secret-value" not in git_objects
+        assert b"agent-overwrite" not in git_objects
+        for recording in (workspace / ".vcr").glob("*.vcr"):
+            contents = recording.read_bytes()
+            assert b"original-secret-value" not in contents
+            assert b"agent-overwrite" not in contents
+
+    def test_rollback_restores_deleted_untracked_file_content_and_permissions(self):
+        workspace = self._init_repo()
+        local_file = workspace / "notes.local"
+        original = b"private local notes\n"
+        local_file.write_bytes(original)
+        local_file.chmod(0o640)
+
+        acid = ACIDWorkspace(str(workspace))
+        acid.begin(session_id="restore-deleted")
+        acid.savepoint({"step": "baseline"})
+        local_file.unlink()
+        acid.savepoint({"step": "deleted local file"})
+
+        acid.rollback(to_frame_index=0)
+
+        assert local_file.read_bytes() == original
+        assert stat.S_IMODE(local_file.stat().st_mode) == 0o640
+
+    def test_rollback_removes_renamed_untracked_path_and_restores_original(self):
+        workspace = self._init_repo()
+        original = workspace / "original.local"
+        original.write_text("original content\n")
+
+        acid = ACIDWorkspace(str(workspace))
+        acid.begin(session_id="restore-rename")
+        acid.savepoint({"step": "baseline"})
+
+        moved_directory = workspace / "agent-output"
+        moved_directory.mkdir()
+        moved = moved_directory / "renamed.local"
+        original.rename(moved)
+        acid.savepoint({"step": "renamed local file"})
+
+        acid.rollback(to_frame_index=0)
+
+        assert original.read_text() == "original content\n"
+        assert not moved.exists()
+        assert not moved_directory.exists()
+
+    def test_rollback_restores_nested_ignored_symlink_and_executable(self):
+        workspace = self._init_repo()
+        subprocess.run(
+            ["git", "config", "--local", "core.fileMode", "true"], cwd=workspace, check=True
+        )
+        (workspace / ".gitignore").write_text("scratch/\n")
+        subprocess.run(["git", "add", ".gitignore"], cwd=workspace, check=True)
+        subprocess.run(["git", "commit", "-m", "ignore scratch"], cwd=workspace, check=True)
+
+        nested = workspace / "scratch" / "nested"
+        nested.mkdir(parents=True)
+        executable = nested / "tool.sh"
+        executable.write_bytes(b"#!/bin/sh\necho original\n")
+        executable.chmod(0o751)
+        link = nested / "current-tool"
+        link.symlink_to("tool.sh")
+
+        acid = ACIDWorkspace(str(workspace))
+        acid.begin(session_id="restore-nested")
+        acid.savepoint({"step": "baseline"})
+
+        executable.write_bytes(b"#!/bin/sh\necho changed\n")
+        executable.chmod(0o600)
+        link.unlink()
+        link.symlink_to("missing-tool.sh")
+        acid.savepoint({"step": "mutated nested files"})
+
+        acid.rollback(to_frame_index=0)
+
+        assert executable.read_bytes() == b"#!/bin/sh\necho original\n"
+        assert stat.S_IMODE(executable.stat().st_mode) == 0o751
+        assert link.is_symlink()
+        assert os.readlink(link) == "tool.sh"
+
+    def test_rollback_restores_local_file_and_removes_hallucinated_sibling(self):
+        workspace = self._init_repo()
+        (workspace / ".gitignore").write_text("local/\n")
+        subprocess.run(["git", "add", ".gitignore"], cwd=workspace, check=True)
+        subprocess.run(["git", "commit", "-m", "ignore local files"], cwd=workspace, check=True)
+
+        local_directory = workspace / "local"
+        local_directory.mkdir()
+        existing = local_directory / "settings.json"
+        existing.write_text('{"safe": true}\n')
+
+        acid = ACIDWorkspace(str(workspace))
+        acid.begin(session_id="mixed-local-files")
+        acid.savepoint({"step": "baseline"})
+
+        existing.write_text('{"safe": false}\n')
+        hallucinated = local_directory / "hallucinated.json"
+        hallucinated.write_text('{"invented": true}\n')
+        acid.savepoint({"step": "bad local edits"})
+
+        acid.rollback(to_frame_index=0)
+
+        assert existing.read_text() == '{"safe": true}\n'
+        assert not hallucinated.exists()
+
+    def test_rollback_preserves_oversized_files_and_excluded_directories(self):
+        workspace = self._init_repo()
+        (workspace / ".gitignore").write_text("*.large\n")
+        subprocess.run(["git", "add", ".gitignore"], cwd=workspace, check=True)
+        subprocess.run(["git", "commit", "-m", "ignore large files"], cwd=workspace, check=True)
+
+        preexisting_large = workspace / "preexisting.large"
+        preexisting_large.write_bytes(b"a" * 65)
+
+        acid = ACIDWorkspace(str(workspace), max_untracked_file_bytes=64)
+        acid.begin(session_id="preserve-skipped")
+        acid.savepoint({"step": "baseline"})
+
+        preexisting_large.write_bytes(b"changed but preserved" * 4)
+        generated_large = workspace / "generated.large"
+        generated_large.write_bytes(b"b" * 65)
+        venv_file = workspace / ".venv" / "secret.txt"
+        node_file = workspace / "node_modules" / "package" / "index.js"
+        venv_file.parent.mkdir(parents=True)
+        node_file.parent.mkdir(parents=True)
+        venv_file.write_text("keep virtualenv data\n")
+        node_file.write_text("keep dependency data\n")
+        acid.savepoint({"step": "large and excluded output"})
+
+        acid.rollback(to_frame_index=0)
+
+        assert preexisting_large.exists()
+        assert generated_large.read_bytes() == b"b" * 65
+        assert venv_file.read_text() == "keep virtualenv data\n"
+        assert node_file.read_text() == "keep dependency data\n"
+
+    def test_savepoint_local_snapshots_support_repeated_rollback_and_cleanup(self):
+        workspace = self._init_repo()
+        (workspace / ".gitignore").write_text(".env\n")
+        subprocess.run(["git", "add", ".gitignore"], cwd=workspace, check=True)
+        subprocess.run(["git", "commit", "-m", "ignore env"], cwd=workspace, check=True)
+        env_file = workspace / ".env"
+        env_file.write_text("VALUE=begin\n")
+
+        acid = ACIDWorkspace(str(workspace))
+        acid.begin(session_id="repeat-rollback")
+        env_file.write_text("VALUE=savepoint-zero\n")
+        acid.savepoint({"step": 0})
+        escrow_dir = acid._escrow_dir
+
+        env_file.write_text("VALUE=bad-change\n")
+        acid.rollback(to_frame_index=0)
+        assert env_file.read_text() == "VALUE=savepoint-zero\n"
+
+        env_file.write_text("VALUE=another-bad-change\n")
+        acid.rollback(to_frame_index=0)
+        assert env_file.read_text() == "VALUE=savepoint-zero\n"
+
+        acid.commit()
+        assert escrow_dir is not None
+        assert not escrow_dir.exists()
 
     def test_begin_rejects_dirty_tracked_files_by_default(self):
         subprocess.run(["git", "init"], cwd=self.workspace, check=True)
