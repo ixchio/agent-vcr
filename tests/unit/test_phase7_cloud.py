@@ -28,6 +28,7 @@ from agent_vcr.superagent.vector_memory import (
     MemoryRecord,
     QdrantVectorStore,
     create_vector_memory,
+    default_embedder,
 )
 from agent_vcr.workflows import (
     RunRecord,
@@ -309,6 +310,12 @@ class TestE2BSandboxAdapter:
 
 class TestVectorMemory:
     """Tests for semantic vector memory, secret redaction, and VCR recall."""
+
+    def test_default_embedder_is_deterministic_and_normalized(self) -> None:
+        first = default_embedder("sensitive agent memory")
+        second = default_embedder("sensitive agent memory")
+        assert first == second
+        assert sum(value * value for value in first) == pytest.approx(1.0)
 
     def test_add_and_search(self) -> None:
         mem = create_vector_memory(backend="memory")

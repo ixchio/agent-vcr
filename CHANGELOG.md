@@ -7,9 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.2] - 2026-10-14
+
+### Changed
+- Replaced the zero-dependency vector embedder's MD5 token hashing with deterministic SHA-256 hashing so redacted memory text never enters a weak cryptographic primitive. Existing persisted vector indexes should be rebuilt after upgrading.
+
 ### Fixed
-- Made ACID rollback content-aware for eligible pre-existing untracked and ignored files. Per-savepoint private escrow now restores bytes, permissions, symlinks, deletions, renames, and type changes without writing local secrets to Git objects or VCR recordings.
+- Fixed [Issue #2](https://github.com/ixchio/agent-vcr/issues/2): ACID rollback is now content-aware for eligible pre-existing untracked and ignored files. Per-savepoint private escrow restores bytes, permissions, symlinks, deletions, renames, and type changes without writing local secrets to Git objects or VCR recordings.
+- Made Git staging secret-safe by staging tracked changes and newly generated files selectively; baseline-local files are never handed to Git, so ignored credentials cannot survive as unreachable Git objects.
 - Added bounded local-file handling: 10 MiB default file cap, dependency/cache exclusions, preservation of skipped paths, atomic restores, and escrow cleanup on commit or abort.
+- Confined cloud diagnosis and replay paths to their validated project session directory, closing the CodeQL path-injection finding for user-controlled session IDs.
 
 ## [1.5.1] - 2026-10-14
 

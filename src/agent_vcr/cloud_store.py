@@ -277,6 +277,21 @@ class CloudStore:
         d.mkdir(parents=True, exist_ok=True)
         return d
 
+    def sessions_dir(self, project_id: str) -> Path:
+        """Return the validated, store-confined session directory for a project."""
+        return self._sessions_dir(project_id)
+
+    def session_path(self, project_id: str, session_id: str) -> Path:
+        """Return a validated session path confined to its project's session directory."""
+        safe_session_id = _check_slug(session_id, "session id")
+        sessions = self._sessions_dir(project_id).resolve()
+        path = (sessions / f"{safe_session_id}.vcr").resolve()
+        try:
+            path.relative_to(sessions)
+        except ValueError as err:
+            raise ValueError(f"Session path escapes project: {session_id!r}") from err
+        return path
+
     def _confined(self, path: Path) -> Path:
         """Resolve and confine under the store root (path-traversal guard)."""
         resolved = (self.root / path.relative_to(self.root)).resolve() if not path.is_absolute() else path.resolve()
@@ -310,7 +325,7 @@ class CloudStore:
             if not integrity["ok"]:
                 raise ValueError(f"Upload failed integrity: {integrity['issues']}")
             sid = _check_slug(player.session.session_id, "session id")
-            dest = self._confined(sessions / f"{sid}.vcr")
+            dest = self.session_path(project_id, sid)
             sha = _sha256_bytes(data)
             if dest.exists():
                 if _sha256_bytes(dest.read_bytes()) == sha:
@@ -334,15 +349,13 @@ class CloudStore:
                 os.unlink(tmp)
 
     def get_session_bytes(self, project_id: str, session_id: str) -> bytes:
-        _check_slug(session_id, "session id")
-        path = self._confined(self._sessions_dir(project_id) / f"{session_id}.vcr")
+        path = self.session_path(project_id, session_id)
         if not path.exists():
             raise KeyError(f"Session {session_id!r} not found")
         return path.read_bytes()
 
     def delete_session(self, project_id: str, session_id: str) -> bool:
-        _check_slug(session_id, "session id")
-        path = self._confined(self._sessions_dir(project_id) / f"{session_id}.vcr")
+        path = self.session_path(project_id, session_id)
         if not path.exists():
             return False
         path.unlink()

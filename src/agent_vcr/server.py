@@ -624,7 +624,10 @@ class VCRServer:
         async def get_project_session(pid: str, sid: str, request: Request) -> dict[str, Any]:
             self._require_cloud(request, project_id=pid)
             store = self._cloud_store()
-            path = store._confined(store._sessions_dir(pid) / f"{sid}.vcr")
+            try:
+                path = store.session_path(pid, sid)
+            except (KeyError, ValueError) as err:
+                raise HTTPException(status_code=404, detail="Session not found") from err
             if not path.exists():
                 raise HTTPException(status_code=404, detail="Session not found")
             from agent_vcr.player import VCRPlayer
@@ -668,7 +671,10 @@ class VCRServer:
                 raise HTTPException(status_code=400, detail="Only full mode is supported")
 
             store = self._cloud_store()
-            path = store._confined(store._sessions_dir(pid) / f"{sid}.vcr")
+            try:
+                path = store.session_path(pid, sid)
+            except (KeyError, ValueError) as err:
+                raise HTTPException(status_code=404, detail="Session not found") from err
             if not path.exists():
                 raise HTTPException(status_code=404, detail="Session not found")
 
@@ -702,7 +708,10 @@ class VCRServer:
         async def intel_failures(pid: str, request: Request) -> dict[str, Any]:
             self._require_cloud(request, project_id=pid)
             from agent_vcr.intelligence.failures import cluster_sessions
-            sessions_dir = Path(self.data_dir or self.vcr_dir) / "projects" / pid / "sessions"
+            try:
+                sessions_dir = self._cloud_store().sessions_dir(pid)
+            except (KeyError, ValueError) as err:
+                raise HTTPException(status_code=404, detail="Project not found") from err
             clusters = await asyncio.to_thread(cluster_sessions, sessions_dir)
             return {"clusters": [c.model_dump() for c in clusters]}
 
@@ -710,7 +719,10 @@ class VCRServer:
         async def intel_risk(pid: str, request: Request) -> dict[str, Any]:
             self._require_cloud(request, project_id=pid)
             from agent_vcr.intelligence.risk import score_agent
-            sessions_dir = Path(self.data_dir or self.vcr_dir) / "projects" / pid / "sessions"
+            try:
+                sessions_dir = self._cloud_store().sessions_dir(pid)
+            except (KeyError, ValueError) as err:
+                raise HTTPException(status_code=404, detail="Project not found") from err
             score = await asyncio.to_thread(score_agent, sessions_dir)
             return score.model_dump()
 
@@ -718,8 +730,12 @@ class VCRServer:
         async def intel_why(pid: str, session_id: str, request: Request) -> dict[str, Any]:
             self._require_cloud(request, project_id=pid)
             from agent_vcr.intelligence.query import diagnose
-            sessions_dir = Path(self.data_dir or self.vcr_dir) / "projects" / pid / "sessions"
-            session_path = sessions_dir / f"{session_id}.vcr"
+            store = self._cloud_store()
+            try:
+                sessions_dir = store.sessions_dir(pid)
+                session_path = store.session_path(pid, session_id)
+            except (KeyError, ValueError) as err:
+                raise HTTPException(status_code=404, detail="Session not found") from err
             if not session_path.exists():
                 raise HTTPException(status_code=404, detail="Session not found")
             diag = await asyncio.to_thread(diagnose, session_path, sessions_dir)

@@ -113,7 +113,9 @@ def default_embedder(text: str, dim: int = 128) -> list[float]:
                 tokens.append(word[i : i + 3])
 
     for token in tokens:
-        digest = hashlib.md5(token.encode("utf-8")).digest()
+        # SHA-256 keeps the embedder deterministic without routing potentially
+        # sensitive memory text through a cryptographically broken hash.
+        digest = hashlib.sha256(token.encode("utf-8")).digest()
         idx = int.from_bytes(digest[:2], "big") % dim
         val = (int.from_bytes(digest[2:4], "big") / 65535.0) * 2.0 - 1.0
         vec[idx] += val

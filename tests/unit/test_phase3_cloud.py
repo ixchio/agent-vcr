@@ -103,6 +103,16 @@ class TestCloudStore:
         store.create_project("p", project_id="p")
         with pytest.raises(ValueError):
             store.get_session_bytes("p", "../../etc/passwd")
+        with pytest.raises(ValueError):
+            store.session_path("p", "../other/secret")
+
+    def test_session_path_is_confined_to_project(self, tmp_path):
+        store = CloudStore(tmp_path)
+        store.create_project("p", project_id="p")
+        sessions = store.sessions_dir("p")
+        path = store.session_path("p", "safe-session")
+        assert path == sessions / "safe-session.vcr"
+        assert path.resolve().is_relative_to(sessions.resolve())
 
 
 class TestCloudClientSafety:
@@ -255,7 +265,7 @@ class TestCloudAPI:
         assert client.post("/api/projects", json={"name": "L"} , headers=H).status_code == 201
 
     def test_public_api(self):
-        assert agent_vcr.__version__ == "1.5.1"
+        assert agent_vcr.__version__ == "1.5.2"
         for name in ("CloudStore", "Project", "ApiTokenPublic", "CloudClient", "CloudError"):
             assert name in agent_vcr.__all__
 

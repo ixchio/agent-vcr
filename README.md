@@ -1,16 +1,20 @@
 # Agent VCR
 
-**Recovery, replay, and regression testing for AI agents that change real systems.**
+[![PyPI Version](https://img.shields.io/pypi/v/ai-agent-vcr?style=flat-square&label=PyPI)](https://pypi.org/project/ai-agent-vcr/)
+[![PyPI Downloads](https://static.pepy.tech/personalized-badge/ai-agent-vcr?period=total&units=INTERNATIONAL_SYSTEM&left_color=BLACK&right_color=GREEN&left_text=downloads)](https://pepy.tech/projects/ai-agent-vcr)
+[![Python Versions](https://img.shields.io/pypi/pyversions/ai-agent-vcr?style=flat-square)](https://pypi.org/project/ai-agent-vcr/)
+[![CI](https://github.com/ixchio/agent-vcr/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/ixchio/agent-vcr/actions/workflows/ci.yml)
+[![MIT License](https://img.shields.io/pypi/l/ai-agent-vcr?style=flat-square)](https://github.com/ixchio/agent-vcr/blob/main/LICENSE)
+
+**For Claude Code, OpenHands, and LangGraph: the undo button and zero-cost replay layer for coding
+and stateful AI agents.**
 
 Agent VCR records an agent run as durable JSONL frames, joins state checkpoints to Git-backed
 filesystem savepoints, and gives you a controlled path from failure to recovery. Inspect the exact
 state, rewind, resume from a checkpoint, roll back files, or replay a verified run without another
 model call.
 
-[![PyPI Downloads](https://static.pepy.tech/personalized-badge/ai-agent-vcr?period=total&units=INTERNATIONAL_SYSTEM&left_color=BLACK&right_color=GREEN&left_text=downloads)](https://pepy.tech/projects/ai-agent-vcr)
-[![CI](https://github.com/ixchio/agent-vcr/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/ixchio/agent-vcr/actions/workflows/ci.yml)
-[![Python](https://img.shields.io/badge/python-3.9%2B-blue?style=flat-square)](https://www.python.org/downloads/)
-[![License](https://img.shields.io/badge/license-MIT-yellow?style=flat-square)](LICENSE)
+![Agent VCR recording, rollback, and replay demo](https://raw.githubusercontent.com/ixchio/agent-vcr/main/docs/demo.gif)
 
 ```bash
 pip install ai-agent-vcr
@@ -18,7 +22,14 @@ pip install ai-agent-vcr
 
 No model key, hosted account, or framework is required for the core runtime.
 
-![Agent VCR terminal demo](docs/demo.gif)
+## The three pillars
+
+1. **[Time-Travel Recording](#1-time-travel-recording)** — capture state, tools, errors, cost, and
+   latency; inspect, diff, resume, or fork any recorded step.
+2. **[ACID Filesystem + State Rollback](#2-acid-filesystem--state-rollback)** — restore agent state,
+   tracked files, and protected local files such as `.env` to the same savepoint.
+3. **[Zero-Cost Ghost Replay & CI Gating](#3-zero-cost-ghost-replay--ci-gating)** — reuse verified
+   outputs with zero model calls and block behavioral, cost, token, or latency regressions in CI.
 
 ## Why this exists
 
@@ -84,20 +95,21 @@ python examples/time_travel_demo.py
 python examples/acid_golden_run.py
 ```
 
-## What Agent VCR can do
+## Core capabilities
 
-### Record and time-travel through a run
+### 1. Time-Travel Recording
 
 Capture state transitions, model and tool metadata, errors, costs, and latency. Load a recording,
 inspect any frame, compare frames, edit state, and resume or fork from a chosen point. Sync and
 async recorders and players use the same execution schema.
 
-### Roll back state and files together
+### 2. ACID Filesystem + State Rollback
 
-`ACIDWorkspace` uses isolated Git branches and commits as savepoints. A rollback restores the
-recorded agent state, tracked files, and eligible untracked or ignored files to the selected
-savepoint. Local files such as `.env` are content-escrowed under private Git metadata; their bytes
-never enter Git commits or `.vcr` recordings.
+`ACIDWorkspace` snapshots tracked files through isolated Git branches and commits, while eligible
+pre-existing untracked and ignored files such as `.env` are content-escrowed **per savepoint** in a
+private local store outside Git objects and `.vcr` recordings. Rollback restores modified or deleted
+local files byte-for-byte—including permissions and symlink targets—removes untracked files the
+agent hallucinated after the boundary, and never writes escrowed secrets into Git history.
 
 ```python
 from agent_vcr import VCRRecorder
@@ -126,7 +138,7 @@ removed on commit or abort. Files larger than the configured limit, special file
 trees (`.venv`, `venv`, `node_modules`, cache directories, and `.vcr`) are preserved as-is instead
 of being copied or deleted.
 
-### Replay known-good work with zero model calls
+### 3. Zero-Cost Ghost Replay & CI Gating
 
 Ghost Replay saves a verified execution under an identity that can include the model, prompt hash,
 code commit, tool schema, dependency lock, and environment. A full identity match returns recorded
@@ -136,7 +148,7 @@ old run valid.
 Replay modes cover full replay, hybrid replay, live execution, and branching. The cost ledger shows
 which steps were replayed, which were rerun, and what was saved.
 
-### Gate agent changes in CI
+#### CI regression gates
 
 Turn known-good recordings into versioned replay datasets, evaluate candidate runs, and fail a pull
 request on behavioral, cost, latency, or token regressions.
@@ -154,9 +166,12 @@ vcr ci run \
   --markdown agent-ci-report.md
 ```
 
-The repository includes a reusable composite GitHub Action in [action.yml](action.yml).
+The repository includes a reusable composite GitHub Action in
+[action.yml](https://github.com/ixchio/agent-vcr/blob/main/action.yml).
 
-### Run durable workflows
+## Production building blocks
+
+### Workflow Engine
 
 The workflow engine executes dependency-aware DAGs with conditions, parallel fan-out and joins,
 bounded `for_each` loops, retries, timeouts, approvals, checkpoints, and saga compensation. Run
@@ -171,13 +186,13 @@ vcr workflow run \
 vcr workflow runs --workflow hello-agent-vcr
 ```
 
-### Put policy around agent execution
+### SuperAgent
 
 SuperAgent executes validated plans through a tool gateway with parameter checks, timeouts, budgets,
 approval gates, verification, memory redaction, retries, and recorded checkpoints. Irreversible work
 can be made approval-only; missing approval fails closed.
 
-### Diagnose failures from recorded evidence
+### Reliability Intelligence
 
 Reliability intelligence clusters related failures, scores risk, separates cost by model and node,
 finds duplicate model work that could be replayed, suggests evidence-based model routes, and ranks
@@ -192,7 +207,7 @@ vcr intel costs --dir .vcr
 vcr intel recover .vcr/<session-id>.vcr
 ```
 
-### Inspect runs locally or self-host the project store
+### Self-Hosted Store
 
 The optional dashboard serves local recordings with live WebSocket updates and state diffs. The
 self-hosted project store adds scoped project tokens, integrity-checked uploads, pull, search, and
@@ -280,9 +295,10 @@ The extension surfaces are deliberately plain:
 - **Pluggable execution:** register SuperAgent tool handlers, workflow handler modules, or a custom
   sandbox behind the published interfaces.
 
-Integration guides and templates live in [docs/integrations](docs/integrations). If your framework
-can expose a step boundary and serializable state, it can connect to Agent VCR without changing the
-recording format.
+Integration guides and templates live in
+[docs/integrations](https://github.com/ixchio/agent-vcr/tree/main/docs/integrations). If your
+framework can expose a step boundary and serializable state, it can connect to Agent VCR without
+changing the recording format.
 
 ## Install only what you need
 
@@ -321,25 +337,28 @@ make verify
 
 Benchmark history is published at [ixchio.github.io/agent-vcr/dev/bench](https://ixchio.github.io/agent-vcr/dev/bench/).
 The execution, bundle, dataset, workflow, cloud, intelligence, and SuperAgent contracts are exported
-as versioned JSON Schemas under [schemas](schemas).
+as versioned JSON Schemas under
+[schemas](https://github.com/ixchio/agent-vcr/tree/main/schemas).
 
 ## Documentation
 
-- [Documentation index](docs/README.md)
-- [Architecture and data contracts](docs/architecture.md)
-- [Workflow engine](docs/workflow.md)
-- [SuperAgent runtime](docs/superagent.md)
-- [Development and release verification](docs/development.md)
-- [Security policy](SECURITY.md)
-- [Changelog](CHANGELOG.md)
+- [Documentation index](https://github.com/ixchio/agent-vcr/blob/main/docs/README.md)
+- [Architecture and data contracts](https://github.com/ixchio/agent-vcr/blob/main/docs/architecture.md)
+- [Workflow engine](https://github.com/ixchio/agent-vcr/blob/main/docs/workflow.md)
+- [SuperAgent runtime](https://github.com/ixchio/agent-vcr/blob/main/docs/superagent.md)
+- [Development and release verification](https://github.com/ixchio/agent-vcr/blob/main/docs/development.md)
+- [Security policy](https://github.com/ixchio/agent-vcr/blob/main/SECURITY.md)
+- [Changelog](https://github.com/ixchio/agent-vcr/blob/main/CHANGELOG.md)
 
 ## Contributing
 
-Issues and pull requests are welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md), run
-`make verify`, and include a focused test for behavior changes.
+Issues and pull requests are welcome. Start with
+[CONTRIBUTING.md](https://github.com/ixchio/agent-vcr/blob/main/CONTRIBUTING.md), run `make verify`,
+and include a focused test for behavior changes.
 
 ## License
 
-Agent VCR is open-source software released under the [MIT License](LICENSE).
+Agent VCR is open-source software released under the
+[MIT License](https://github.com/ixchio/agent-vcr/blob/main/LICENSE).
 
-<sub>Copyright © 2026 GOD and <a href="https://github.com/ixchio">ixchio</a>.</sub>
+<sub>Copyright © 2026 QueryXLabs and <a href="https://github.com/ixchio">ixchio</a>.</sub>
