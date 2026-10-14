@@ -5,7 +5,7 @@
 - **Purpose:** ACID transactions, time-travel debugging, and zero-cost Ghost Replay for AI agents
 - **Key differentiators:** Filesystem rollback via git (not just state), Ghost Replay (zero-token re-runs), Sentinel (real-time AST quality guard)
 - **Frameworks:** LangGraph, CrewAI, raw Python — framework-agnostic
-- **Version:** 0.8.0
+- **Version:** 1.5.0
 
 ## Architecture
 - `src/agent_vcr/` — Core package: recorder, player, golden_cache, models, server, tui

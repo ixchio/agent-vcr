@@ -5,15 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.5.0] - 2026-09-09
+## [Unreleased]
+
+## [1.5.0] - 2026-10-14
 
 ### Added
 - Reliability intelligence (`agent_vcr.intelligence`): failure clustering with volatile-span normalization, 0–100 risk scoring (errors/denials/drift/cost/latency), deterministic failure classification, ranked recovery plans (auto only when side-effect free), evidence-based model routing, cost breakdowns with ghost-cacheable duplicate detection, and one-call `diagnose` ("why did my agent fail?").
 - `record_error` accepts optional model attribution (sync + async) for routing evidence.
 - `vcr intel failures|risk|why|recover|routes|costs` CLI; project-scoped `/intel/*` cloud endpoints.
 - JSON Schemas for cluster, risk score, and diagnosis under `schemas/intel/`.
-
-## [Unreleased]
 
 ### Fixed
 - Cloud login accepts scoped project tokens (403 on the admin listing counts as proof of validity).
