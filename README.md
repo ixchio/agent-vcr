@@ -4,6 +4,7 @@
 
 Agent VCR records agent state, tool calls, and checkpoints so a failed run becomes an artifact you can inspect, rewind, replay, compare, or roll back—instead of a reason to start again from zero.
 
+[![PyPI Downloads](https://static.pepy.tech/personalized-badge/ai-agent-vcr?period=total&units=INTERNATIONAL_SYSTEM&left_color=BLACK&right_color=GREEN&left_text=downloads)](https://pepy.tech/projects/ai-agent-vcr)
 [![CI](https://img.shields.io/github/actions/workflow/status/ixchio/agent-vcr/ci.yml?style=flat-square&label=CI)](https://github.com/ixchio/agent-vcr/actions)
 [![Python](https://img.shields.io/badge/python-3.9%2B-blue?style=flat-square)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/license-proprietary-red?style=flat-square)](LICENSE)
