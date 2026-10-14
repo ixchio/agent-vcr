@@ -112,7 +112,7 @@ class TestReplayBundle:
             export_bundle(bad)
 
     def test_public_api_exports(self):
-        assert agent_vcr.__version__ == "1.5.0"
+        assert agent_vcr.__version__ == "1.5.1"
         for name in ("export_bundle", "import_bundle", "verify_bundle", "reproduce",
                      "GhostReplayMode", "BundleManifest"):
             assert name in agent_vcr.__all__

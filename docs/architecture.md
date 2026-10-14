@@ -1,7 +1,7 @@
 # Agent VCR & SuperAgent: System Architecture Specification
 
-> **Version:** `1.5.0`
-> **Distribution:** Proprietary software of QueryXLabs and ixchio
+> **Version:** `1.5.1`
+> **Distribution:** Open-source software under the MIT License
 > **Schema Contract:** `execution/v1` (frozen)
 > **Target Audience:** Principal Systems Engineers, Infrastructure Architects, Agent Developers
 

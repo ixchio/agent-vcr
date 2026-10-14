@@ -1,43 +1,21 @@
-Proprietary Software License
+MIT License
+
 Copyright (c) 2026 QueryXLabs and ixchio
-All Rights Reserved.
 
-This software and associated documentation files (the "Software") are the
-exclusive property of QueryXLabs and ixchio and are protected by applicable
-copyright, intellectual property, and other laws.
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
 
-No permission is granted to use, copy, modify, merge, publish, distribute,
-sublicense, sell, rent, lease, disclose, reverse engineer, decompile,
-disassemble, create derivative works from, or otherwise exploit the Software,
-in whole or in part, without prior written permission from QueryXLabs and
-ixchio.
-
-Access to the Software does not transfer any ownership, license, patent,
-copyright, trademark, trade secret, or other intellectual property rights
-except where expressly authorized in writing by QueryXLabs and ixchio.
-
-Any unauthorized use, reproduction, modification, disclosure, or distribution
-of the Software is strictly prohibited and may result in civil and/or criminal
-liability under applicable law.
-
-Third-party software, libraries, frameworks, or other components included with
-or used by the Software remain subject to their respective licenses and terms.
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE, TITLE, AND NON-INFRINGEMENT. IN NO EVENT
-SHALL QUERYXLABS, IXCHIO, THEIR OWNERS, CONTRIBUTORS, EMPLOYEES, OR AFFILIATES
-BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY ARISING FROM, OUT OF OR
-IN CONNECTION WITH THE SOFTWARE OR THE USE OF OR OTHER DEALINGS IN THE
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
-For licensing, commercial use, partnership, or other permissions, contact
-QueryXLabs through its official communication channels.
-
-Prior public releases and third-party material
------------------------------------------------
-
-This license governs the current distribution of company-owned material. It
-does not revoke or alter rights granted under licenses that accompanied earlier
-public releases or third-party material. Those materials remain subject to
-their applicable license terms.

@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.1] - 2026-10-14
+
+### Changed
+- Restored the MIT license across package metadata, documentation, and distribution artifacts.
+- Published the GitHub repository so source, issues, and CI status are publicly accessible.
+- Replaced the inaccessible private-repository CI badge with the public GitHub Actions badge.
+
 ## [1.5.0] - 2026-10-14
 
 ### Added

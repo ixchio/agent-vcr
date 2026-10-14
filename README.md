@@ -1,160 +1,179 @@
 # Agent VCR
 
-**The recovery layer for agents that touch real code and systems.**
+**Recovery, replay, and regression testing for AI agents that change real systems.**
 
-Agent VCR records agent state, tool calls, and checkpoints so a failed run becomes an artifact you can inspect, rewind, replay, compare, or roll back—instead of a reason to start again from zero.
+Agent VCR records an agent run as durable JSONL frames, joins state checkpoints to Git-backed
+filesystem savepoints, and gives you a controlled path from failure to recovery. Inspect the exact
+state, rewind, resume from a checkpoint, roll back files, or replay a verified run without another
+model call.
 
 [![PyPI Downloads](https://static.pepy.tech/personalized-badge/ai-agent-vcr?period=total&units=INTERNATIONAL_SYSTEM&left_color=BLACK&right_color=GREEN&left_text=downloads)](https://pepy.tech/projects/ai-agent-vcr)
-[![CI](https://img.shields.io/github/actions/workflow/status/ixchio/agent-vcr/ci.yml?style=flat-square&label=CI)](https://github.com/ixchio/agent-vcr/actions)
+[![CI](https://github.com/ixchio/agent-vcr/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/ixchio/agent-vcr/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.9%2B-blue?style=flat-square)](https://www.python.org/downloads/)
-[![License](https://img.shields.io/badge/license-proprietary-red?style=flat-square)](LICENSE)
+[![License](https://img.shields.io/badge/license-MIT-yellow?style=flat-square)](LICENSE)
+
+```bash
+pip install ai-agent-vcr
+```
+
+No model key, hosted account, or framework is required for the core runtime.
+
+![Agent VCR terminal demo](docs/demo.gif)
+
+## Why this exists
+
+An agent can update its state and still leave your repository broken. It can write half a feature,
+create files that never belonged there, spend tokens repeating successful work, or fail on step 18
+after the first 17 steps already mutated the workspace.
+
+Logs and traces explain what happened. Agent VCR is the intervention layer:
+
+```text
+run agent
+   │
+   ├── record state, tool calls, cost, latency, and errors
+   ├── checkpoint state + filesystem together
+   │
+failure
+   │
+   ├── inspect or diff any frame
+   ├── resume or fork from the last good state
+   ├── roll the Git workspace back to a savepoint
+   └── keep the verified run as a replay or CI baseline
+```
+
+The recording format is append-friendly JSONL. You can open it in an editor, diff it in Git,
+stream it, bundle it, verify its integrity, and use it without sending execution data to a vendor.
+
+## See it work in one minute
+
+```python
+from agent_vcr import VCRPlayer, VCRRecorder
+
+
+def planner(state: dict) -> dict:
+    return {**state, "plan": "add the migration before changing the API"}
+
+
+recorder = VCRRecorder(output_dir=".vcr")
+recorder.start_session("billing-fix")
+
+before = {"task": "add invoice status"}
+after = planner(before)
+recorder.record_step("planner", before, after)
+recorder.record_checkpoint(after, label="plan-approved")
+recording = recorder.save()
+
+player = VCRPlayer.load(recording)
+print(player.goto_frame(0))
+print(player.goto_checkpoint("plan-approved"))
+print(player.verify_integrity())
+```
+
+Or run the included credential-free examples:
 
 ```bash
 git clone https://github.com/ixchio/agent-vcr.git
 cd agent-vcr
 python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install --upgrade pip
-python -m pip install -e ".[tui,dashboard]"
+python -m pip install -e ".[dev,tui,dashboard]"
 
-vcr init
 python examples/basic_usage.py
+python examples/time_travel_demo.py
+python examples/acid_golden_run.py
 ```
 
-No model key is required for the local examples. This repository is proprietary software;
-access, use, and distribution are governed by [LICENSE](LICENSE).
+## What Agent VCR can do
 
-## Why Agent VCR
+### Record and time-travel through a run
 
-Agents make changes before a human can review them. When a run fails after writing files, calling tools, or modifying state, logs tell you what happened—but they do not restore a usable point in time.
+Capture state transitions, model and tool metadata, errors, costs, and latency. Load a recording,
+inspect any frame, compare frames, edit state, and resume or fork from a chosen point. Sync and
+async recorders and players use the same execution schema.
 
-Agent VCR gives the operator a recovery loop:
+### Roll back state and files together
 
-```text
-record a run  ->  inspect a frame  ->  recover or roll back  ->  keep the good run as a golden baseline
-     |                                                                           |
-     +------------------- gate future candidate runs in CI --------------------+
-```
-
-The runtime is local-first. Recordings are append-only JSONL (`.vcr`), readable in a text editor, diffable in Git, and usable without a hosted account.
-
-## What it does
-
-| Need | Agent VCR capability |
-| --- | --- |
-| An agent failed after changing files | Git-backed savepoints and filesystem rollback with `ACIDWorkspace` |
-| A run failed late | Time-travel to any recorded frame, edit state, then fork or resume |
-| A known task repeats | Ghost Replay returns a verified golden run with zero model calls |
-| A regression reaches a pull request | Replay datasets, regression reports, and a GitHub Action |
-| A multi-step process dies midway | Durable workflows with checkpoints, retries, compensation, schedules, and resume |
-| You need evidence across runs | Failure clustering, risk scoring, recovery planning, model routing, and cost analysis |
-| An agent needs isolation | Local and E2B sandbox adapters with a common interface |
-| You need framework coverage | Raw Python, LangGraph, CrewAI, OpenHands, and Claude Code hooks |
-
-## Start locally
-
-### Record and inspect a run
-
-```bash
-vcr init
-python examples/basic_usage.py
-
-# Replace this with the path printed by the example.
-vcr tui .vcr/<session-id>.vcr
-```
-
-Minimal Python integration:
-
-```python
-from agent_vcr import ResumeConfig, VCRPlayer, VCRRecorder
-
-
-def planner(state: dict) -> dict:
-    return {**state, "plan": "add an idempotent migration"}
-
-
-recorder = VCRRecorder(output_dir=".vcr")
-recorder.start_session()
-before = {"request": "add invoices"}
-recorder.record_step("planner", before, planner(before))
-recording = recorder.save()
-
-player = VCRPlayer.load(recording)
-player.resume(
-    planner,
-    ResumeConfig(
-        from_frame=0,
-        state_overrides={"request": "add invoices with a migration"},
-    ),
-)
-```
-
-### Roll back a coding agent safely
-
-`ACIDWorkspace` creates an isolated Git branch, saves Git-backed checkpoints, and can restore both agent state and tracked files to a selected savepoint.
+`ACIDWorkspace` uses isolated Git branches and commits as savepoints. A rollback restores the
+recorded agent state and tracked filesystem state while preserving files that existed before the
+transaction.
 
 ```python
 from agent_vcr import VCRRecorder
 from agent_vcr.integrations.openhands import ACIDWorkspace
 
-recorder = VCRRecorder(output_dir=".vcr")
-workspace = ACIDWorkspace("/path/to/repository", recorder=recorder)
+recorder = VCRRecorder()
+workspace = ACIDWorkspace("/path/to/clean/repository", recorder=recorder)
 
 workspace.begin(session_id="issue-42")
-workspace.savepoint({"task": "implement billing"}, node_name="planner")
+workspace.savepoint({"phase": "planned"}, node_name="planner")
 
-# Run the coding agent in the isolated workspace.
-workspace.rollback(to_frame_index=0)
-workspace.commit()  # Merge only after verification.
+# Let the agent work inside the isolated branch.
+
+workspace.rollback(to_frame_index=0)  # restore the selected savepoint
+workspace.commit()                    # merge only after verification
 ```
 
-### Run a durable workflow
+By default, Agent VCR refuses to begin from a dirty tracked worktree. Filesystem recovery is
+powerful, so the integration makes the unsafe case explicit instead of guessing.
 
-The included workflow needs no model provider. It validates the workflow, records tool activity, creates checkpoints, and writes a resumable run record.
+### Replay known-good work with zero model calls
 
-```bash
-vcr workflow run \
-  --file examples/hello_workflow.json \
-  --handlers examples/workflow_handlers.py
+Ghost Replay saves a verified execution under an identity that can include the model, prompt hash,
+code commit, tool schema, dependency lock, and environment. A full identity match returns recorded
+outputs without invoking the model. If relevant inputs drift, the cache does not silently call the
+old run valid.
 
-vcr workflow runs --workflow hello-agent-vcr
-vcr workflow resume <run-id> --handlers examples/workflow_handlers.py
-```
+Replay modes cover full replay, hybrid replay, live execution, and branching. The cost ledger shows
+which steps were replayed, which were rerun, and what was saved.
 
-Read the workflow contract, approval points, retries, compensation actions, schedules, and recovery behavior in [docs/workflow.md](docs/workflow.md).
+### Gate agent changes in CI
 
-## Ship reliable agent changes
-
-### Replay bundles and Ghost Replay
-
-Export a recording as a portable, verified bundle before using it elsewhere:
+Turn known-good recordings into versioned replay datasets, evaluate candidate runs, and fail a pull
+request on behavioral, cost, latency, or token regressions.
 
 ```bash
-vcr bundle export .vcr/<session-id>.vcr --output support-fix.vcrb
-vcr bundle verify support-fix.vcrb
-vcr bundle import support-fix.vcrb --dest-dir .vcr/imported
-vcr reproduce support-fix.vcrb
-```
-
-For repeated tasks, save a verified run to `GoldenRunCache` with a model, prompt, code, and tool-schema identity. A matching replay returns the recorded outputs without invoking a model. When that identity changes, the cache does not treat the old run as valid.
-
-### Regression gates for agent behavior
-
-Create a replay dataset from known-good runs, then compare candidate recordings in CI:
-
-```bash
+vcr dataset create refunds
+vcr dataset add refunds \
+  --task "refund a duplicate payment" \
+  --vcr .vcr/golden/refund-agent.vcr
 vcr ci run \
   --dataset refunds \
   --candidates .vcr/candidates \
-  --datasets-dir .vcr/datasets \
-  --golden-dir .vcr/golden \
+  --fail-on degraded \
   --report agent-ci-report.json \
   --markdown agent-ci-report.md
 ```
 
-The repository includes a composite GitHub Action in [action.yml](action.yml). It produces a machine-readable and Markdown report, and can fail a pull request at the configured regression threshold.
+The repository includes a reusable composite GitHub Action in [action.yml](action.yml).
 
-### Diagnose and recover from evidence
+### Run durable workflows
+
+The workflow engine executes dependency-aware DAGs with conditions, parallel fan-out and joins,
+bounded `for_each` loops, retries, timeouts, approvals, checkpoints, and saga compensation. Run
+state is persisted after each top-level step, so interrupted work can resume without re-executing
+completed steps.
+
+```bash
+vcr workflow validate examples/hello_workflow.json
+vcr workflow run \
+  --file examples/hello_workflow.json \
+  --handlers examples/workflow_handlers.py
+vcr workflow runs --workflow hello-agent-vcr
+```
+
+### Put policy around agent execution
+
+SuperAgent executes validated plans through a tool gateway with parameter checks, timeouts, budgets,
+approval gates, verification, memory redaction, retries, and recorded checkpoints. Irreversible work
+can be made approval-only; missing approval fails closed.
+
+### Diagnose failures from recorded evidence
+
+Reliability intelligence clusters related failures, scores risk, separates cost by model and node,
+finds duplicate model work that could be replayed, suggests evidence-based model routes, and ranks
+recovery actions. It is decision support: recovery does not mutate a run unless you explicitly ask
+it to execute a safe action.
 
 ```bash
 vcr intel why .vcr/<session-id>.vcr
@@ -164,16 +183,31 @@ vcr intel costs --dir .vcr
 vcr intel recover .vcr/<session-id>.vcr
 ```
 
-These commands turn recordings into failure clusters, risk signals, cost breakdowns, model-routing suggestions, and recovery plans. They are decision support for an operator; they do not silently mutate a run or repository.
+### Inspect runs locally or self-host the project store
 
-## Integrations and execution boundaries
+The optional dashboard serves local recordings with live WebSocket updates and state diffs. The
+self-hosted project store adds scoped project tokens, integrity-checked uploads, pull, search, and
+server-side full replay.
 
 ```bash
-# Optional framework extras
-python -m pip install "ai-agent-vcr[langgraph]"
-python -m pip install "ai-agent-vcr[crewai]"
-python -m pip install "ai-agent-vcr[openhands]"
-python -m pip install "ai-agent-vcr[sandbox]"  # E2B adapter
+pip install "ai-agent-vcr[dashboard]"
+vcr-server --vcr-dir .vcr --auth-token local-dev-token
+# open http://127.0.0.1:8000/dashboard
+```
+
+The repository also contains an optional deployment foundation for Supabase Auth, Stripe billing,
+and Postgres. It is not presented as a finished multitenant SaaS: SSO, RBAC, tenant-isolated object
+storage, managed secrets, and full production operations remain deployment responsibilities.
+
+## Framework integrations
+
+Agent VCR works with raw Python and includes adapters for LangGraph, CrewAI, OpenHands, and Claude
+Code hooks.
+
+```bash
+pip install "ai-agent-vcr[langgraph]"
+pip install "ai-agent-vcr[crewai]"
+pip install "ai-agent-vcr[openhands]"
 ```
 
 ```python
@@ -191,72 +225,112 @@ from agent_vcr import VCRRecorder
 from agent_vcr.integrations.crewai import VCRCrewAI
 
 recorder = VCRRecorder()
+recorder.start_session("research-crew")
 result = VCRCrewAI(recorder).kickoff(crew)
+recorder.save()
 ```
 
-For Claude Code, run `vcr init --claude-code` inside the target repository.
-
-## Local dashboard and project store
-
-Run the dashboard and self-hosted project store on your machine:
+For Claude Code hook scaffolding:
 
 ```bash
-vcr-server --vcr-dir .vcr --auth-token local-dev-token
-# Open http://127.0.0.1:8000/dashboard
+vcr init --claude-code
 ```
 
-The `vcr cloud` commands support login, project/session listing, push, pull, and server-side Ghost Replay against a configured Agent VCR server. It is a self-hosted project store, not a public multitenant SaaS. Keep it behind a project or administrator token until tenant-scoped storage and per-resource authorization are implemented.
+## Build integrations on Agent VCR
 
-## Hosted control-plane status
+You do not need an official adapter to connect another framework. The recorder is the integration
+boundary: call `record_step`, `record_llm_call`, `record_tool_call`, `record_error`, or
+`record_checkpoint` from your framework's lifecycle hooks.
 
-There is an optional Railway deployment foundation for a future managed offering:
+```python
+from agent_vcr import VCRRecorder
 
-- Supabase Auth token verification through the provider JWKS; no service-role key is required.
-- Stripe-hosted subscription checkout and billing portal.
-- Signed Stripe webhook handling and an idempotent Postgres billing ledger.
-- Railway Docker configuration, health check, migration command, and persistent-volume guidance.
 
-It intentionally does **not** publish local recordings as a shared cloud product. SSO, RBAC, tenant-isolated object storage, autoscaling, managed secrets, and full production operations are not shipped yet. See [the Railway deployment guide](docs/deployment/railway.md) before enabling it.
+def forward_frame(frame) -> None:
+    # Send this payload to your event bus, debugger, or internal dashboard.
+    print(frame.model_dump_json())
+
+
+recorder = VCRRecorder(on_frame_recorded=forward_frame)
+recorder.start_session("custom-framework-run")
+
+before = {"request": "ship the integration"}
+after = your_agent_step(before)
+recorder.record_step("custom-agent", before, after)
+recorder.save()
+```
+
+The extension surfaces are deliberately plain:
+
+- **Python API:** instrument raw functions, framework callbacks, model calls, and tools.
+- **Frame callback:** forward each recorded frame to an event bus, UI, or telemetry pipeline.
+- **JSONL and JSON Schema:** consume recordings in another language without importing Python.
+- **Replay bundles:** exchange portable `.vcrb` files with an identity manifest and SHA-256 checks.
+- **HTTP and WebSocket server:** build a custom dashboard or synchronize sessions remotely.
+- **CLI and GitHub Action:** call Agent VCR from shell scripts, CI systems, or release gates.
+- **Pluggable execution:** register SuperAgent tool handlers, workflow handler modules, or a custom
+  sandbox behind the published interfaces.
+
+Integration guides and templates live in [docs/integrations](docs/integrations). If your framework
+can expose a step boundary and serializable state, it can connect to Agent VCR without changing the
+recording format.
+
+## Install only what you need
+
+```bash
+pip install ai-agent-vcr                  # recorder, player, replay, workflows, CI
+pip install "ai-agent-vcr[tui]"          # terminal debugger
+pip install "ai-agent-vcr[dashboard]"    # local dashboard and server
+pip install "ai-agent-vcr[sandbox]"      # E2B sandbox adapter
+pip install "ai-agent-vcr[llm]"          # LiteLLM planner
+pip install "ai-agent-vcr[vector]"       # Qdrant-backed vector memory
+pip install "ai-agent-vcr[all]"          # all optional integrations
+```
+
+Python 3.9–3.13 is tested in CI.
+
+## Where it fits
+
+Agent VCR is not a replacement for LangSmith, Langfuse, Phoenix, or AgentOps. Those products focus
+on observing, evaluating, and operating model calls. Agent VCR focuses on intervention after an
+agent changes state or files: checkpoint, rewind, resume, roll back, replay, and regression-gate.
+They can be used together.
+
+It also does not make arbitrary external side effects transactional. Git can restore a workspace;
+it cannot undo an email, payment, or third-party API call. Put irreversible tools behind approval
+and compensation policies.
+
+## Verification
+
+The release gate runs linting, strict typing, unit tests, end-to-end tests, performance limits,
+package builds, and distribution validation:
+
+```bash
+python -m pip install -e ".[dev,tui,dashboard]"
+make verify
+```
+
+Benchmark history is published at [ixchio.github.io/agent-vcr/dev/bench](https://ixchio.github.io/agent-vcr/dev/bench/).
+The execution, bundle, dataset, workflow, cloud, intelligence, and SuperAgent contracts are exported
+as versioned JSON Schemas under [schemas](schemas).
 
 ## Documentation
 
-| Area | Documentation |
-| --- | --- |
-| Documentation index | [docs/README.md](docs/README.md) |
-| Architecture and data contracts | [docs/architecture.md](docs/architecture.md) |
-| SuperAgent runtime | [docs/superagent.md](docs/superagent.md) |
-| Workflows | [docs/workflow.md](docs/workflow.md) |
-| Development and verification | [docs/development.md](docs/development.md) |
-| Railway hosted control plane | [docs/deployment/railway.md](docs/deployment/railway.md) |
-| Integration templates | [docs/integrations](docs/integrations) |
-
-Schemas live in [schemas](schemas). The source package is organized around the recorder/player, replay bundles, workflow engine, SuperAgent, intelligence, cloud store, and sandbox adapters.
-
-## Verify a checkout
-
-```bash
-python -m pip install -e ".[dev,tui,dashboard]"
-make verify
-make bench
-```
-
-`make verify` runs linting, typing, unit tests, package build checks, and distribution validation. Benchmark limits run separately through `make bench`.
+- [Documentation index](docs/README.md)
+- [Architecture and data contracts](docs/architecture.md)
+- [Workflow engine](docs/workflow.md)
+- [SuperAgent runtime](docs/superagent.md)
+- [Development and release verification](docs/development.md)
+- [Security policy](SECURITY.md)
+- [Changelog](CHANGELOG.md)
 
 ## Contributing
 
-```bash
-git clone https://github.com/ixchio/agent-vcr.git
-cd agent-vcr
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install -e ".[dev,tui,dashboard]"
-make verify
-```
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md) before opening an issue or pull request.
+Issues and pull requests are welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md), run
+`make verify`, and include a focused test for behavior changes.
 
 ## License
 
-Proprietary Software License — see [LICENSE](LICENSE).
+Agent VCR is open-source software released under the [MIT License](LICENSE).
 
-<sub>Copyright © 2026 QueryXLabs and <a href="https://github.com/ixchio">ixchio</a>. All rights reserved.</sub>
+<sub>Copyright © 2026 QueryXLabs and <a href="https://github.com/ixchio">ixchio</a>.</sub>
