@@ -53,10 +53,10 @@ class TestACIDWorkspace:
     def test_new_workspace_does_not_write_preexisting_secret_to_git_objects(self):
         workspace = Path(self.workspace)
         env_file = workspace / ".env"
-        env_file.write_text("TOKEN=preexisting-secret\n")
+        env_file.write_text("VCR_ESCROW_SENTINEL=baseline-only\n")
 
         acid = ACIDWorkspace(str(workspace))
-        acid.begin(session_id="new-workspace-secret")
+        acid.begin(session_id="new-workspace-local-file")
         acid.savepoint({"step": "baseline"})
 
         tracked = subprocess.run(
@@ -73,7 +73,7 @@ class TestACIDWorkspace:
             check=True,
         ).stdout
         assert tracked == ""
-        assert b"preexisting-secret" not in git_objects
+        assert b"VCR_ESCROW_SENTINEL=baseline-only" not in git_objects
 
     def test_begin_creates_isolation_branch(self):
         acid = ACIDWorkspace(self.workspace)
@@ -239,9 +239,9 @@ class TestACIDWorkspace:
 
     def test_rollback_restores_modified_ignored_file_without_leaking_secret(self):
         workspace = self._init_repo()
-        secret = b"API_TOKEN=original-secret-value\n\x00binary-tail\n"
+        local_payload = b"VCR_ESCROW_SENTINEL=baseline-only\n\x00binary-tail\n"
         env_file = workspace / ".env"
-        env_file.write_bytes(secret)
+        env_file.write_bytes(local_payload)
 
         recorder = VCRRecorder(output_dir=str(workspace / ".vcr"), auto_save=False)
         acid = ACIDWorkspace(str(workspace), recorder=recorder)
@@ -254,11 +254,11 @@ class TestACIDWorkspace:
         assert all(stat.S_IMODE(blob.stat().st_mode) == 0o600 for blob in blobs)
 
         acid.savepoint({"step": "baseline"})
-        env_file.write_bytes(b"API_TOKEN=agent-overwrite\n")
-        acid.savepoint({"step": "mutated secret"})
+        env_file.write_bytes(b"VCR_ESCROW_SENTINEL=agent-overwrite\n")
+        acid.savepoint({"step": "mutated local file"})
 
         acid.rollback(to_frame_index=0)
-        assert env_file.read_bytes() == secret
+        assert env_file.read_bytes() == local_payload
 
         acid.recorder.save()
         git_log = subprocess.run(
@@ -268,20 +268,20 @@ class TestACIDWorkspace:
             text=True,
             check=True,
         ).stdout
-        assert "original-secret-value" not in git_log
-        assert "agent-overwrite" not in git_log
+        assert "VCR_ESCROW_SENTINEL=baseline-only" not in git_log
+        assert "VCR_ESCROW_SENTINEL=agent-overwrite" not in git_log
         git_objects = subprocess.run(
             ["git", "cat-file", "--batch-all-objects", "--batch"],
             cwd=workspace,
             capture_output=True,
             check=True,
         ).stdout
-        assert b"original-secret-value" not in git_objects
-        assert b"agent-overwrite" not in git_objects
+        assert b"VCR_ESCROW_SENTINEL=baseline-only" not in git_objects
+        assert b"VCR_ESCROW_SENTINEL=agent-overwrite" not in git_objects
         for recording in (workspace / ".vcr").glob("*.vcr"):
             contents = recording.read_bytes()
-            assert b"original-secret-value" not in contents
-            assert b"agent-overwrite" not in contents
+            assert b"VCR_ESCROW_SENTINEL=baseline-only" not in contents
+            assert b"VCR_ESCROW_SENTINEL=agent-overwrite" not in contents
 
     def test_rollback_restores_deleted_untracked_file_content_and_permissions(self):
         workspace = self._init_repo()
