@@ -253,6 +253,30 @@ class ACIDWorkspace:
         # Save any final memory states
         self.recorder.save()
 
+        # A savepoint is not required immediately before commit. Finalize every
+        # Git-owned change on the isolated transaction branch before switching
+        # refs; otherwise Git carries dirty tracked files across checkout and a
+        # successful merge can omit the agent's latest work.
+        current_branch = self._git_stdout(["branch", "--show-current"])
+        if current_branch != self.branch_name:
+            raise RuntimeError(
+                "ACID commit must run on its transaction branch "
+                f"{self.branch_name!r}, not {current_branch or 'detached HEAD'!r}."
+            )
+        self._stage_transaction_files()
+        staged = self._git(["diff", "--cached", "--quiet"], check=False)
+        if staged.returncode == 1:
+            self._git(["commit", "-m", f"ACID FINALIZE: {self.session.session_id}"])
+        elif staged.returncode != 0:
+            staged.check_returncode()
+
+        dirty_tracked = self._dirty_tracked_paths()
+        if dirty_tracked:
+            sample = ", ".join(dirty_tracked[:5])
+            raise RuntimeError(
+                f"ACID commit could not finalize all tracked workspace changes: {sample}"
+            )
+
         # Merge the branch back to the original branch/ref.
         # Branch names are safe — validated by _sanitize_session_id().
         self._git(["checkout", self.base_ref or "main"])

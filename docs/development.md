@@ -371,8 +371,8 @@ python3 -m build --sdist --wheel
 ```
 
 Artifacts are generated in `dist/`:
-- `dist/ai_agent_vcr-1.5.2.tar.gz`
-- `dist/ai_agent_vcr-1.5.2-py3-none-any.whl`
+- `dist/ai_agent_vcr-1.5.3.tar.gz`
+- `dist/ai_agent_vcr-1.5.3-py3-none-any.whl`
 
 ### 8.2 Distribution Integrity Verification
 

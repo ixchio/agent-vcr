@@ -111,7 +111,7 @@ from agent_vcr.workflows import (
     create_workflow_backend,
 )
 
-__version__ = "1.5.2"
+__version__ = "1.5.3"
 __all__ = [
     "ApiTokenPublic",
     "AsyncVCRPlayer",

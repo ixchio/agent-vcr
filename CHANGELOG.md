@@ -7,12 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.3] - 2026-10-15
+
 ### Changed
 - Rebuilt the GitHub Pages documentation with a developer guide hub for recording, ACID rollback,
   Ghost Replay, Agent CI, integrations, and operations; corrected stale install commands and
   qualified replay/performance guarantees.
 
 ### Fixed
+- Finalized and committed all Git-owned workspace changes on the isolated ACID branch before
+  checkout and merge, so work performed after the last savepoint cannot be left dirty and omitted
+  from a successful `ACIDWorkspace.commit()`.
 - Rejected ACID escrow and restore paths whose resolved parent escapes the workspace through a
   directory symlink, in addition to existing absolute-path and `..` validation.
 - Made live WebSocket broadcasts snapshot their shared connection list under an `asyncio.Lock`,

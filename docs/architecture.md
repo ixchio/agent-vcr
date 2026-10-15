@@ -1,6 +1,6 @@
 # Agent VCR & SuperAgent: System Architecture Specification
 
-> **Version:** `1.5.2`
+> **Version:** `1.5.3`
 > **Distribution:** Open-source software under the MIT License
 > **Schema Contract:** `execution/v1` (frozen)
 > **Target Audience:** Principal Systems Engineers, Infrastructure Architects, Agent Developers

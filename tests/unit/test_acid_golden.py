@@ -545,6 +545,46 @@ class TestACIDWorkspace:
         # After commit, we should be on main and the file should exist
         assert os.path.exists(result_file)
 
+    def test_commit_finalizes_changes_made_after_last_savepoint(self):
+        workspace = self._init_repo()
+        tracked = workspace / "tracked.py"
+
+        acid = ACIDWorkspace(str(workspace))
+        acid.begin(session_id="finalize-after-savepoint")
+        acid.savepoint({"step": "last savepoint"})
+
+        tracked.write_text("VALUE = 2\n")
+        generated = workspace / "generated.py"
+        generated.write_text("FINAL = True\n")
+        acid.commit()
+
+        committed = subprocess.run(
+            ["git", "show", "HEAD:tracked.py"],
+            cwd=workspace,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+        status = subprocess.run(
+            ["git", "status", "--porcelain=v1", "--untracked-files=no"],
+            cwd=workspace,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+        committed_generated = subprocess.run(
+            ["git", "show", "HEAD:generated.py"],
+            cwd=workspace,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+        assert tracked.read_text() == "VALUE = 2\n"
+        assert committed == "VALUE = 2\n"
+        assert generated.read_text() == "FINAL = True\n"
+        assert committed_generated == "FINAL = True\n"
+        assert status == ""
+
     def test_full_acid_lifecycle(self):
         """The complete BEGIN → SAVEPOINT → ROLLBACK → RESUME → COMMIT cycle."""
         acid = ACIDWorkspace(self.workspace)

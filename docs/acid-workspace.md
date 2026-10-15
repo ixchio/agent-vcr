@@ -147,3 +147,9 @@ pytest tests/unit/test_acid_golden.py -v
 
 Issue [#2](https://github.com/ixchio/agent-vcr/issues/2) contains the original rollback-boundary
 question. Content-aware per-savepoint escrow shipped in `ai-agent-vcr==1.5.2`.
+
+`commit()` does not require callers to create a final savepoint. Before it switches back to the
+base ref, Agent VCR stages and commits every Git-owned change still present on the isolated ACID
+branch. The merge therefore includes tracked edits, deletions, and generated non-ignored files made
+after the last savepoint; if any tracked change remains dirty, commit stops instead of reporting a
+false success.
