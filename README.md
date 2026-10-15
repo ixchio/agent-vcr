@@ -16,6 +16,9 @@ model call.
 
 ![Agent VCR recording, rollback, and replay demo](https://raw.githubusercontent.com/ixchio/agent-vcr/main/docs/demo.gif)
 
+[Watch the 1080p demo](https://ixchio.github.io/agent-vcr/demo.html) ·
+[Download the MP4](https://raw.githubusercontent.com/ixchio/agent-vcr/main/docs/demo.mp4)
+
 ```bash
 pip install ai-agent-vcr
 ```
