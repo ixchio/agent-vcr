@@ -32,11 +32,12 @@ The deployment has four pieces:
    secret, not a webhook test payload.
 3. In Railway, create a project with a **PostgreSQL** service and an app
    service connected to this repository. Add a Volume to the app service at
-   `/data`.
+   `/data`. For an existing Railway service that uses Config as Code, set the config file path in
+   the app service settings to `/deploy/railway.json`.
 
 ## 2. Set Railway variables
 
-Copy the keys in [`.env.hosted.example`](../../.env.hosted.example) into the
+Copy the keys in [`deploy/.env.hosted.example`](../../deploy/.env.hosted.example) into the
 Railway app's **Variables** panel. Set `DATABASE_URL` as a reference to the
 Postgres service's internal `DATABASE_URL`; do not paste a database password
 into Git.
@@ -45,9 +46,9 @@ Use the generated Railway public domain as `AGENT_VCR_APP_URL` temporarily, or
 your final HTTPS application domain once it exists. The value must be an origin
 without a path, query, or trailing route.
 
-`railway.json` runs the idempotent database migration before each deployment
-and requires `/api/health` to return a successful health check before Railway
-marks the deployment active.
+[`deploy/railway.json`](../../deploy/railway.json) runs the idempotent database migration before
+each deployment and requires `/api/health` to return a successful health check before Railway marks
+the deployment active.
 
 ## 3. Deploy and verify
 

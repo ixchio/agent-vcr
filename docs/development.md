@@ -119,7 +119,7 @@ agent-vcr/
 │       ├── sentinel.py         # Trajectory monitor & auto-attachment hooks
 │       └── cli.py              # sentinel scan / watch commands
 └── tests/
-    ├── unit/                   # Unit test suite across Phases 0–7
+    ├── unit/                   # Unit tests organized by product capability
     ├── e2e/                    # End-to-end multi-step agent scenarios
     └── benchmarks/             # pytest-benchmark performance tests with hard budgets
 ```
@@ -134,14 +134,14 @@ Every architectural tier is covered by deterministic, hermetic tests that requir
 
 ```
 tests/unit/
-├── test_phase0_schema.py        # Schema stability, StateDiff, JSONL resilience, header sync
-├── test_phase1_bundle.py        # Replay bundles (.vcrb), manifest SHA-256, Ghost Replay modes
-├── test_phase2_ci.py            # Dataset management, regression engine, report generation
-├── test_phase3_cloud.py         # Projects, scoped HMAC tokens, chunked ingest, cloud client
-├── test_phase4_superagent.py    # Plan DAG builder, LiteLLM repair, policy/budget, memory redaction
-├── test_phase5_workflows.py     # WorkflowEngine, crash resume, LIFO saga compensation, cron
-├── test_phase6_intel.py         # Error clustering, 0-100 risk scoring, diagnosis, model routing
-├── test_phase7_cloud.py         # Sandboxes (Local/E2B), Qdrant vector memory, Inngest backend
+├── test_schema.py                # Schema stability, StateDiff, JSONL resilience, header sync
+├── test_bundle.py                # Replay bundles (.vcrb), manifest SHA-256, Ghost Replay modes
+├── test_ci_regression.py         # Dataset management, regression engine, report generation
+├── test_cloud.py                 # Projects, scoped HMAC tokens, chunked ingest, cloud client
+├── test_superagent.py            # Plan DAG builder, LiteLLM repair, policy/budget, memory redaction
+├── test_workflows.py             # WorkflowEngine, crash resume, LIFO saga compensation, cron
+├── test_intelligence.py          # Error clustering, 0-100 risk scoring, diagnosis, model routing
+├── test_cloud_store.py           # Sandboxes (Local/E2B), Qdrant vector memory, Inngest backend
 ├── test_acid_golden.py          # ACIDWorkspace git transactions & GoldenRunCache replay
 ├── test_sentinel.py             # Sentinel AST trajectory analyzer & complexity guards
 ├── test_server.py               # FastAPI ASGI endpoints & WebSocket live stream
@@ -168,17 +168,17 @@ pytest tests/unit/ -v
 make test-unit
 ```
 
-To run a specific phase or module:
+To run a specific capability or module:
 
 ```bash
 # Run durable workflow engine tests
-pytest tests/unit/test_phase5_workflows.py -v
+pytest tests/unit/test_workflows.py -v
 
 # Run SuperAgent runtime tests
-pytest tests/unit/test_phase4_superagent.py -v
+pytest tests/unit/test_superagent.py -v
 
 # Run reliability intelligence tests
-pytest tests/unit/test_phase6_intel.py -v
+pytest tests/unit/test_intelligence.py -v
 ```
 
 ### 3.3 End-to-End Tests

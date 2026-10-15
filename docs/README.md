@@ -71,15 +71,13 @@ recordings, but it does not sanitize data your application explicitly records.
 ```text
 src/                 distributable Python packages
 tests/               unit, end-to-end, and benchmark suites
-docs/                current guides, deployment notes, and historical plans
+docs/                current guides and deployment notes
 schemas/             versioned JSON contract artifacts
 examples/            runnable, credential-free examples where possible
 scripts/             repository maintenance and artifact-generation tools
 .github/             CI workflows and repository automation
 ```
 
-The [plans](plans/) directory is retained for traceability. Those files describe earlier design
-intent and are not current release commitments. Current behavior is defined by the package, tests,
-schemas, and the guides above.
+Current behavior is defined by the package, tests, schemas, and the guides above.
 
 Copyright © 2026 QueryXLabs and ixchio.
