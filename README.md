@@ -6,7 +6,7 @@
 [![CI](https://github.com/ixchio/agent-vcr/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/ixchio/agent-vcr/actions/workflows/ci.yml)
 [![MIT License](https://img.shields.io/pypi/l/ai-agent-vcr?style=flat-square)](https://github.com/ixchio/agent-vcr/blob/main/LICENSE)
 
-**The undo button for coding agents: record runs, roll back state and files, replay verified work,
+**The undo button for coding agents: record runs, roll back state and files, replay verified work
 and gate regressions in CI.**
 
 Agent VCR records an agent run as durable JSONL frames, joins state checkpoints to Git-backed
