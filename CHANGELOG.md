@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.4] - 2026-10-15
+
+### Changed
+- Replaced the legacy PyPI summary with the product-focused message used by the redesigned public
+  site: record runs, roll back state and files, replay verified work, and gate regressions in CI.
+
 ## [1.5.3] - 2026-10-15
 
 ### Changed

@@ -81,12 +81,12 @@ jobs:
         run: python tests/generate_agent_candidates.py
 
       - name: Compare with reviewed baselines
-        uses: ixchio/agent-vcr@v1.5.3
+        uses: ixchio/agent-vcr@v1.5.4
         with:
           dataset: refunds
           candidates-dir: .vcr/candidates
           fail-on: degraded
-          package: ai-agent-vcr==1.5.3
+          package: ai-agent-vcr==1.5.4
 ```
 
 Pin the action to a release tag or commit SHA according to your supply-chain policy. The composite

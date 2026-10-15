@@ -403,7 +403,7 @@ class TestSuperAgentRun:
         assert report.outcomes[0].output["inner_done"] is True
 
     def test_plan_model_export(self):
-        assert agent_vcr.__version__ == "1.5.3"
+        assert agent_vcr.__version__ == "1.5.4"
         for name in ("SuperAgent", "Plan", "PlanBuilder", "ToolGateway",
                      "MemoryStore", "Verifier", "Policy", "BudgetTracker",
                      "AutoApprover", "CallbackApprover", "RunReport"):
