@@ -117,7 +117,7 @@ agent-vcr/
 │   └── openhands_sentinel/     # Sentinel AST code quality guardian
 │       ├── analyzer.py         # AST parser: cyclomatic complexity, length explosion
 │       ├── sentinel.py         # Trajectory monitor & auto-attachment hooks
-│       └── cli.py              # sentinel check / watch commands
+│       └── cli.py              # sentinel scan / watch commands
 └── tests/
     ├── unit/                   # Unit test suite across Phases 0–7
     ├── e2e/                    # End-to-end multi-step agent scenarios
@@ -189,9 +189,11 @@ pytest tests/e2e/ -v --no-cov
 
 ---
 
-## 4. Performance Benchmarking & Hard Budgets
+## 4. Performance Benchmarking & Local Regression Budgets
 
-Agent VCR enforces **hard regression limits** on latency, memory, and disk usage. If an architectural change introduces overhead that violates these budgets, the benchmark suite immediately fails CI.
+Agent VCR enforces hard local regression limits on latency, memory, and disk usage. They keep
+changes comparable on CI runners; they are not universal production latency or throughput
+guarantees for every filesystem, machine, state size, or workload.
 
 ### 4.1 Running Benchmarks
 
@@ -213,7 +215,7 @@ make bench
 | `test_player_goto_frame_random_access` | Random-access seek to arbitrary frame | **$< 1.0\text{ ms}$** | Instant time-travel seeking in the interactive debugger. |
 | `test_player_compare_frames_diff` | State comparison between frames | **$< 2.0\text{ ms}$** | Rapid UI diff rendering and regression evaluations. |
 | `test_golden_cache_save_latency` | Task fingerprinting & golden cache write | **$< 50.0\text{ ms}$** | Low overhead when promoting runs to golden fixtures. |
-| `test_golden_cache_lookup_hit` | Fingerprint cache hit & mock injection | **$< 10.0\text{ ms}$** | Guarantees instant, zero-cost Ghost Replay playback. |
+| `test_golden_cache_lookup_hit` | Fingerprint cache hit & mock injection | **$< 10.0\text{ ms}$** | Detects local replay lookup regressions. |
 | `test_file_size_growth_linear` | Disk footprint per 1,000 frames | **$< 250\text{ KB}$** | Ensures million-frame archives remain storage-efficient. |
 | `test_memory_usage_bounded` | Memory growth over 10,000 frames | **$< 50\text{ MB}$ delta** | Prevents memory leaks in continuous daemon recorders. |
 
@@ -248,7 +250,7 @@ mypy src/agent_vcr/ src/openhands_sentinel/
 Run the built-in Sentinel guardian over local code:
 
 ```bash
-sentinel check src/
+sentinel scan src/
 ```
 
 ### 5.4 One-Command Local Verification

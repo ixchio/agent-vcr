@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 
 from agent_vcr.models import FrameMetadata
 from agent_vcr.recorder import VCRRecorder
-from agent_vcr.server import VCRServer
+from agent_vcr.server import VCRFileWatcher, VCRServer, WebSocketDisconnect
 
 
 @pytest.fixture
@@ -174,6 +174,34 @@ class TestWebSocket:
             response = ws.receive_json()
             assert response["type"] == "subscribed"
             assert response["session_id"] == "test-session"
+
+    @pytest.mark.asyncio
+    async def test_broadcast_removes_disconnected_clients_without_stopping_healthy_clients(
+        self, tmp_path
+    ):
+        watcher = VCRFileWatcher(tmp_path)
+
+        class HealthySocket:
+            def __init__(self):
+                self.messages = []
+
+            async def send_json(self, message):
+                self.messages.append(message)
+
+        class DroppedSocket:
+            async def send_json(self, message):
+                raise WebSocketDisconnect(code=1001)
+
+        healthy = HealthySocket()
+        dropped = DroppedSocket()
+        await watcher.connect(healthy)
+        await watcher.connect(dropped)
+
+        message = {"type": "frame_push", "frame": {"node_name": "parallel-tool"}}
+        await watcher.broadcast(message)
+
+        assert healthy.messages == [message]
+        assert watcher.connections == [healthy]
 
 
 class TestPushEndpoint:

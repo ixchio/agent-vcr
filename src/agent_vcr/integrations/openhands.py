@@ -712,7 +712,18 @@ class ACIDWorkspace:
 
     def _workspace_path(self, relative_path: str) -> Path:
         normalized = self._normalize_relative_path(relative_path)
-        return self.workspace_dir.joinpath(*PurePosixPath(normalized).parts)
+        candidate = self.workspace_dir.joinpath(*PurePosixPath(normalized).parts)
+
+        # Validate the resolved parent rather than the final path so a symlink
+        # itself may be escrowed without following its target. This also blocks
+        # a nested path from escaping through a pre-existing directory symlink.
+        try:
+            candidate.parent.resolve().relative_to(self.workspace_dir)
+        except ValueError as err:
+            raise ValueError(
+                f"Workspace path resolves outside the repository: {relative_path!r}"
+            ) from err
+        return candidate
 
     @staticmethod
     def _normalize_relative_path(path: str) -> str:

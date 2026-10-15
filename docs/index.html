@@ -16,7 +16,7 @@
     <meta property="og:type" content="website">
     <meta property="og:url" content="https://ixchio.github.io/agent-vcr/">
     <meta property="og:title" content="Agent VCR — ACID Transactions & Time-Travel Debugging for AI Agents">
-    <meta property="og:description" content="The only tool that rolls back the filesystem, not just the state object. ACID transactions, Ghost Replay (zero-cost re-runs), and Sentinel code guardian. Works with LangGraph, CrewAI, or raw Python.">
+    <meta property="og:description" content="A local-first intervention layer for AI agents: Git-backed filesystem rollback, secret-safe local-file escrow, identity-aware Ghost Replay, and Agent CI.">
     <meta property="og:image" content="https://ixchio.github.io/agent-vcr/demo.gif">
 
     <!-- Twitter Card -->
@@ -34,7 +34,7 @@
         "alternateName": "ai-agent-vcr",
         "applicationCategory": "DeveloperApplication",
         "operatingSystem": "Cross-platform",
-        "description": "ACID transactions, time-travel debugging, and zero-cost Ghost Replay for AI agents. Rollback filesystem + state. Works with LangGraph, CrewAI, or raw Python.",
+        "description": "ACID workspace rollback, time-travel debugging, identity-aware Ghost Replay, and regression gates for AI agents.",
         "url": "https://ixchio.github.io/agent-vcr/",
         "softwareVersion": "1.5.2",
         "license": "https://github.com/ixchio/agent-vcr/blob/main/LICENSE",
@@ -65,12 +65,12 @@
             <a href="#" class="nav-logo">📼 Agent VCR</a>
             <nav class="nav-links">
                 <a href="demo.html">▶ Demo</a>
+                <a href="guides.html">Docs</a>
                 <a href="#features">Features</a>
                 <a href="#sentinel">Sentinel</a>
                 <a href="#integrations">Integrations</a>
                 <a href="#api">API</a>
-                <a href="#compare">Compare</a>
-                <a href="#faq">vs LangGraph</a>
+                <a href="#compare">Where it fits</a>
             </nav>
             <div class="nav-actions">
                 <a href="https://github.com/ixchio/agent-vcr" class="btn-ghost" target="_blank">GitHub ↗</a>
@@ -88,8 +88,8 @@
                 <span class="hero-title-accent">for AI agents.</span>
             </h1>
             <p class="hero-sub">
-                Your agent failed on step 8 of 10. Observability tools show you what happened.<br>
-                <strong>Agent VCR rolls back the filesystem, replays for free, and resumes from step 8.</strong>
+                The undo button and replay layer for Claude Code, OpenHands, LangGraph, and stateful agents.<br>
+                <strong>Record the run, restore the workspace, resume safely, and regression-gate the fix.</strong>
             </p>
             <div class="hero-cta">
                 <a href="#quick-start" class="btn-solid large">Install in 30 seconds</a>
@@ -99,7 +99,7 @@
             <div class="hero-metrics">
                 <div class="metric">
                     <span class="metric-val">&lt;5ms</span>
-                    <span class="metric-label">overhead per step</span>
+                    <span class="metric-label">local CI regression ceiling</span>
                 </div>
                 <div class="metric-divider"></div>
                 <div class="metric">
@@ -108,13 +108,13 @@
                 </div>
                 <div class="metric-divider"></div>
                 <div class="metric">
-                    <span class="metric-val">0</span>
-                    <span class="metric-label">vendor lock-in</span>
+                    <span class="metric-val">MIT</span>
+                    <span class="metric-label">open-source license</span>
                 </div>
                 <div class="metric-divider"></div>
                 <div class="metric">
-                    <span class="metric-val">3</span>
-                    <span class="metric-label">lines to integrate</span>
+                    <span class="metric-val">3.9–3.13</span>
+                    <span class="metric-label">tested Python versions</span>
                 </div>
             </div>
         </div>
@@ -137,16 +137,15 @@
                 <div class="col-block problem-block">
                     <div class="block-tag red">The Problem</div>
                     <h2>Debugging agents is a nightmare.</h2>
-                    <p>When your LangGraph or CrewAI agent fails on step 8 out of 10, existing tools only tell you
-                        <em>what</em> went wrong. To fix it, you re-run all 10 steps from scratch.
-                    </p>
+                    <p>When an agent fails late in a repository-changing run, a trace alone cannot restore the
+                        files it modified or recover the local configuration it deleted.</p>
                     <p>Every logic error costs minutes of wall time and dollars in wasted LLM tokens. At scale, this
                         kills iteration speed entirely.</p>
                     <ul class="pain-list">
                         <li>Re-run entire chain for every small fix</li>
-                        <li>Can't inspect intermediate state without breakpoints</li>
-                        <li>LangSmith / LangFuse are read-only observers</li>
-                        <li>No way to test prompt changes mid-chain</li>
+                        <li>State and filesystem recovery are separate problems</li>
+                        <li>Pre-existing ignored files can be mutated in place</li>
+                        <li>A fixed run still needs a repeatable regression gate</li>
                     </ul>
                 </div>
                 <div class="col-block solution-block">
@@ -185,7 +184,7 @@
                                 <span class="dots"><span></span><span></span><span></span></span>
                                 <span class="code-label">terminal</span>
                             </div>
-                            <pre><code>Install from your licensed distribution</code></pre>
+                            <pre><code>pip install ai-agent-vcr</code></pre>
                         </div>
                     </div>
                 </div>
@@ -204,8 +203,9 @@
 recorder = VCRRecorder()
 recorder.start_session(<span class="str">"debug_run"</span>)
 
-<span class="cm"># Your existing agent code — unchanged</span>
-result = my_agent.run(query)
+before = {<span class="str">"query"</span>: query}
+result = my_agent.run(before)
+recorder.record_step(<span class="str">"agent"</span>, before, result)
 
 recorder.save()  <span class="cm"># → .vcr/debug_run.vcr</span></code></pre>
                         </div>
@@ -222,6 +222,7 @@ recorder.save()  <span class="cm"># → .vcr/debug_run.vcr</span></code></pre>
                                 <span class="code-label">debug.py</span>
                             </div>
                             <pre><code><span class="kw">from</span> agent_vcr <span class="kw">import</span> VCRPlayer
+<span class="kw">from</span> agent_vcr.models <span class="kw">import</span> ResumeConfig
 
 player = VCRPlayer.load(<span class="str">".vcr/debug_run.vcr"</span>)
 
@@ -229,11 +230,12 @@ player = VCRPlayer.load(<span class="str">".vcr/debug_run.vcr"</span>)
 state = player.goto_frame(<span class="num">7</span>)
 <span class="kw">print</span>(state)          <span class="cm"># Inspect full state</span>
 
-<span class="cm"># Fix the bad state</span>
-state[<span class="str">"prompt"</span>] = <span class="str">"Corrected prompt"</span>
-
-<span class="cm"># Resume from step 7 forward</span>
-player.resume(agent_callable, from_frame=<span class="num">7</span>)</code></pre>
+<span class="cm"># Resume from step 7 with an explicit override</span>
+config = ResumeConfig(
+    from_frame=<span class="num">7</span>,
+    state_overrides={<span class="str">"prompt"</span>: <span class="str">"Corrected prompt"</span>},
+)
+player.resume(agent_callable, config)</code></pre>
                         </div>
                     </div>
                 </div>
@@ -280,18 +282,18 @@ player.resume(agent_callable, from_frame=<span class="num">7</span>)</code></pre
                 </div>
                 <div class="feature-item">
                     <div class="feature-icon-wrap">⚡</div>
-                    <h3>&lt;5ms Overhead</h3>
-                    <p>P99 recording latency under 5ms. Benchmarked continuously in CI. Safe for production use.</p>
+                    <h3>Measured Regression Budgets</h3>
+                    <p>The repository enforces local benchmark ceilings in CI. Measure your own state sizes, disk, and workload before setting production SLOs.</p>
                 </div>
                 <div class="feature-item">
                     <div class="feature-icon-wrap">🔄</div>
                     <h3>Async Native</h3>
-                    <p>Full AsyncVCRRecorder and AsyncVCRPlayer. Zero blocking I/O, built for modern asyncio agents.</p>
+                    <p>Async recorder and player APIs use asynchronous file I/O. Concurrent recorder writes are serialized with an <code>asyncio.Lock</code>.</p>
                 </div>
                 <div class="feature-item">
                     <div class="feature-icon-wrap">🖥</div>
                     <h3>Terminal TUI</h3>
-                    <p>Ship with a Textual TUI debugger. Run <code>vcr</code> in your terminal to browse sessions
+                    <p>Ships with a Textual TUI debugger. Run <code>vcr tui</code> in your terminal to browse sessions
                         interactively.</p>
                 </div>
                 <div class="feature-item">
@@ -303,12 +305,12 @@ player.resume(agent_callable, from_frame=<span class="num">7</span>)</code></pre
                 <div class="feature-item">
                     <div class="feature-icon-wrap">🔒</div>
                     <h3>ACID Transactions</h3>
-                    <p>BEGIN, SAVEPOINT, ROLLBACK, COMMIT — backed by git. Rollback physically reverts files on disk, not just in-memory state.</p>
+                    <p>Git restores tracked files; private SHA-256 escrow restores eligible pre-existing untracked and ignored files without committing their bytes.</p>
                 </div>
                 <div class="feature-item">
                     <div class="feature-icon-wrap">👻</div>
                     <h3>Ghost Replay</h3>
-                    <p>Save a successful run as a ghost. Next time you hit the same task — replay it instantly. Zero LLM calls, zero tokens, zero cost.</p>
+                    <p>A full task-and-identity match returns reviewed outputs without model or tool calls. Changed identities miss safely.</p>
                 </div>
                 <div class="feature-item" style="border: 1px solid rgba(0, 212, 170, 0.3); background: rgba(0, 212, 170, 0.05);">
                     <div class="feature-icon-wrap">🛡️</div>
@@ -324,7 +326,7 @@ player.resume(agent_callable, from_frame=<span class="num">7</span>)</code></pre
         <div class="section-inner">
             <div class="section-header">
                 <h2>Integrations</h2>
-                <p>Drop into any framework in one line.</p>
+                <p>Use a native adapter or map your framework's lifecycle events to the recorder API.</p>
             </div>
 
             <div class="tab-group">
@@ -342,18 +344,27 @@ player.resume(agent_callable, from_frame=<span class="num">7</span>)</code></pre
                             <span class="dots"><span></span><span></span><span></span></span>
                             <span class="code-label">langgraph_agent.py</span>
                         </div>
-                        <pre><code><span class="kw">from</span> langgraph.graph <span class="kw">import</span> StateGraph
+                        <pre><code><span class="kw">from</span> typing <span class="kw">import</span> TypedDict
+
+<span class="kw">from</span> langgraph.graph <span class="kw">import</span> StateGraph
 <span class="kw">from</span> agent_vcr <span class="kw">import</span> VCRRecorder
 <span class="kw">from</span> agent_vcr.integrations.langgraph <span class="kw">import</span> VCRLangGraph
 
-graph = StateGraph()
-graph.add_node(<span class="str">"planner"</span>, planner_node)
-graph.add_node(<span class="str">"coder"</span>, coder_node)
+<span class="kw">class</span> AgentState(TypedDict):
+    query: str
 
-<span class="cm"># Add VCR in one line</span>
+builder = StateGraph(AgentState)
 recorder = VCRRecorder()
-graph = VCRLangGraph(recorder).wrap_graph(graph)
+recorder.start_session(<span class="str">"langgraph-run"</span>)
+instrumentation = VCRLangGraph(recorder)
 
+builder.add_node(<span class="str">"planner"</span>, instrumentation.wrap_node(<span class="str">"planner"</span>, planner_node))
+builder.add_node(<span class="str">"coder"</span>, instrumentation.wrap_node(<span class="str">"coder"</span>, coder_node))
+builder.set_entry_point(<span class="str">"planner"</span>)
+builder.add_edge(<span class="str">"planner"</span>, <span class="str">"coder"</span>)
+builder.set_finish_point(<span class="str">"coder"</span>)
+
+graph = builder.compile()
 result = graph.invoke({<span class="str">"query"</span>: <span class="str">"Build a todo app"</span>})
 recorder.save()</code></pre>
                     </div>
@@ -455,97 +466,26 @@ state = <span class="kw">await</span> player.goto_frame(<span class="num">3</spa
         </div>
     </section>
 
-    <!-- COMPARE -->
+    <!-- POSITIONING -->
     <section class="compare-section" id="compare">
         <div class="section-inner">
             <div class="section-header">
-                <h2>How does it compare?</h2>
-                <p>Agent VCR is the only tool that lets you <em>change</em> what happened.</p>
+                <h2>Where Agent VCR fits</h2>
+                <p>Use observability for fleet visibility. Add Agent VCR when the run itself needs an undo, replay, or regression boundary.</p>
             </div>
-            <div class="compare-table-wrap">
-                <table class="compare-table">
-                    <thead>
-                        <tr>
-                            <th>Feature</th>
-                            <th class="highlight-col">Agent VCR</th>
-                            <th>LangSmith</th>
-                            <th>LangFuse</th>
-                            <th>Arize Phoenix</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <tr>
-                            <td>Record execution traces</td>
-                            <td class="highlight-col"><span class="yes">✓</span></td>
-                            <td><span class="yes">✓</span></td>
-                            <td><span class="yes">✓</span></td>
-                            <td><span class="yes">✓</span></td>
-                        </tr>
-                        <tr>
-                            <td>Time-travel to any step</td>
-                            <td class="highlight-col"><span class="yes">✓</span></td>
-                            <td><span class="no">✗</span></td>
-                            <td><span class="no">✗</span></td>
-                            <td><span class="no">✗</span></td>
-                        </tr>
-                        <tr>
-                            <td><strong>Edit state &amp; resume</strong></td>
-                            <td class="highlight-col"><span class="yes">✓</span></td>
-                            <td><span class="no">✗</span></td>
-                            <td><span class="no">✗</span></td>
-                            <td><span class="no">✗</span></td>
-                        </tr>
-                        <tr>
-                            <td>Fork from any frame</td>
-                            <td class="highlight-col"><span class="yes">✓</span></td>
-                            <td><span class="no">✗</span></td>
-                            <td><span class="no">✗</span></td>
-                            <td><span class="no">✗</span></td>
-                        </tr>
-                        <tr>
-                            <td><strong>ACID transactions</strong></td>
-                            <td class="highlight-col"><span class="yes">✓</span></td>
-                            <td><span class="no">✗</span></td>
-                            <td><span class="no">✗</span></td>
-                            <td><span class="no">✗</span></td>
-                        </tr>
-                        <tr>
-                            <td><strong>👻 Ghost Replay</strong></td>
-                            <td class="highlight-col"><span class="yes">✓</span></td>
-                            <td><span class="no">✗</span></td>
-                            <td><span class="no">✗</span></td>
-                            <td><span class="no">✗</span></td>
-                        </tr>
-                        <tr>
-                            <td><strong>Real-time code guardian</strong></td>
-                            <td class="highlight-col"><span class="yes">✓ Sentinel</span></td>
-                            <td><span class="no">✗</span></td>
-                            <td><span class="no">✗</span></td>
-                            <td><span class="no">✗</span></td>
-                        </tr>
-                        <tr>
-                            <td>Self-hosted / local-first</td>
-                            <td class="highlight-col"><span class="yes">✓</span></td>
-                            <td><span class="no">Cloud only</span></td>
-                            <td><span class="yes">✓</span></td>
-                            <td><span class="yes">✓</span></td>
-                        </tr>
-                        <tr>
-                            <td>Git-friendly format</td>
-                            <td class="highlight-col"><span class="yes">✓ JSONL</span></td>
-                            <td><span class="no">✗</span></td>
-                            <td><span class="no">✗</span></td>
-                            <td><span class="no">✗</span></td>
-                        </tr>
-                        <tr>
-                            <td>Setup lines of code</td>
-                            <td class="highlight-col"><span class="yes">3</span></td>
-                            <td>~15</td>
-                            <td>~10</td>
-                            <td>~10</td>
-                        </tr>
-                    </tbody>
-                </table>
+            <div class="features-grid">
+                <div class="feature-item">
+                    <h3>Use it with observability</h3>
+                    <p>Keep your telemetry platform for traces, dashboards, and evaluation. Agent VCR focuses on local execution recovery and reproducible evidence.</p>
+                </div>
+                <div class="feature-item">
+                    <h3>Use it with framework checkpoints</h3>
+                    <p>LangGraph checkpointers persist graph state. Agent VCR adds portable JSONL, filesystem rollback, replay bundles, and framework-neutral CI datasets.</p>
+                </div>
+                <div class="feature-item">
+                    <h3>Know the boundary</h3>
+                    <p>Git cannot undo email, payment, or third-party API effects. Put consequential tools behind approval and explicit workflow compensation.</p>
+                </div>
             </div>
         </div>
     </section>
@@ -670,12 +610,13 @@ ResumeConfig(
                 </div>
                 <div class="col-block solution-block">
                     <div class="block-tag">With ACID</div>
-                    <h2>Rollback reverts everything.</h2>
-                    <p>Each agent session runs on an isolated git branch. SAVEPOINT checkpoints both state and filesystem together. ROLLBACK runs <code>git reset --hard</code> — files are gone from disk, not just hidden.</p>
+                    <h2>Rollback restores the selected boundary.</h2>
+                    <p>Git savepoints restore tracked content. Per-savepoint SHA-256 escrow restores eligible pre-existing untracked and ignored files such as <code>.env</code> without putting their bytes in Git or VCR recordings.</p>
                     <ul class="solution-list">
                         <li>BEGIN creates an isolated branch</li>
                         <li>SAVEPOINT = state + filesystem checkpoint</li>
-                        <li>ROLLBACK = physical file revert</li>
+                        <li>ROLLBACK = tracked restore + local-file escrow</li>
+                        <li>Hallucinated local files are removed</li>
                         <li>COMMIT = clean merge into main</li>
                     </ul>
                 </div>
@@ -693,7 +634,7 @@ acid = ACIDWorkspace(<span class="str">"/my/workspace"</span>, recorder=recorder
 
 acid.begin(session_id=<span class="str">"task-001"</span>)
 acid.savepoint(state, node_name=<span class="str">"coder"</span>)
-acid.rollback(to_frame_index=<span class="num">3</span>)  <span class="cm"># files physically reverted</span>
+acid.rollback(to_frame_index=<span class="num">0</span>)  <span class="cm"># state + files restored</span>
 acid.commit()                        <span class="cm"># clean merge</span></code></pre>
             </div>
         </div>
@@ -703,8 +644,8 @@ acid.commit()                        <span class="cm"># clean merge</span></code
     <section class="features-section" id="golden-cache">
         <div class="section-inner">
             <div class="section-header">
-                <h2>👻 Ghost Replay — Never Pay for the Same Task Twice</h2>
-                <p>When your agent succeeds, save the run as a ghost. Next time, it replays instantly — zero tokens, zero dollars, 1ms.</p>
+                <h2>👻 Ghost Replay — Reuse a Verified Execution</h2>
+                <p>A full task-and-identity match returns recorded outputs without another model or tool call. Hybrid and branch modes rerun changed work explicitly.</p>
             </div>
             <div class="code-block" style="max-width: 720px; margin: 0 auto;">
                 <div class="code-bar">
@@ -714,19 +655,25 @@ acid.commit()                        <span class="cm"># clean merge</span></code
                 <pre><code><span class="kw">from</span> agent_vcr.golden_cache <span class="kw">import</span> GoldenRunCache
 
 cache = GoldenRunCache()
+identity = cache.build_identity(
+    model=<span class="str">"provider/model@revision"</span>,
+    prompt_hash=<span class="str">"sha256:prompt"</span>,
+    code_commit=<span class="str">"0123456789abcdef"</span>,
+    tool_schema_hash=<span class="str">"sha256:tools"</span>,
+)
 
 <span class="cm"># After a successful run — save as a ghost</span>
-cache.save_golden_run(<span class="str">"Build a REST API"</span>, recorder)
+cache.save_golden_run(<span class="str">"Build a REST API"</span>, recorder, identity=identity)
 
-<span class="cm"># Next time — ghost replays instantly, $0.00</span>
-outputs, ledger = cache.replay(<span class="str">"Build a REST API"</span>)
+<span class="cm"># Full identity hit — no provider execution</span>
+outputs, ledger = cache.replay(<span class="str">"Build a REST API"</span>, identity=identity)
 print(ledger)
 <span class="cm"># CostLedger(saved=100% | $0.0123 | 4,100 tokens | 2,349ms)</span></code></pre>
             </div>
             <div class="features-grid" style="margin-top: 2rem;">
                 <div class="feature-item">
                     <h3>Deterministic Fingerprinting</h3>
-                    <p>Tasks are SHA-256 hashed for reliable lookups. Same task description always maps to the same ghost run — no ambiguity.</p>
+                    <p>Task and canonical identity JSON are SHA-256 fingerprinted. Nested key order is stable; prompt, model, code, tool, or dependency drift can invalidate reuse.</p>
                 </div>
                 <div class="feature-item">
                     <h3>Cost Ledger</h3>
@@ -745,7 +692,7 @@ print(ledger)
         <div class="section-inner">
             <div class="section-header">
                 <h2>🛡️ OpenHands Sentinel</h2>
-                <p style="max-width: 640px; margin: 0 auto;">Real-time code quality guardian for AI agents. Watches every file write, catches violations instantly, warns the agent to self-correct.</p>
+                <p style="max-width: 640px; margin: 0 auto;">Local AST quality guard for AI agents. It can inspect OpenHands file-write events, record findings, and feed warnings back into the active session.</p>
             </div>
 
             <div class="two-col">
@@ -762,12 +709,12 @@ print(ledger)
                 </div>
                 <div class="col-block solution-block">
                     <div class="block-tag">Sentinel Catches It</div>
-                    <h2>Self-correcting agents.</h2>
-                    <p>Sentinel hooks into the OpenHands EventStream and runs instant AST analysis on every file write. When violations are detected, it warns the agent — which self-corrects in the same session.</p>
+                    <h2>Quality feedback inside the run.</h2>
+                    <p>Sentinel hooks into the OpenHands EventStream and runs local AST analysis after file writes. When violations are detected, it emits an auditable warning the runtime can return to the agent.</p>
                     <ul class="solution-list">
                         <li>Cross-file duplicate function detection</li>
                         <li>Complexity & length spike alerts</li>
-                        <li>Agent self-corrects automatically</li>
+                        <li>Warnings can be fed back to the active agent</li>
                         <li>Full audit trail via agent-vcr</li>
                     </ul>
                 </div>
@@ -800,8 +747,8 @@ print(ledger)
 
             <div class="features-grid" style="margin-top: 2rem;">
                 <div class="feature-item">
-                    <h3>Zero Dependencies</h3>
-                    <p>Uses only Python's built-in <code>ast</code> module. No API keys, no cloud calls, no external services. Your code never leaves your machine.</p>
+                    <h3>Local AST Engine</h3>
+                    <p>The analysis engine uses Python's built-in <code>ast</code> module. It needs no model key or cloud analysis service, so source stays in the local process.</p>
                 </div>
                 <div class="feature-item">
                     <h3>Trajectory-Aware</h3>
@@ -838,12 +785,12 @@ print(ledger)
                             <td style="text-align:center;">✅</td>
                         </tr>
                         <tr style="border-bottom:1px solid var(--border-light);">
-                            <td style="padding:10px 8px;"><strong>Rollback files on disk</strong> (<code>git reset --hard</code>)</td>
+                            <td style="padding:10px 8px;"><strong>Rollback files on disk</strong> (Git + local escrow)</td>
                             <td style="text-align:center;">❌</td>
                             <td style="text-align:center; color:var(--green);">✅</td>
                         </tr>
                         <tr style="border-bottom:1px solid var(--border-light);">
-                            <td style="padding:10px 8px;"><strong>Ghost Replay</strong> (zero tokens, zero cost)</td>
+                            <td style="padding:10px 8px;"><strong>Full identity-matched Ghost Replay</strong></td>
                             <td style="text-align:center;">❌</td>
                             <td style="text-align:center; color:var(--green);">✅</td>
                         </tr>
@@ -853,24 +800,19 @@ print(ledger)
                             <td style="text-align:center; color:var(--green);">✅</td>
                         </tr>
                         <tr style="border-bottom:1px solid var(--border-light);">
-                            <td style="padding:10px 8px;">Works with CrewAI, raw Python, any framework</td>
-                            <td style="text-align:center;">❌ LangGraph only</td>
-                            <td style="text-align:center; color:var(--green);">✅</td>
+                            <td style="padding:10px 8px;">Runtime scope</td>
+                            <td style="text-align:center;">LangGraph</td>
+                            <td style="text-align:center; color:var(--green);">Framework-neutral recorder + adapters</td>
                         </tr>
                         <tr style="border-bottom:1px solid var(--border-light);">
-                            <td style="padding:10px 8px;">JSONL format (git-diffable, streamable)</td>
-                            <td style="text-align:center;">❌ Opaque</td>
-                            <td style="text-align:center; color:var(--green);">✅</td>
-                        </tr>
-                        <tr>
-                            <td style="padding:10px 8px;">Session forking with parallel comparison</td>
-                            <td style="text-align:center;">❌</td>
-                            <td style="text-align:center; color:var(--green);">✅</td>
+                            <td style="padding:10px 8px;">Portable execution artifact</td>
+                            <td style="text-align:center;">Checkpointer backend contract</td>
+                            <td style="text-align:center; color:var(--green);">JSONL + SHA-256 replay bundle</td>
                         </tr>
                     </tbody>
                 </table>
                 <p style="margin-top:1.5rem; color:var(--text-muted); font-size:0.9rem; text-align:center;">
-                    When your agent writes files to disk and then fails, the checkpointer rolls back the state object but <strong style="color:var(--white);">the files stay</strong>. Agent VCR's ACID workspace runs <code>git reset --hard</code> and physically deletes them. That's the difference between "debugger" and "undo."
+                    LangGraph's checkpointer and Agent VCR solve different layers. Use graph-native persistence for graph state; add <code>ACIDWorkspace</code> when tracked files and eligible pre-existing local files must return to the same boundary.
                 </p>
             </div>
         </div>
@@ -886,12 +828,13 @@ print(ledger)
                     <pre><code>pip install ai-agent-vcr</code></pre>
                 </div>
                 <div class="cta-links">
+                    <a href="guides.html" class="btn-solid large">Read the docs</a>
                     <a href="https://github.com/ixchio/agent-vcr" class="btn-solid large" target="_blank">View on
                         GitHub</a>
                     <a href="https://github.com/ixchio/agent-vcr/issues" class="btn-ghost large" target="_blank">Report
                         a bug</a>
                 </div>
-                <p class="cta-note">MIT licensed · Local-first runtime</p>
+                <p class="cta-note">MIT licensed · Local-first runtime · Python 3.9–3.13</p>
             </div>
         </div>
     </section>
@@ -905,11 +848,13 @@ print(ledger)
             </div>
             <div class="footer-links">
                 <a href="https://github.com/ixchio/agent-vcr" target="_blank">GitHub</a>
+                <a href="guides.html">Docs</a>
                 <a href="https://github.com/ixchio/agent-vcr/blob/main/LICENSE" target="_blank">License</a>
                 <a href="https://github.com/ixchio/agent-vcr/issues" target="_blank">Issues</a>
                 <a href="https://github.com/ixchio/agent-vcr/blob/main/CONTRIBUTING.md" target="_blank">Contributing</a>
             </div>
         </div>
+        <p style="text-align:center; color:var(--text-muted); font-size:0.8rem; padding:0 1rem 1.5rem;">Copyright © 2026 QueryXLabs and ixchio.</p>
     </footer>
 
     <script src="script.js"></script>

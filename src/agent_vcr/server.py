@@ -118,16 +118,32 @@ class VCRFileWatcher(FileSystemEventHandler):
 
     async def broadcast(self, message: dict) -> None:
         """Broadcast a message to all connected clients."""
-        disconnected = []
+        # Never iterate the shared list while connect/disconnect may mutate it.
+        # Do not hold the lock during network I/O: one slow client must not block
+        # registration or cleanup for every other client.
+        async with self._lock:
+            connections = tuple(self.connections)
 
-        for conn in self.connections:
+        disconnected: list[WebSocket] = []
+        for conn in connections:
             try:
                 await conn.send_json(message)
+            except WebSocketDisconnect:
+                disconnected.append(conn)
             except Exception:
+                logger.debug("WebSocket broadcast failed; dropping client", exc_info=True)
                 disconnected.append(conn)
 
-        for conn in disconnected:
-            await self.disconnect(conn)
+        if disconnected:
+            async with self._lock:
+                for conn in disconnected:
+                    if conn in self.connections:
+                        self.connections.remove(conn)
+                logger.info(
+                    "Removed %d disconnected WebSocket client(s) (%d remaining)",
+                    len(disconnected),
+                    len(self.connections),
+                )
 
     def _schedule_broadcast(self, message: dict) -> None:
         """Thread-safe broadcast scheduling from watchdog threads."""
@@ -1022,8 +1038,10 @@ class VCRServer:
                     elif data.get("action") == "ping":
                         await websocket.send_json({"type": "pong"})
             except WebSocketDisconnect:
-                await self.watcher.disconnect(websocket)
+                pass
             except Exception:
+                logger.debug("WebSocket client loop stopped unexpectedly", exc_info=True)
+            finally:
                 await self.watcher.disconnect(websocket)
 
     def _to_mermaid(self, player: VCRPlayer) -> str:

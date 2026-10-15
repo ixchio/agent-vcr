@@ -342,7 +342,12 @@ as versioned JSON Schemas under
 
 ## Documentation
 
+- [Live documentation site](https://ixchio.github.io/agent-vcr/)
 - [Documentation index](https://github.com/ixchio/agent-vcr/blob/main/docs/README.md)
+- [Recording, time travel, and Ghost Replay](https://github.com/ixchio/agent-vcr/blob/main/docs/recording-and-replay.md)
+- [ACID workspace rollback and local-file escrow](https://github.com/ixchio/agent-vcr/blob/main/docs/acid-workspace.md)
+- [Agent CI regression gates](https://github.com/ixchio/agent-vcr/blob/main/docs/agent-ci.md)
+- [Framework and platform integrations](https://github.com/ixchio/agent-vcr/blob/main/docs/integrations/README.md)
 - [Architecture and data contracts](https://github.com/ixchio/agent-vcr/blob/main/docs/architecture.md)
 - [Workflow engine](https://github.com/ixchio/agent-vcr/blob/main/docs/workflow.md)
 - [SuperAgent runtime](https://github.com/ixchio/agent-vcr/blob/main/docs/superagent.md)

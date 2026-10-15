@@ -18,7 +18,7 @@ Agent VCR introduces **Time-Travel Infrastructure** for autonomous AI systems. T
 | **commit** | Checkpoint Frame (`FrameType.CHECKPOINT`) | State + Memory + FS Snapshot frozen |
 | **branch** | Fork Execution (`ResumeConfig(mode=FORK)`) | Parallel trial without clobbering baseline |
 | **diff** | RFC-6902 / Canonical `StateDiff` | Exact delta of inputs, outputs, and memory |
-| **revert** | ACID Rollback (`ACIDWorkspace.rollback()`) | Physical filesystem reversion via git |
+| **revert** | ACID Rollback (`ACIDWorkspace.rollback()`) | Tracked Git restore + private local-file escrow |
 | **fixture** | Ghost Replay (`GoldenRunCache`) | Zero-token, zero-cost deterministic playback |
 | **CI gate** | Agent CI (`regression.py` + `action.yml`) | 9-dimension non-regression verification |
 
@@ -75,7 +75,7 @@ Agent VCR is structured into five distinct, loosely coupled architectural tiers:
 │  - execution/v1 Frozen Schema (Forward-compatible JSONL format)                        │
 │  - Atomic Append Recorder (fsync on boundary, mkstemp manifest swap)                  │
 │  - Player & Random Access Navigation (O(1) frame lookup, integrity verification)       │
-│  - ACIDWorkspace (Git branch isolation acid/<sid>, hard filesystem rollback)           │
+│  - ACIDWorkspace (Git savepoints + content-aware local-file escrow)                    │
 │  - Sentinel AST Code Guardian (Static trajectory analyzer, cyclomatic guards)          │
 │  - Golden Run Cache (Task fingerprinting -> Zero-token Ghost Replay)                   │
 └────────────────────────────────────────────────────────────────────────────────────────┘

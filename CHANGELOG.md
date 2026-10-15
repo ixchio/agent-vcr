@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Rebuilt the GitHub Pages documentation with a developer guide hub for recording, ACID rollback,
+  Ghost Replay, Agent CI, integrations, and operations; corrected stale install commands and
+  qualified replay/performance guarantees.
+
+### Fixed
+- Rejected ACID escrow and restore paths whose resolved parent escapes the workspace through a
+  directory symlink, in addition to existing absolute-path and `..` validation.
+- Made live WebSocket broadcasts snapshot their shared connection list under an `asyncio.Lock`,
+  remove disconnected clients safely, and unregister every endpoint connection in `finally`.
+- Added regression coverage for concurrent async JSONL writes, immutable SHA-256 escrow blobs over
+  repeated rollback, recursively canonical Ghost Replay identities, path escapes, and dropped
+  WebSocket clients.
+
 ## [1.5.2] - 2026-10-14
 
 ### Changed

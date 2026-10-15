@@ -1,5 +1,7 @@
 """Async unit tests for AsyncVCRRecorder."""
 
+import asyncio
+import json
 import tempfile
 
 import pytest
@@ -98,6 +100,37 @@ class TestAsyncVCRRecorder:
             player = await AsyncVCRPlayer.load(path)
             assert player.session.session_id == "save-test"
             assert len(player.frames) == 2
+
+    async def test_concurrent_autosave_writes_complete_json_lines(self):
+        """Parallel producers must serialize state mutation and JSONL appends."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            recorder = AsyncVCRRecorder(
+                output_dir=tmpdir,
+                auto_save=True,
+                buffer_size=1,
+            )
+            await recorder.start_session(session_id="concurrent-async")
+
+            async def write_frame(index: int) -> None:
+                await asyncio.sleep(0)
+                await recorder.record_step(
+                    node_name=f"parallel-{index}",
+                    input_state={"index": index},
+                    output_state={"index": index, "done": True},
+                )
+
+            await asyncio.gather(*(write_frame(index) for index in range(100)))
+            path = await recorder.save()
+
+            records = [json.loads(line) for line in path.read_text().splitlines()]
+            assert records[0]["type"] == "session"
+            assert len([record for record in records if record["type"] == "frame"]) == 100
+
+            player = await AsyncVCRPlayer.load(path, strict=True)
+            assert len(player.frames) == 100
+            assert {frame.node_name for frame in player.frames} == {
+                f"parallel-{index}" for index in range(100)
+            }
 
     async def test_fork(self):
         with tempfile.TemporaryDirectory() as tmpdir:

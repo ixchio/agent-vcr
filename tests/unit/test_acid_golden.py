@@ -1,5 +1,6 @@
 """Production tests for the ACID Workspace and Golden Run Cache."""
 
+import hashlib
 import os
 import shutil
 import stat
@@ -438,6 +439,54 @@ class TestACIDWorkspace:
         assert escrow_dir is not None
         assert not escrow_dir.exists()
 
+    def test_savepoints_share_immutable_content_addressed_escrow_blobs(self):
+        workspace = self._init_repo()
+        env_file = workspace / ".env"
+        baseline = b"TOKEN=baseline\n"
+        env_file.write_bytes(baseline)
+
+        acid = ACIDWorkspace(str(workspace))
+        acid.begin(session_id="content-addressed-blobs")
+        acid.savepoint({"step": 0})
+
+        assert acid._escrow_blobs_dir is not None
+        baseline_hash = hashlib.sha256(baseline).hexdigest()
+        baseline_blob = acid._escrow_blobs_dir / baseline_hash
+        assert baseline_blob.read_bytes() == baseline
+
+        env_file.write_bytes(b"TOKEN=mutated\n")
+        acid.savepoint({"step": 1})
+        blob_names = {path.name for path in acid._escrow_blobs_dir.iterdir()}
+        assert baseline_hash in blob_names
+        assert all(len(name) == 64 for name in blob_names)
+
+        acid.rollback(to_frame_index=0)
+        assert env_file.read_bytes() == baseline
+        assert baseline_blob.read_bytes() == baseline
+
+        env_file.write_bytes(b"TOKEN=mutated-again\n")
+        acid.rollback(to_frame_index=0)
+        assert env_file.read_bytes() == baseline
+        assert baseline_blob.read_bytes() == baseline
+
+    def test_workspace_paths_reject_traversal_absolute_and_symlink_parent_escape(self):
+        workspace = self._init_repo()
+        outside = workspace.parent / f"{workspace.name}-outside"
+        outside.mkdir()
+        (workspace / "escape").symlink_to(outside, target_is_directory=True)
+
+        acid = ACIDWorkspace(str(workspace))
+        with pytest.raises(ValueError, match="Unsafe workspace-relative path"):
+            acid._workspace_path("../outside-secret")
+        with pytest.raises(ValueError, match="Unsafe workspace-relative path"):
+            acid._workspace_path(str(outside / "secret"))
+        with pytest.raises(ValueError, match="resolves outside"):
+            acid._workspace_path("escape/secret")
+
+        # Escrowing the symlink object itself is safe; its target is metadata.
+        assert acid._workspace_path("escape") == workspace / "escape"
+        shutil.rmtree(outside)
+
     def test_begin_rejects_dirty_tracked_files_by_default(self):
         subprocess.run(["git", "init"], cwd=self.workspace, check=True)
         subprocess.run(["git", "config", "user.name", "Agent VCR"], cwd=self.workspace, check=True)
@@ -684,6 +733,37 @@ class TestGoldenRunCache:
         )
         assert ledger.cache_hit_reason is not None
         assert "task_and_identity_match" in ledger.cache_hit_reason
+
+    def test_nested_identity_key_order_is_canonical(self):
+        recorder = self._make_recorder_with_frames()
+        cache = GoldenRunCache(cache_dir=self.golden_dir)
+        first = {
+            "tools": [
+                {
+                    "name": "search",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"query": {"type": "string"}, "limit": {"type": "integer"}},
+                    },
+                }
+            ],
+            "prompt": {"system": "be precise", "temperature": 0},
+        }
+        reordered = {
+            "prompt": {"temperature": 0, "system": "be precise"},
+            "tools": [
+                {
+                    "parameters": {
+                        "properties": {"limit": {"type": "integer"}, "query": {"type": "string"}},
+                        "type": "object",
+                    },
+                    "name": "search",
+                }
+            ],
+        }
+
+        cache.save_golden_run("canonical identity", recorder, identity=first)
+        assert cache.has_golden_run("canonical identity", identity=reordered)
 
     def test_cost_savings_calculation(self):
         recorder = self._make_recorder_with_frames()

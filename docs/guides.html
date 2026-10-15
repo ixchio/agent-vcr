@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Agent VCR Documentation — Build, Roll Back, Replay, and Gate AI Agents</title>
+    <meta name="description" content="Developer documentation for Agent VCR: recording, ACID workspace rollback, Ghost Replay, Agent CI, integrations, workflows, and deployment.">
+    <link rel="canonical" href="https://ixchio.github.io/agent-vcr/guides.html">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="styles.css">
+    <style>
+        .docs-hero { padding: 9rem 1.5rem 4rem; text-align: center; }
+        .docs-hero h1 { max-width: 850px; margin: 1rem auto; font-size: clamp(2.6rem, 7vw, 5rem); line-height: 1.02; letter-spacing: -0.05em; }
+        .docs-hero p { max-width: 720px; margin: 0 auto 2rem; color: var(--text-muted); font-size: 1.05rem; line-height: 1.8; }
+        .docs-shell { max-width: 1100px; margin: 0 auto; padding: 0 1.5rem 6rem; }
+        .docs-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; margin: 2rem 0 5rem; }
+        .doc-card { display: block; padding: 1.5rem; border: 1px solid var(--border); border-radius: 14px; background: var(--bg-card); text-decoration: none; transition: transform .2s ease, border-color .2s ease; }
+        .doc-card:hover { transform: translateY(-3px); border-color: var(--green); }
+        .doc-card .eyebrow { color: var(--green); font: 500 .75rem/1.4 "JetBrains Mono", monospace; text-transform: uppercase; letter-spacing: .08em; }
+        .doc-card h2 { color: var(--white); font-size: 1.2rem; margin: .55rem 0; }
+        .doc-card p { color: var(--text-muted); line-height: 1.65; margin: 0; }
+        .docs-section { padding: 3rem 0; border-top: 1px solid var(--border); scroll-margin-top: 5rem; }
+        .docs-section h2 { font-size: clamp(1.7rem, 4vw, 2.5rem); margin-bottom: .75rem; }
+        .docs-section > p { max-width: 780px; color: var(--text-muted); line-height: 1.75; }
+        .callout { margin: 1.5rem 0; padding: 1.1rem 1.25rem; border: 1px solid rgba(0, 212, 170, .35); border-radius: 10px; background: rgba(0, 212, 170, .06); color: var(--text-muted); line-height: 1.65; }
+        .callout strong { color: var(--white); }
+        .docs-list { color: var(--text-muted); line-height: 1.8; padding-left: 1.2rem; }
+        .docs-list code { color: var(--green); }
+        .doc-link { color: var(--green); text-decoration: none; font-weight: 600; }
+        .doc-link:hover { text-decoration: underline; }
+        .mini-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .8rem; margin-top: 1.5rem; }
+        .mini { border: 1px solid var(--border); border-radius: 10px; padding: 1rem; background: var(--bg-card); }
+        .mini strong { color: var(--white); display: block; margin-bottom: .35rem; }
+        .mini span { color: var(--text-muted); font-size: .9rem; line-height: 1.55; }
+        @media (max-width: 760px) { .docs-grid, .mini-grid { grid-template-columns: 1fr; } .docs-hero { padding-top: 7rem; } }
+    </style>
+</head>
+
+<body>
+    <header class="nav">
+        <div class="nav-inner">
+            <a href="index.html" class="nav-logo">📼 Agent VCR</a>
+            <nav class="nav-links">
+                <a href="#quickstart">Quick start</a>
+                <a href="#acid">ACID rollback</a>
+                <a href="#replay">Replay</a>
+                <a href="#ci">Agent CI</a>
+                <a href="#integrations">Integrations</a>
+            </nav>
+            <div class="nav-actions">
+                <a href="index.html" class="btn-ghost">← Overview</a>
+                <a href="https://github.com/ixchio/agent-vcr" class="btn-solid" target="_blank">GitHub ↗</a>
+            </div>
+        </div>
+    </header>
+
+    <main>
+        <section class="docs-hero">
+            <div class="hero-pill">Documentation · v1.5.2 · Python 3.9–3.13</div>
+            <h1>Build agents with an undo boundary.</h1>
+            <p>Start with recording, add workspace rollback where files matter, promote reviewed runs to identity-aware replay, and gate the next change in CI.</p>
+            <div class="hero-cta">
+                <a href="#quickstart" class="btn-solid large">Start building</a>
+                <a href="https://pypi.org/project/ai-agent-vcr/" class="btn-ghost large" target="_blank">View on PyPI ↗</a>
+            </div>
+        </section>
+
+        <div class="docs-shell">
+            <div class="docs-grid">
+                <a class="doc-card" href="#recording">
+                    <span class="eyebrow">Core</span>
+                    <h2>Record and time-travel</h2>
+                    <p>Capture typed execution frames, inspect state, compare boundaries, resume, and export portable bundles.</p>
+                </a>
+                <a class="doc-card" href="#acid">
+                    <span class="eyebrow">Filesystem</span>
+                    <h2>ACID workspace rollback</h2>
+                    <p>Restore tracked Git content and eligible pre-existing local files such as ignored <code>.env</code> files.</p>
+                </a>
+                <a class="doc-card" href="#replay">
+                    <span class="eyebrow">Reuse</span>
+                    <h2>Identity-aware Ghost Replay</h2>
+                    <p>Reuse reviewed outputs on a full identity match and rerun changed work through explicit partial modes.</p>
+                </a>
+                <a class="doc-card" href="#ci">
+                    <span class="eyebrow">Reliability</span>
+                    <h2>Agent CI</h2>
+                    <p>Compare real candidate recordings with reviewed baselines and enforce state, tool, cost, token, and latency expectations.</p>
+                </a>
+                <a class="doc-card" href="#integrations">
+                    <span class="eyebrow">Connect</span>
+                    <h2>Framework integrations</h2>
+                    <p>Use raw Python, LangGraph, CrewAI, OpenHands, Claude Code hooks, n8n, or your own lifecycle adapter.</p>
+                </a>
+                <a class="doc-card" href="#operations">
+                    <span class="eyebrow">Operate</span>
+                    <h2>Workflows and self-hosting</h2>
+                    <p>Add durable workflow state, approvals, compensation, reliability intelligence, and a local dashboard/server.</p>
+                </a>
+            </div>
+
+            <section class="docs-section" id="quickstart">
+                <h2>Quick start</h2>
+                <p>The base install is local-first and needs no model key, hosted account, or framework.</p>
+                <div class="code-block">
+                    <div class="code-bar"><span class="dots"><span></span><span></span><span></span></span><span class="code-label">terminal</span></div>
+                    <pre><code>pip install ai-agent-vcr
+
+python examples/basic_usage.py
+vcr tui .vcr/&lt;session-id&gt;.vcr</code></pre>
+                </div>
+                <div class="callout"><strong>Package name:</strong> install <code>ai-agent-vcr</code>. The similarly named <code>agent-vcr</code> package on PyPI is a different project.</div>
+            </section>
+
+            <section class="docs-section" id="recording">
+                <h2>Record a state transition</h2>
+                <p>The recorder is the framework-neutral boundary. A session contains ordered JSONL frames for nodes, model calls, tools, errors, and checkpoints.</p>
+                <div class="code-block">
+                    <div class="code-bar"><span class="dots"><span></span><span></span><span></span></span><span class="code-label">agent.py</span></div>
+                    <pre><code><span class="kw">from</span> agent_vcr <span class="kw">import</span> VCRPlayer, VCRRecorder
+
+recorder = VCRRecorder(output_dir=<span class="str">".vcr"</span>)
+recorder.start_session(<span class="str">"support-triage"</span>)
+recorder.record_step(
+    <span class="str">"classify"</span>,
+    {<span class="str">"status"</span>: <span class="str">"new"</span>},
+    {<span class="str">"status"</span>: <span class="str">"classified"</span>, <span class="str">"priority"</span>: <span class="str">"high"</span>},
+)
+recording = recorder.save()
+
+player = VCRPlayer.load(recording, strict=<span class="kw">True</span>)
+<span class="kw">print</span>(player.goto_frame(<span class="num">0</span>))
+<span class="kw">print</span>(player.verify_integrity())</code></pre>
+                </div>
+                <p><a class="doc-link" href="https://github.com/ixchio/agent-vcr/blob/main/docs/recording-and-replay.md">Full recording, resume, bundle, and privacy guide →</a></p>
+            </section>
+
+            <section class="docs-section" id="acid">
+                <h2>Rollback state and files together</h2>
+                <p><code>ACIDWorkspace</code> combines isolated Git savepoints with private, per-savepoint local-file escrow.</p>
+                <div class="mini-grid">
+                    <div class="mini"><strong>Tracked content</strong><span>Restored from the selected Git savepoint commit.</span></div>
+                    <div class="mini"><strong>Local content</strong><span>Eligible untracked/ignored files restored byte-for-byte with modes and symlink targets.</span></div>
+                    <div class="mini"><strong>Secret boundary</strong><span>Escrow bytes stay under <code>.git/vcr-escrow</code>, outside Git objects and VCR recordings.</span></div>
+                </div>
+                <div class="callout"><strong>Issue #2 guarantee:</strong> a modified or deleted pre-existing <code>.env</code> is restored at rollback, while later hallucinated local files are removed. Oversized, excluded, and special files are preserved but cannot be reconstructed.</div>
+                <ul class="docs-list">
+                    <li>Blobs are immutable and content-addressed as <code>blobs/&lt;sha256&gt;</code>.</li>
+                    <li>Escrow directories use <code>0700</code>; regular blobs use <code>0600</code>.</li>
+                    <li>Paths containing <code>..</code>, absolute paths, and resolved-parent symlink escapes are rejected.</li>
+                    <li>Rollback can run repeatedly before commit; shared blob references stay valid.</li>
+                </ul>
+                <p><a class="doc-link" href="https://github.com/ixchio/agent-vcr/blob/main/docs/acid-workspace.md">Full transaction lifecycle, limits, and threat boundary →</a></p>
+            </section>
+
+            <section class="docs-section" id="replay">
+                <h2>Ghost Replay without silent drift</h2>
+                <p>A golden run is selected by the normalized task plus an optional identity covering model, prompt, code, tools, dependencies, environment, and caller-defined fields.</p>
+                <div class="code-block">
+                    <div class="code-bar"><span class="dots"><span></span><span></span><span></span></span><span class="code-label">replay.py</span></div>
+                    <pre><code><span class="kw">from</span> agent_vcr.golden_cache <span class="kw">import</span> GoldenRunCache
+
+cache = GoldenRunCache()
+identity = cache.build_identity(
+    model=<span class="str">"provider/model@revision"</span>,
+    prompt_hash=<span class="str">"sha256:prompt"</span>,
+    code_commit=<span class="str">"0123456789abcdef"</span>,
+    tool_schema_hash=<span class="str">"sha256:tools"</span>,
+)
+cache.save_golden_run(<span class="str">"triage ticket"</span>, recorder, identity=identity)
+outputs, ledger = cache.replay(<span class="str">"triage ticket"</span>, identity=identity)</code></pre>
+                </div>
+                <p>Nested identity JSON uses canonical sorted-key serialization. Key-order changes do not cause false misses; actual identity changes do.</p>
+            </section>
+
+            <section class="docs-section" id="ci">
+                <h2>Gate changes with recorded evidence</h2>
+                <p>Generate candidates with the code under review, then compare them with versioned baseline cases. The gate itself makes no model calls.</p>
+                <div class="code-block">
+                    <div class="code-bar"><span class="dots"><span></span><span></span><span></span></span><span class="code-label">terminal</span></div>
+                    <pre><code>vcr dataset create refunds
+vcr dataset add refunds \
+  --task "refund a duplicate payment" \
+  --case-name duplicate-payment \
+  --vcr .vcr/reviewed/refund.vcr
+
+vcr ci run \
+  --dataset refunds \
+  --candidates .vcr/candidates \
+  --fail-on degraded \
+  --report agent-ci-report.json \
+  --markdown agent-ci-report.md</code></pre>
+                </div>
+                <p><a class="doc-link" href="https://github.com/ixchio/agent-vcr/blob/main/docs/agent-ci.md">Full dataset, candidate, and GitHub Action guide →</a></p>
+            </section>
+
+            <section class="docs-section" id="integrations">
+                <h2>Connect your agent runtime</h2>
+                <div class="mini-grid">
+                    <div class="mini"><strong>Native adapters</strong><span>LangGraph nodes, CrewAI callbacks, OpenHands Sentinel, and ACIDWorkspace.</span></div>
+                    <div class="mini"><strong>Claude Code</strong><span>Install lifecycle hooks with <code>vcr init --claude-code</code>.</span></div>
+                    <div class="mini"><strong>Custom runtimes</strong><span>Map lifecycle events to record_step, record_llm_call, record_tool_call, and record_error.</span></div>
+                </div>
+                <p><a class="doc-link" href="https://github.com/ixchio/agent-vcr/blob/main/docs/integrations/README.md">Full framework integration guide →</a></p>
+            </section>
+
+            <section class="docs-section" id="operations">
+                <h2>Production building blocks</h2>
+                <ul class="docs-list">
+                    <li><a class="doc-link" href="https://github.com/ixchio/agent-vcr/blob/main/docs/workflow.md">Workflow engine</a> — durable runs, resume, schedules, approvals, retries, and saga compensation.</li>
+                    <li><a class="doc-link" href="https://github.com/ixchio/agent-vcr/blob/main/docs/superagent.md">SuperAgent</a> — validated plans, policy, budgets, tool schemas, and output verification.</li>
+                    <li><a class="doc-link" href="sentinel/">Sentinel</a> — local AST quality analysis and optional OpenHands feedback.</li>
+                    <li><a class="doc-link" href="https://github.com/ixchio/agent-vcr/blob/main/docs/deployment/railway.md">Railway foundation</a> — optional auth/billing control plane with an explicit multitenancy boundary.</li>
+                    <li><a class="doc-link" href="dev/bench/">Benchmark dashboard</a> — measured history and local regression ceilings.</li>
+                </ul>
+                <div class="callout"><strong>External effects are outside Git.</strong> Agent VCR cannot undo email, payments, database writes, or arbitrary APIs. Use approvals before consequential tools and explicit compensation where reversal is possible.</div>
+            </section>
+        </div>
+    </main>
+
+    <footer class="footer">
+        <div class="footer-inner">
+            <div class="footer-left"><span class="footer-logo">📼 Agent VCR</span><span class="footer-tagline">Intervention infrastructure for AI agents</span></div>
+            <div class="footer-links"><a href="index.html">Overview</a><a href="https://github.com/ixchio/agent-vcr">GitHub</a><a href="https://pypi.org/project/ai-agent-vcr/">PyPI</a><a href="https://github.com/ixchio/agent-vcr/blob/main/LICENSE">MIT License</a></div>
+        </div>
+        <p style="text-align:center; color:var(--text-muted); font-size:.8rem; padding:0 1rem 1.5rem;">Copyright © 2026 QueryXLabs and ixchio.</p>
+    </footer>
+</body>
+
+</html>
