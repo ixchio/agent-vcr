@@ -10,9 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [1.5.3] - 2026-10-15
 
 ### Changed
-- Rebuilt the GitHub Pages documentation with a developer guide hub for recording, ACID rollback,
-  Ghost Replay, Agent CI, integrations, and operations; corrected stale install commands and
-  qualified replay/performance guarantees.
+- Rebuilt GitHub Pages around a concise product homepage and developer guide hub for recording,
+  ACID rollback, Ghost Replay, Agent CI, integrations, and operations; corrected stale install
+  commands and qualified replay/performance guarantees.
 
 ### Fixed
 - Finalized and committed all Git-owned workspace changes on the isolated ACID branch before
