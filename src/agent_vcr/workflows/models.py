@@ -10,7 +10,22 @@ A workflow is a versioned, durable DAG of steps. Step kinds:
 - ``approval`` — explicit human gate (also available per leaf step).
 
 Leaf steps may declare ``compensate`` (saga action, run in reverse
-completion order on abort) and ``on_failure`` (abort/retry/skip).
+completion order on abort, through the same policy/approval/timeout path
+as normal leaves) and ``on_failure``:
+
+- ``abort`` (default): retry ``max_retries`` times, then abort + compensate.
+- ``retry``: like ``abort`` but always retries at least once.
+- ``skip``: on final failure record ``{"skipped": True, "reason": ...}`` as
+  the step output and continue.
+
+A leaf that **times out** is never retried automatically unless it is
+declared ``idempotent=True`` — the timed-out attempt cannot be stopped
+(it runs on a thread) and may still be producing its side effect.
+
+Inputs may reference ``$inputs.<key>`` (run inputs), ``$<step_id>.<path>``
+(prior outputs) and ``$<item_var>`` (loop variables). Any other string,
+including ``"$10"`` or ``"$HOME"``, is a literal; ``"$$x"`` is the escape
+for a literal ``"$x"``.
 Every definition carries a monotonic ``version``; runs pin the exact
 definition snapshot they executed.
 """
@@ -41,6 +56,7 @@ class CompensateSpec(BaseModel):
     ref: str
     kind: Literal["tool", "agent"] = "tool"
     inputs: dict[str, Any] = Field(default_factory=dict)
+    timeout_s: float | None = None  # default: the compensated step's timeout_s
 
 
 class ConditionSpec(BaseModel):
@@ -63,6 +79,8 @@ class WorkflowStep(BaseModel):
     max_retries: int = 0
     retry_delay_s: float = 0.0
     on_failure: FailureMode = "abort"
+    # True when re-running the step after a timeout is safe (no duplicate side effect)
+    idempotent: bool = False
     check: dict[str, Any] = Field(default_factory=dict)
     requires_approval: bool = False
     checkpoint_after: bool = False
@@ -114,6 +132,7 @@ class CompletedCompensation(BaseModel):
     ref: str
     kind: str = "tool"
     inputs: dict[str, Any] = Field(default_factory=dict)
+    timeout_s: float = 120.0
 
 
 class RunRecord(BaseModel):
@@ -129,7 +148,9 @@ class RunRecord(BaseModel):
     completed_top_steps: list[str] = Field(default_factory=list)
     compensations: list[CompletedCompensation] = Field(default_factory=list)
     compensated: bool = False
+    cancelled: bool = False
     error: str = ""
+    usage: dict[str, Any] = Field(default_factory=dict)  # per-run budget ledger summary
     session_id: str = ""
     callback_url: str = ""
     created_at: str = ""

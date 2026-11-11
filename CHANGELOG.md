@@ -7,6 +7,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- **Dashboard server:**
+  - `vcr-server` now refuses to bind a non-loopback host without a token. Set `AGENT_VCR_AUTH_TOKEN` / `AGENT_VCR_ADMIN_TOKEN` (new env vars), or pass `--allow-unauthenticated`. The hosted Docker image was previously open to the internet.
+  - Project creation and token minting always require an admin-level token.
+  - Admin and project tokens now work alongside `--auth-token`.
+  - When any token is configured, every `/api` route and the WebSocket require one.
+  - Token comparisons are constant-time.
+  - Uploads are size-checked while they stream.
+- **Bundles:** `vcr bundle import` rejects bundles whose manifest `session_id` would write outside the destination (path traversal).
+- **GitHub Action:**
+  - Fixed the invalid (38-character) `upload-artifact` pin. It is now `v4.6.2`.
+  - Inputs are passed through `env:` to prevent script injection.
+  - The `report` output is set even when the gate fails.
+- **Sandbox:** `LocalSandbox` no longer passes the host environment (API keys) to commands. Opt in with `SandboxConfig(inherit_env=True)`. Its docs now say plainly that it is not a security boundary.
+- **Approvals:** `AutoApprover()` is fail-closed. With no `allow_refs` and no `allow_all=True` it denies everything, and an unknown cost estimate only auto-approves explicitly allow-listed refs.
+
+### Fixed
+- **LangGraph:** `VCRLangGraph.wrap_graph` works on real `StateGraph` builders and compiled graphs. It previously crashed `compile()`.
+  - Node runnables are wrapped, not replaced, so `config`/runtime injection, async nodes, retries and `Command` returns keep working.
+  - `wrap_node` supports async nodes.
+- **ACIDWorkspace:**
+  - `abort()` restores pre-existing uncommitted edits instead of wiping them.
+  - Subdirectory workspaces never touch files outside the workspace.
+  - `commit()` includes changes made after the last savepoint and deletes the `acid/<id>` branch.
+  - A detached HEAD is refused with a clear error.
+  - Git calls have timeouts, captured output, and hooks and signing disabled.
+  - Files that change mid-savepoint no longer leave orphan commits.
+- **Recorder:**
+  - Starting a session with an existing id no longer truncates the old recording. It is rotated to `<id>.vcr.prev`; see `start_session(if_exists=...)`.
+  - Diff mode no longer drops inputs that differ from the previous output (LLM prompts were lost).
+  - Values that can't be serialized (sets, bytes, dataclasses, arbitrary objects) no longer crash the agent or duplicate frames on disk.
+  - Caller-supplied `FrameMetadata` is no longer mutated.
+- **Claude Code hook:**
+  - Records one file per Claude session (`claude-<session_id>.vcr`).
+  - Reads `hook_event_name` and `tool_input.file_path` from the real payload.
+  - Truncates very large fields.
+  - Never fails the hook.
+  - `vcr init --claude-code` writes the current interpreter path instead of a bare `python`, and upgrades previously installed entries in place.
+- **Qdrant:** vector search uses `query_points`, because `search` was removed in current qdrant-client.
+- **LangGraph callback:** `LangGraphCallback` is a real LangChain `BaseCallbackHandler`. Pass it with `config={"callbacks": [LangGraphCallback(rec)]}` to record one frame per graph node, plus LLM calls (with token usage) and tool calls. Passing it used to crash `invoke`. The old manual `on_*` methods still work.
+- **CrewAI:**
+  - `VCRCrewAI.kickoff` restores agent- and task-level callbacks, so runs no longer leak into earlier recorders. It chains to user callbacks instead of replacing them, works with pydantic `Task` objects, and adds `kickoff_async` / `kickoff_for_each`.
+  - `VCRCrewCallback` listens on CrewAI's event bus (`with VCRCrewCallback(rec):` or `.attach()`) and warns if it's never attached, as in `Crew(callbacks=[...])`, which CrewAI ignores.
+  - Task frames are named `task:<name>`, with the full description kept in the input.
+- **Sentinel:**
+  - Scanning a project under a dot-directory, such as `.claude/worktrees/...`, no longer silently passes with 0 files.
+  - New `scan` exit codes: 3 when no Python files are found, and 4 when the target is missing. A missing directory is no longer created.
+  - Duplicate detection uses qualified names and body hashes, so `A.run` and `B.run` are no longer flagged.
+  - Growth is measured per edit, stale entries are cleared when a file is re-analyzed, and parameter counts include keyword-only arguments and `*args` but exclude `self`/`cls`.
+  - `block_on_blocker` and `auto_analyze` are wired up, and OpenHands `str_replace` edits are analyzed from the observation.
+- **Ghost Replay:**
+  - The golden index stores file names relative to the cache dir, so cached runs and `vcr ci run` work from any working directory. Legacy indexes still load.
+  - Replays keep frame types (LLM, tool and so on).
+  - `savings_percent` falls back to tokens, then to replayed steps, when the golden run has no cost data, so a replay that re-ran everything reports 0% instead of 100%.
+  - Golden files are written atomically.
+
+### Changed
+- `import agent_vcr` is lazy (PEP 562). Optional layers load on first use, which cuts import time from about 2.3 s to about 0.2 s, and the Claude Code hook's startup from about 1.6 s to about 0.17 s.
+
 ## [1.5.4] - 2026-10-15
 
 ### Changed

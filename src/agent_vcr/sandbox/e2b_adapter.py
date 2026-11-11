@@ -2,12 +2,20 @@
 
 Integrates with the e2b (>=2.46.0) SDK for Firecracker microVM execution.
 Falls back gracefully when the SDK is absent or unconfigured.
+
+Timeouts: E2B's ``Sandbox.create(timeout=...)`` is the microVM *lifetime*,
+so it gets ``SandboxConfig.lifetime_seconds``; ``timeout_seconds`` (or the
+``timeout`` argument) is applied per command via ``commands.run(timeout=...)``.
+A non-zero exit raises ``CommandExitException`` in the SDK; it is converted
+into an :class:`ExecutionResult` that keeps stdout, stderr and the exit code.
 """
 
 from __future__ import annotations
 
 import logging
+import math
 import os
+import shlex
 import time
 from typing import Any
 
@@ -26,6 +34,39 @@ try:
     import e2b  # type: ignore[import-not-found]
 except ImportError as exc:
     _E2B_IMPORT_ERROR = exc
+
+
+def _sdk_exception(name: str) -> type[BaseException] | None:
+    """Look up an exception class exported by the e2b SDK (None if absent)."""
+    if _E2B_IMPORT_ERROR is not None:
+        return None
+    exc = getattr(e2b, name, None)
+    return exc if isinstance(exc, type) and issubclass(exc, BaseException) else None
+
+
+def _is_command_exit(exc: BaseException) -> bool:
+    cls = _sdk_exception("CommandExitException")
+    if cls is not None and isinstance(exc, cls):
+        return True
+    # Duck-typing fallback (SDK moved / faked): carries an exit code + output.
+    return type(exc).__name__ == "CommandExitException" or (
+        isinstance(getattr(exc, "exit_code", None), int)
+        and (hasattr(exc, "stdout") or hasattr(exc, "stderr"))
+    )
+
+
+def _is_timeout(exc: BaseException) -> bool:
+    cls = _sdk_exception("TimeoutException")
+    if cls is not None and isinstance(exc, cls):
+        return True
+    return isinstance(exc, TimeoutError) or type(exc).__name__ in (
+        "TimeoutException", "TimeoutError", "ReadTimeout", "DeadlineExceeded")
+
+
+def _text(value: Any) -> str:
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return value if isinstance(value, str) else ""
 
 
 class E2BSandbox(BaseSandbox):
@@ -75,19 +116,19 @@ class E2BSandbox(BaseSandbox):
             if sandbox_cls is None:
                 raise RuntimeError("e2b module does not export Sandbox")
 
+            # ``timeout`` here is the microVM lifetime, not a command timeout.
+            lifetime = int(math.ceil(max(self.config.lifetime_seconds,
+                                         self.config.timeout_seconds)))
+            create_kwargs: dict[str, Any] = {
+                "template": self.config.template,
+                "api_key": self._api_key,
+                "timeout": lifetime,
+            }
             # Check for Sandbox.create or direct instantiation
             if hasattr(sandbox_cls, "create"):
-                self._sandbox_instance = sandbox_cls.create(
-                    template=self.config.template,
-                    api_key=self._api_key,
-                    timeout=int(self.config.timeout_seconds),
-                )
+                self._sandbox_instance = sandbox_cls.create(**create_kwargs)
             else:
-                self._sandbox_instance = sandbox_cls(
-                    template=self.config.template,
-                    api_key=self._api_key,
-                    timeout=int(self.config.timeout_seconds),
-                )
+                self._sandbox_instance = sandbox_cls(**create_kwargs)
             self._alive = True
             logger.info("E2BSandbox microVM provisioned successfully")
         except Exception as exc:
@@ -150,34 +191,22 @@ class E2BSandbox(BaseSandbox):
             else:
                 raise NotImplementedError("Injected sandbox instance missing command runner")
 
-            stdout = getattr(res, "stdout", "") or ""
-            stderr = getattr(res, "stderr", "") or ""
-            raw_code = getattr(res, "exit_code", None)
-            cmd_err = getattr(res, "error", None)
-            if raw_code is not None:
-                exit_code = int(raw_code)
-            elif cmd_err is not None:
-                exit_code = -1
-            else:
-                exit_code = 0
-
-            if cmd_err is not None:
-                error_msg = str(cmd_err)
-            elif exit_code != 0 and stderr:
-                error_msg = stderr.strip()
-        except TimeoutError:
-            timed_out = True
-            exit_code = -1
-            error_msg = f"Command timed out after {effective_timeout:.2f}s"
+            stdout, stderr, exit_code, error_msg = self._unpack_result(res)
         except Exception as exc:  # noqa: BLE001
-            # Check if exception represents timeout
-            if "timeout" in str(exc).lower():
+            if _is_command_exit(exc):
+                # Non-zero exit: the SDK raises, but the output is real.
+                stdout, stderr, exit_code, error_msg = self._unpack_result(exc)
+                if exit_code == 0:
+                    exit_code = -1
+                if not error_msg:
+                    error_msg = stderr.strip() or f"Command exited with code {exit_code}"
+            elif _is_timeout(exc):
                 timed_out = True
                 exit_code = -1
-                error_msg = str(exc)
+                error_msg = f"Command timed out after {effective_timeout:.2f}s: {exc}"
             else:
                 exit_code = -1
-                error_msg = str(exc)
+                error_msg = f"{type(exc).__name__}: {exc}"
 
         duration_ms = (time.perf_counter() - start_time) * 1000.0
 
@@ -190,6 +219,25 @@ class E2BSandbox(BaseSandbox):
             timed_out=timed_out,
             error=error_msg,
         )
+
+    @staticmethod
+    def _unpack_result(res: Any) -> tuple[str, str, int, str | None]:
+        """(stdout, stderr, exit_code, error) from a CommandResult-like object."""
+        stdout = _text(getattr(res, "stdout", ""))
+        stderr = _text(getattr(res, "stderr", ""))
+        raw_code = getattr(res, "exit_code", None)
+        cmd_err = getattr(res, "error", None)
+        cmd_err = cmd_err if isinstance(cmd_err, str) and cmd_err else None
+        if isinstance(raw_code, (int, float)) and not isinstance(raw_code, bool):
+            exit_code = int(raw_code)
+        elif cmd_err is not None:
+            exit_code = -1
+        else:
+            exit_code = 0
+        error_msg: str | None = cmd_err
+        if error_msg is None and exit_code != 0 and stderr:
+            error_msg = stderr.strip()
+        return stdout, stderr, exit_code, error_msg
 
     def read_file(self, path: str, binary: bool = False) -> str | bytes:
         """Read a file from the microVM."""
@@ -232,7 +280,7 @@ class E2BSandbox(BaseSandbox):
             return sorted(names)
 
         # Fallback: run find command
-        res = self.execute_command(f"find {path} -type f")
+        res = self.execute_command(f"find {shlex.quote(path)} -type f")
         if res.success:
             return sorted([line.strip() for line in res.stdout.splitlines() if line.strip()])
         return []
@@ -245,7 +293,7 @@ class E2BSandbox(BaseSandbox):
         entries: dict[str, FileMetadata] = {}
         # Run a bash one-liner in the microVM to get relative path, size, sha256
         script = (
-            f"find {path} -type f -not -path '*/.*' -exec sha256sum {{}} + 2>/dev/null"
+            f"find {shlex.quote(path)} -type f -not -path '*/.*' -exec sha256sum {{}} + 2>/dev/null"
         )
         res = self.execute_command(script)
         if res.success:

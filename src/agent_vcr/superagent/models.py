@@ -11,7 +11,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 FailureMode = Literal["abort", "retry", "skip"]
 
@@ -81,12 +81,35 @@ class RunReport(BaseModel):
     total_latency_ms: float = 0.0
 
 
+_ENVELOPE_KEYS = frozenset({"output", "tokens_used", "cost_usd", "latency_ms", "error"})
+_USAGE_KEYS = _ENVELOPE_KEYS - {"output"}
+
+
 def coerce_result(raw: Any) -> StepResult:
-    """Accept StepResult, plain dict output, or (output, usage) tuples."""
+    """Accept a StepResult, a StepResult-shaped dict, or any other value.
+
+    A dict is only treated as a :class:`StepResult` envelope when its shape
+    matches one: every key is an envelope key, ``"output"`` is present, and
+    either ``output`` is a dict or another envelope key (``cost_usd``,
+    ``error``…) is present. Anything else — including a tool that simply
+    returns ``{"output": "hello"}`` — becomes the step's output verbatim.
+    Non-dict values are wrapped as ``{"result": value}``.
+    """
     if isinstance(raw, StepResult):
         return raw
-    if isinstance(raw, dict) and set(raw) <= {"output", "tokens_used", "cost_usd", "latency_ms", "error"} and "output" in raw:
-        return StepResult(**raw)
     if isinstance(raw, dict):
+        keys = set(raw)
+        if "output" in keys and keys <= _ENVELOPE_KEYS:
+            output = raw["output"]
+            if isinstance(output, dict) or keys & _USAGE_KEYS:
+                envelope = dict(raw)
+                if output is None:
+                    envelope["output"] = {}
+                elif not isinstance(output, dict):
+                    envelope["output"] = {"result": output}
+                try:
+                    return StepResult(**envelope)
+                except ValidationError:
+                    pass  # wrong-typed usage fields: not an envelope after all
         return StepResult(output=raw)
     return StepResult(output={"result": raw})

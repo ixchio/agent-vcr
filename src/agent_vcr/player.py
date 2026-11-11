@@ -12,6 +12,7 @@ from typing import Any, Callable
 logger = logging.getLogger(__name__)
 
 from agent_vcr.models import (  # noqa: E402
+    INPUT_FROM_PREVIOUS_KEY,
     Frame,
     FrameMetadata,
     ResumeConfig,
@@ -21,6 +22,14 @@ from agent_vcr.models import (  # noqa: E402
     StateSerializer,
 )
 from agent_vcr.recorder import VCRRecorder  # noqa: E402
+
+
+def _parse_iso(value: str) -> datetime:
+    """``datetime.fromisoformat`` that also accepts a trailing ``Z`` (py3.9/3.10)."""
+    value = value.strip()
+    if value.endswith(("Z", "z")):
+        value = value[:-1] + "+00:00"
+    return datetime.fromisoformat(value)
 
 
 class VCRPlayer:
@@ -94,7 +103,10 @@ class VCRPlayer:
         if session is None:
             raise ValueError(f"No session header found in {filepath}")
 
-        frames.sort(key=lambda f: f.timestamp)
+        # Keep file (append) order: it is the execution order and the index
+        # space used by fork/resume/goto_frame. Re-sorting by wall-clock time
+        # would reorder frames on clock skew or interleaved threads (and hide
+        # the very problem verify_integrity reports).
         logger.info("Loaded session %s with %d frames", session.session_id, len(frames))
 
         return cls(session, frames, source_path=filepath, skipped_lines=skipped)
@@ -124,7 +136,7 @@ class VCRPlayer:
         Returns:
             The output state at the closest frame.
         """
-        target_time = datetime.fromisoformat(timestamp) if isinstance(timestamp, str) else timestamp
+        target_time = _parse_iso(timestamp) if isinstance(timestamp, str) else timestamp
 
         # Ensure timezone-aware comparison
         if target_time.tzinfo is None:
@@ -287,7 +299,9 @@ class VCRPlayer:
             base_state.update(config.state_overrides)
 
         if recorder is None:
-            recorder = VCRRecorder()
+            # Write the resumed branch next to the recording it came from.
+            out_dir = self.source_path.parent if self.source_path is not None else ".vcr"
+            recorder = VCRRecorder(output_dir=str(out_dir))
 
         new_session = recorder.start_session(
             session_id=config.new_session_id,
@@ -393,11 +407,15 @@ class VCRPlayer:
 
             # Deserialize both states to avoid double-serialization
             # (record_step will re-serialize them)
+            replay_meta = frame.metadata.model_copy(
+                update={"custom": {**frame.metadata.custom, "replayed_from_frame_id": frame.frame_id}}
+            )
             recorder.record_step(
                 node_name=frame.node_name,
                 input_state=self._get_frame_input_state(i),
                 output_state=current_state,
-                metadata=frame.metadata,
+                metadata=replay_meta,
+                frame_type=frame.frame_type,
             )
 
         return self._execute_fresh(agent_callable, current_state, recorder)
@@ -405,6 +423,13 @@ class VCRPlayer:
     def _get_frame_input_state(self, index: int) -> dict[str, Any]:
         """Return a frame's input state, reconstructing diff-mode omissions."""
         frame = self.get_frame(index)
+        marker = (frame.metadata.custom or {}).get(INPUT_FROM_PREVIOUS_KEY)
+        if marker is not None:
+            # Explicit marker written by diff-mode recorders (>= 1.5.3).
+            if marker and index > 0:
+                return self.get_output_state(index - 1)
+            return StateSerializer.deserialize(frame.input_state)
+        # Legacy files: input omitted whenever a diff was stored.
         if frame.input_state or index == 0 or frame.state_diff is None:
             return StateSerializer.deserialize(frame.input_state)
         return self.get_output_state(index - 1)

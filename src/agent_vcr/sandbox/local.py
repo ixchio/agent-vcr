@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import logging
 import os
@@ -22,8 +23,25 @@ from agent_vcr.sandbox.models import (
 logger = logging.getLogger(__name__)
 
 
+#: Host variables passed through to sandboxed commands by default. Everything
+#: else (API keys, cloud credentials, tokens) is withheld unless the caller sets
+#: ``SandboxConfig.inherit_env=True`` or passes it explicitly via ``env``.
+_SAFE_ENV_KEYS = ("PATH", "LANG", "LANGUAGE", "LC_ALL", "LC_CTYPE", "TERM", "TZ",
+                  "SYSTEMROOT", "COMSPEC", "PATHEXT")
+
+
 class LocalSandbox(BaseSandbox):
-    """Local execution sandbox operating within an isolated directory."""
+    """Run commands in a scratch directory on the local machine.
+
+    .. warning::
+        This is **not a security boundary**. Commands run as the current user
+        through a shell and can read or write anything that user can (absolute
+        paths, ``..``), and can use the network. Only ``read_file`` /
+        ``write_file`` are confined to the sandbox root. Host secrets are not
+        inherited by default (see ``_SAFE_ENV_KEYS``), but ``network_enabled``,
+        ``memory_limit_mb`` and ``cpu_count`` are **not enforced**. Use
+        :class:`~agent_vcr.sandbox.E2BSandbox` (a microVM) for untrusted code.
+    """
 
     def __init__(
         self,
@@ -31,6 +49,13 @@ class LocalSandbox(BaseSandbox):
         workdir: str | Path | None = None,
         cleanup: bool = True,
     ) -> None:
+        """Create a sandbox.
+
+        ``cleanup=False`` keeps an auto-created scratch directory after
+        :meth:`stop` (and after garbage collection / interpreter exit);
+        ``root_path`` stays readable so its contents can be inspected.
+        A caller-supplied ``workdir`` is never deleted.
+        """
         super().__init__(config=config)
         self._custom_workdir = Path(workdir).resolve() if workdir is not None else None
         self._cleanup = cleanup
@@ -57,11 +82,19 @@ class LocalSandbox(BaseSandbox):
         if self._custom_workdir is not None:
             self._root_path = self._custom_workdir
             self._root_path.mkdir(parents=True, exist_ok=True)
-        else:
+        elif self._cleanup:
             self._temp_dir = tempfile.TemporaryDirectory(prefix="agent_vcr_sandbox_")
             self._root_path = Path(self._temp_dir.name).resolve()
+        else:
+            # mkdtemp has no finalizer: the directory outlives this object.
+            self._root_path = Path(tempfile.mkdtemp(prefix="agent_vcr_sandbox_")).resolve()
 
         self._alive = True
+        if not self.config.network_enabled:
+            logger.warning(
+                "LocalSandbox cannot disable network access (network_enabled=False is "
+                "not enforced); use E2BSandbox for isolation"
+            )
         logger.debug("LocalSandbox started at %s", self._root_path)
 
     def stop(self) -> None:
@@ -70,15 +103,14 @@ class LocalSandbox(BaseSandbox):
             return
 
         self._alive = False
-        if self._temp_dir is not None and self._cleanup:
+        if self._temp_dir is not None:
             try:
                 self._temp_dir.cleanup()
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Error cleaning up sandbox temporary directory: %s", exc)
             self._temp_dir = None
             self._root_path = None
-        elif self._temp_dir is not None:
-            self._root_path = None
+        # cleanup=False / custom workdir: keep the directory and root_path.
 
         logger.debug("LocalSandbox stopped")
 
@@ -108,8 +140,14 @@ class LocalSandbox(BaseSandbox):
         effective_timeout = timeout if timeout is not None else self.config.timeout_seconds
         effective_cwd = self._resolve_safe_path(workdir) if workdir else self.root_path
 
-        # Merge environment
-        cmd_env = dict(os.environ)
+        # Minimal environment: never leak host secrets (API keys, tokens) into
+        # agent-run commands unless explicitly requested.
+        if self.config.inherit_env:
+            cmd_env = dict(os.environ)
+        else:
+            cmd_env = {k: os.environ[k] for k in _SAFE_ENV_KEYS if k in os.environ}
+            cmd_env["HOME"] = str(self.root_path)
+            cmd_env["TMPDIR"] = str(self.root_path)
         cmd_env.update(self.config.env)
         if env:
             cmd_env.update(env)
@@ -175,13 +213,20 @@ class LocalSandbox(BaseSandbox):
         return target.read_text(encoding="utf-8")
 
     def write_file(self, path: str, content: str | bytes) -> None:
-        """Write a file safely inside the sandbox, creating parent directories."""
+        """Write a file atomically inside the sandbox, creating parent directories."""
         target = self._resolve_safe_path(path)
         target.parent.mkdir(parents=True, exist_ok=True)
-        if isinstance(content, bytes):
-            target.write_bytes(content)
-        else:
-            target.write_text(content, encoding="utf-8")
+        data = content if isinstance(content, bytes) else content.encode("utf-8")
+        fd, tmp_name = tempfile.mkstemp(prefix=f".{target.name}.", suffix=".tmp",
+                                        dir=str(target.parent))
+        try:
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(data)
+            os.replace(tmp_name, target)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp_name)
+            raise
 
     def list_files(self, path: str = ".") -> list[str]:
         """List all relative file paths under path."""
@@ -202,7 +247,11 @@ class LocalSandbox(BaseSandbox):
         return sorted(paths)
 
     def snapshot_filesystem(self, path: str = ".") -> FilesystemSnapshot:
-        """Compute SHA-256 hash, size, and mtime for all files in the sandbox."""
+        """Compute SHA-256 hash, size, and mtime for files under ``path``.
+
+        The snapshot's ``root_path`` is the scanned directory, so
+        ``diff_filesystem(before)`` re-scans the same subtree.
+        """
         if not self.is_alive:
             self.start()
 
@@ -236,7 +285,7 @@ class LocalSandbox(BaseSandbox):
                         continue
 
         return FilesystemSnapshot(
-            root_path=str(self.root_path),
+            root_path=str(target),
             timestamp=time.time(),
             entries=entries,
         )

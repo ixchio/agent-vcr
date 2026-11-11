@@ -7,6 +7,13 @@ Run Sentinel directly on any directory without OpenHands:
     sentinel watch ./my-project  (live mode)
 
 Every scan is recorded to agent-vcr for audit trails.
+
+Exit codes (``scan``; ``watch`` uses 0/1/2/4):
+    0  passed — no critical or blocker issues
+    1  critical issue(s) found
+    2  blocker(s) found (e.g. syntax errors) — the agent should not proceed
+    3  no Python files found in the target (nothing was checked)
+    4  target directory does not exist or is not a directory
 """
 
 from __future__ import annotations
@@ -20,6 +27,15 @@ from pathlib import Path
 from agent_vcr import VCRRecorder
 from openhands_sentinel.analyzer import Severity
 from openhands_sentinel.sentinel import Sentinel, SentinelConfig
+
+EXIT_PASSED = 0
+EXIT_CRITICAL = 1
+EXIT_BLOCKED = 2
+EXIT_NO_FILES = 3
+EXIT_BAD_TARGET = 4
+
+# Directory names never scanned (matched against paths *relative to the scan root*).
+_EXCLUDED_DIRS = frozenset({"node_modules", "__pycache__", ".venv", "venv"})
 
 # ──────────────────────────────────────────────
 #  Colors for terminal output
@@ -63,29 +79,56 @@ def print_banner() -> None:
     print(banner)
 
 
+def _check_target(directory: str) -> Path | None:
+    """Return the target as a Path, or print an error and return None if unusable."""
+    target = Path(directory)
+    if not target.exists():
+        print(f"{Colors.RED}Error: Directory {directory} does not exist{Colors.RESET}")
+        return None
+    if not target.is_dir():
+        print(f"{Colors.RED}Error: {directory} is not a directory{Colors.RESET}")
+        return None
+    return target
+
+
+def _iter_python_files(target: Path) -> list[Path]:
+    """Collect Python files under ``target``, skipping hidden/vendored dirs.
+
+    The exclusion rules only look at path components *below* the scan root,
+    so a target that itself lives under a dot-directory (``.claude/worktrees/x``,
+    ``../proj``, ``/home/me/.src/proj``) is still scanned.
+    """
+    files: list[Path] = []
+    for f in sorted(target.rglob("*.py")):
+        rel_parts = f.relative_to(target).parts
+        if any(part.startswith(".") or part in _EXCLUDED_DIRS for part in rel_parts):
+            continue
+        files.append(f)
+    return files
+
+
 def scan_directory(directory: str, config: SentinelConfig) -> int:
-    """Scan all Python files in a directory and report violations."""
+    """Scan all Python files in a directory and report violations.
+
+    Returns one of the ``EXIT_*`` codes documented in the module docstring.
+    """
     print_banner()
+
+    # Validate before anything touches the filesystem (VCRRecorder creates
+    # its output dir, which would otherwise mask a mistyped target).
+    target = _check_target(directory)
+    if target is None:
+        return EXIT_BAD_TARGET
+
+    py_files = _iter_python_files(target)
+    if not py_files:
+        print(f"  {Colors.BG_YELLOW}{Colors.BOLD} NO FILES {Colors.RESET} "
+              f"No Python files found in {directory} — nothing was checked.\n")
+        return EXIT_NO_FILES
 
     recorder = VCRRecorder(output_dir=os.path.join(directory, ".vcr"))
     sentinel = Sentinel(config=config, recorder=recorder)
     sentinel.start_session("sentinel-scan")
-
-    target = Path(directory)
-    if not target.exists():
-        print(f"{Colors.RED}Error: Directory {directory} does not exist{Colors.RESET}")
-        return 1
-
-    # Collect Python files
-    py_files = sorted(target.rglob("*.py"))
-    py_files = [
-        f for f in py_files
-        if not any(part.startswith(".") for part in f.parts)
-        and "node_modules" not in f.parts
-        and "__pycache__" not in f.parts
-        and ".venv" not in f.parts
-        and "venv" not in f.parts
-    ]
 
     print(f"{Colors.DIM}  Scanning {len(py_files)} Python files in {directory}{Colors.RESET}\n")
 
@@ -123,27 +166,15 @@ def scan_directory(directory: str, config: SentinelConfig) -> int:
     if sentinel.stats.blockers > 0:
         print(f"  {Colors.BG_RED}{Colors.WHITE}{Colors.BOLD} BLOCKED {Colors.RESET} "
               f"{sentinel.stats.blockers} blocker(s) found. Agent should not proceed.\n")
-        return 2
+        return EXIT_BLOCKED
     elif sentinel.stats.criticals > 0:
         print(f"  {Colors.RED}{Colors.BOLD} CRITICAL {Colors.RESET} "
               f"{sentinel.stats.criticals} critical issue(s) found.\n")
-        return 1
+        return EXIT_CRITICAL
     else:
         print(f"  {Colors.BG_GREEN}{Colors.WHITE}{Colors.BOLD} PASSED {Colors.RESET} "
-              f"No critical issues.\n")
-        return 0
-
-
-def _iter_python_files(target: Path) -> list[Path]:
-    py_files = sorted(target.rglob("*.py"))
-    return [
-        f for f in py_files
-        if not any(part.startswith(".") for part in f.parts)
-        and "node_modules" not in f.parts
-        and "__pycache__" not in f.parts
-        and ".venv" not in f.parts
-        and "venv" not in f.parts
-    ]
+              f"No critical issues in {len(py_files)} file(s).\n")
+        return EXIT_PASSED
 
 
 def watch_directory(
@@ -154,10 +185,9 @@ def watch_directory(
 ) -> int:
     """Watch Python files and rescan changed files until interrupted."""
     print_banner()
-    target = Path(directory)
-    if not target.exists():
-        print(f"{Colors.RED}Error: Directory {directory} does not exist{Colors.RESET}")
-        return 1
+    target = _check_target(directory)
+    if target is None:
+        return EXIT_BAD_TARGET
 
     recorder = VCRRecorder(output_dir=os.path.join(directory, ".vcr"))
     sentinel = Sentinel(config=config, recorder=recorder)
@@ -169,7 +199,12 @@ def watch_directory(
     try:
         while True:
             changed: list[Path] = []
-            for py_file in _iter_python_files(target):
+            current_files = _iter_python_files(target)
+            current_set = set(current_files)
+            for gone in [p for p in mtimes if p not in current_set]:
+                del mtimes[gone]
+                sentinel.forget_file(str(gone.relative_to(target)))
+            for py_file in current_files:
                 try:
                     mtime = py_file.stat().st_mtime
                 except OSError:
@@ -188,7 +223,8 @@ def watch_directory(
                 status = f"{Colors.GREEN}clean{Colors.RESET}" if result.passed else f"{Colors.RED}{len(result.violations)} issue(s){Colors.RESET}"
                 print(f"  {rel_path}: {status}")
                 if warning:
-                    exit_code = max(exit_code, 2 if result.blocker_count else 1)
+                    code = EXIT_BLOCKED if result.blocker_count else EXIT_CRITICAL
+                    exit_code = max(exit_code, code)
 
             if once:
                 break
@@ -211,6 +247,10 @@ Examples:
   sentinel scan ./my-project          Scan a project directory
   sentinel scan . --max-lines 80      Custom function length threshold
   sentinel scan . --max-complexity 5  Strict complexity threshold
+
+Exit codes (scan):
+  0 passed   1 critical issues   2 blockers   3 no Python files found
+  4 target missing / not a directory
         """,
     )
 

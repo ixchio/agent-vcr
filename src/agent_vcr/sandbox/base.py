@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import abc
+import asyncio
 from typing import Any, TypeVar
 
 from agent_vcr.sandbox.models import (
@@ -142,8 +143,10 @@ class BaseSandbox(abc.ABC):
         self.stop()
 
     async def __aenter__(self: Self) -> Self:
-        self.start()
+        # start()/stop() block (process spawn, VM boot, filesystem cleanup):
+        # run them off the event loop so other coroutines keep running.
+        await asyncio.to_thread(self.start)
         return self
 
     async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
-        self.stop()
+        await asyncio.to_thread(self.stop)

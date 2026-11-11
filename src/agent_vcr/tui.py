@@ -11,8 +11,11 @@ Features:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
+import os
 import sys
+import tempfile
 from pathlib import Path
 
 from rich.console import RenderableType
@@ -40,6 +43,7 @@ class FrameList(Static):
     frames: reactive[list[Frame]] = reactive([])
     selected_index: reactive[int] = reactive(0)
     filter_text: reactive[str] = reactive("")
+    loaded: reactive[bool] = reactive(False)
 
     @property
     def visible_frames(self) -> list[tuple[int, Frame]]:
@@ -55,6 +59,12 @@ class FrameList(Static):
 
     def render(self) -> RenderableType:
         if not self.frames:
+            if self.loaded:
+                return Panel(
+                    Text("This session has no frames", style="dim italic"),
+                    title="Timeline",
+                    border_style="blue",
+                )
             return Text("Loading frames...", style="dim")
 
         visible = self.visible_frames
@@ -336,6 +346,9 @@ class VCRApp(App):
         self.player: AsyncVCRPlayer | None = None
         self.current_index = 0
         self._edited_state: dict | None = None
+        # Set when the file cannot be loaded; the app then exits with return
+        # code 1 and callers (the ``vcr`` CLI) print this message.
+        self.load_error: str | None = None
 
     async def on_mount(self) -> None:
         """Load the VCR file when the app starts."""
@@ -345,10 +358,12 @@ class VCRApp(App):
 
             timeline = self.query_one(FrameList)
             timeline.frames = self.player.frames
+            timeline.loaded = True
             self.update_selection(0)
             self._update_status()
         except Exception as e:
-            self.exit(f"Error loading VCR file: {e}")
+            self.load_error = f"Error loading VCR file {self.filepath}: {e}"
+            self.exit(self.load_error, return_code=1)
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -381,7 +396,7 @@ class VCRApp(App):
         if self.player and self.player.frames:
             frame = self.player.frames[self.current_index]
             total = len(self.player.frames)
-            edited = " [yellow]✏ EDITED[/]" if self._edited_state else ""
+            edited = " [yellow]✏ EDITED[/]" if self._edited_state is not None else ""
             status.update(
                 f"[dim]Frame[/] [bold]{self.current_index + 1}/{total}[/]  "
                 f"[dim]Node:[/] [cyan]{frame.node_name}[/]  "
@@ -416,17 +431,22 @@ class VCRApp(App):
         if not self.player or not self.player.frames:
             return
         frame = self.player.frames[self.current_index]
-        state = self._edited_state or frame.output_state
+        state = self._edited_state if self._edited_state is not None else frame.output_state
         initial_json = json.dumps(state, indent=2)
 
         def on_edit_result(result: str | None) -> None:
             if result is not None:
                 try:
-                    self._edited_state = json.loads(result)
-                    self._update_status()
-                    self.notify("State updated ✓", severity="information")
+                    parsed = json.loads(result)
                 except json.JSONDecodeError as e:
                     self.notify(f"Invalid JSON: {e}", severity="error")
+                    return
+                if not isinstance(parsed, dict):
+                    self.notify("State must be a JSON object", severity="error")
+                    return
+                self._edited_state = parsed
+                self._update_status()
+                self.notify("State updated ✓", severity="information")
 
         self.push_screen(
             EditStateScreen(initial_json, self.current_index),
@@ -441,24 +461,28 @@ class VCRApp(App):
         """
         if not self.player:
             return
+        if not self.player.frames:
+            self.notify("This session has no frames to resume from", severity="warning")
+            return
 
         frame = self.player.frames[self.current_index]
-        state = self._edited_state or frame.output_state
+        edited = self._edited_state is not None
+        state = self._edited_state if self._edited_state is not None else frame.output_state
 
         # Write the resume payload to a file so it's actually actionable
         resume_payload = {
             "session_id": self.player.session.session_id,
             "from_frame": self.current_index,
             "state": state,
-            "edited": self._edited_state is not None,
+            "edited": edited,
         }
         resume_path = Path(self.filepath).parent / "resume_state.json"
         try:
-            resume_path.write_text(json.dumps(resume_payload, indent=2, default=str))
+            _atomic_write_text(resume_path, json.dumps(resume_payload, indent=2, default=str))
             self.notify(
                 f"Resume state saved to {resume_path}\n"
                 f"Frame {self.current_index} | "
-                f"{'edited' if self._edited_state else 'original'} state\n"
+                f"{'edited' if edited else 'original'} state\n"
                 f"Load with: json.load(open('{resume_path}'))",
                 severity="information",
             )
@@ -484,18 +508,47 @@ class VCRApp(App):
         )
 
 
+def _atomic_write_text(path: Path, text: str) -> None:
+    """Write via a tmp sibling + ``os.replace`` so readers never see half a file."""
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
+
+
+def run_app(filepath: str | Path) -> int:
+    """Run the TUI on ``filepath``; return a process exit code.
+
+    Load errors are printed to stderr and return 1 (the app itself only
+    exits; it cannot print once the terminal is restored).
+    """
+    path = Path(filepath)
+    if not path.exists():
+        print(f"Error: File not found: {path}", file=sys.stderr)
+        return 1
+    if path.is_dir():
+        print(f"Error: {path} is a directory, not a .vcr file", file=sys.stderr)
+        return 1
+
+    app = VCRApp(str(path))
+    app.run()
+    if app.load_error:
+        print(app.load_error, file=sys.stderr)
+        return 1
+    return int(getattr(app, "return_code", 0) or 0)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Agent VCR Terminal UI")
     parser.add_argument("file", help="Path to the .vcr file to replay")
     args = parser.parse_args()
-
-    filepath = Path(args.file)
-    if not filepath.exists():
-        print(f"Error: File not found: {filepath}", file=sys.stderr)
-        sys.exit(1)
-
-    app = VCRApp(str(filepath))
-    app.run()
+    sys.exit(run_app(args.file))
 
 
 if __name__ == "__main__":

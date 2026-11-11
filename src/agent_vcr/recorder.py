@@ -8,6 +8,7 @@ import os
 import tempfile
 import threading
 import time
+from collections.abc import Iterator
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -17,6 +18,7 @@ logger = logging.getLogger(__name__)
 import contextlib  # noqa: E402
 
 from agent_vcr.models import (  # noqa: E402
+    INPUT_FROM_PREVIOUS_KEY,
     Frame,
     FrameMetadata,
     FrameType,
@@ -24,7 +26,112 @@ from agent_vcr.models import (  # noqa: E402
     StateDiff,
     StateSerializer,
     VCRCache,
+    json_dumps_safe,
 )
+
+_IF_EXISTS_CHOICES = frozenset({"rotate", "overwrite", "error"})
+
+
+def _validate_session_id(session_id: str) -> None:
+    """Reject ids that would escape the output directory."""
+    if (
+        not session_id
+        or session_id in {".", ".."}
+        or any(ch in session_id for ch in ("/", "\\", "\0"))
+    ):
+        raise ValueError(f"Invalid session_id {session_id!r}: must be a plain file name")
+
+
+def _handle_existing_recording(path: Path, if_exists: str) -> None:
+    """Apply the ``if_exists`` policy before a header would truncate ``path``."""
+    try:
+        has_data = path.stat().st_size > 0
+    except FileNotFoundError:
+        return
+    if not has_data or if_exists == "overwrite":
+        return
+    if if_exists == "error":
+        raise FileExistsError(
+            f"Recording already exists: {path}. Use attach_session() to append, "
+            "or start_session(if_exists='overwrite'|'rotate')."
+        )
+    backup = path.with_name(path.name + ".prev")
+    os.replace(path, backup)
+    logger.warning("Session file %s already existed; previous run moved to %s", path, backup)
+
+
+@contextlib.contextmanager
+def _manifest_lock(output_dir: Path) -> Iterator[None]:
+    """Exclusive cross-process lock for manifest read-modify-write (POSIX flock).
+
+    Without it, parallel recorders (multiple agents, pytest-xdist) each read
+    the manifest, add their session and replace it — losing each other's
+    entries. On platforms without ``fcntl`` this degrades to no locking.
+    """
+    try:
+        import fcntl
+    except ImportError:  # pragma: no cover - Windows
+        yield
+        return
+    with open(output_dir / ".manifest.lock", "a") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def update_manifest(output_dir: Path, session_data: dict[str, Any]) -> None:
+    """Insert/replace one session entry in ``manifest.json`` (locked + atomic)."""
+    manifest_path = output_dir / "manifest.json"
+    with _manifest_lock(output_dir):
+        manifest: dict[str, Any] = {}
+        if manifest_path.exists():
+            try:
+                with open(manifest_path) as f:
+                    loaded = json.load(f)
+                manifest = loaded if isinstance(loaded, dict) else {}
+            except (json.JSONDecodeError, OSError) as e:
+                logger.warning("Failed to read manifest, starting fresh: %s", e)
+        sessions = [s for s in manifest.get("sessions", []) if isinstance(s, dict)]
+        idx = next(
+            (i for i, s in enumerate(sessions) if s.get("session_id") == session_data["session_id"]),
+            None,
+        )
+        if idx is None:
+            sessions.append(session_data)
+        else:
+            sessions[idx] = session_data  # keep position
+        manifest["sessions"] = sessions
+        manifest["updated_at"] = datetime.now(timezone.utc).isoformat()
+
+        fd, tmp_path = tempfile.mkstemp(dir=str(output_dir), suffix=".tmp", prefix="manifest_")
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump(manifest, f, indent=2, default=str)
+            os.replace(tmp_path, str(manifest_path))
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp_path)
+            raise
+
+
+def rewrite_session_file(path: Path, session: Session, frames: list[Frame]) -> None:
+    """Atomically rewrite a ``.vcr`` file from a session header + frames."""
+    header = {"type": "session", "schema": "execution/v1", "data": session.model_dump()}
+    fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp", prefix="vcr_")
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(json_dumps_safe(header) + "\n")
+            for frame in frames:
+                f.write(json_dumps_safe({"type": "frame", "data": frame.model_dump()}) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, str(path))
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp_path)
+        raise
 
 
 class VCRRecorder:
@@ -72,11 +179,32 @@ class VCRRecorder:
         forked_from_frame: int | None = None,
         metadata: dict | None = None,
         tags: list[str] | None = None,
+        if_exists: str = "rotate",
     ) -> Session:
-        """Start a new recording session."""
+        """Start a new recording session.
+
+        Args:
+            if_exists: What to do when ``<session_id>.vcr`` already has data:
+                ``"rotate"`` (default) moves it to ``<session_id>.vcr.prev``
+                so the previous run is never silently destroyed;
+                ``"overwrite"`` replaces it; ``"error"`` raises
+                ``FileExistsError``. Use :meth:`attach_session` to append.
+        """
+        if if_exists not in _IF_EXISTS_CHOICES:
+            raise ValueError(f"if_exists must be one of {sorted(_IF_EXISTS_CHOICES)}")
         with self._lock:
+            if self._session is not None and self._frames:
+                logger.warning(
+                    "start_session() called with %d unsaved frames in session %s; saving them",
+                    len(self._frames),
+                    self._session.session_id,
+                )
+                self.save()
+            sid = session_id or self._generate_session_id()
+            _validate_session_id(sid)
+            _handle_existing_recording(self.output_dir / f"{sid}.vcr", if_exists)
             self._session = Session(
-                session_id=session_id or self._generate_session_id(),
+                session_id=sid,
                 parent_session_id=parent_session_id,
                 forked_from_frame=forked_from_frame,
                 metadata=metadata or {},
@@ -112,20 +240,27 @@ class VCRRecorder:
             serialized_input = StateSerializer.serialize(input_state)
             serialized_output = StateSerializer.serialize(output_state)
 
+            if isinstance(metadata, dict):
+                metadata = FrameMetadata(**metadata)
+            elif metadata is None:
+                metadata = FrameMetadata()
+            else:
+                # Never mutate the caller's object (e.g. a replayed frame's metadata).
+                metadata = metadata.model_copy(update={"custom": dict(metadata.custom)})
+
             state_diff = None
             if self.diff_mode and self._previous_state is not None:
                 state_diff = self._compute_diff(
                     self._previous_state, serialized_output
                 )
-                # In diff mode, omit input_state from the frame when it
-                # duplicates the previous output_state (the common case).
-                # The player can reconstruct it from the prior frame.
-                serialized_input = {}
-
-            if isinstance(metadata, dict):
-                metadata = FrameMetadata(**metadata)
-            elif metadata is None:
-                metadata = FrameMetadata()
+                # Omit input_state only when it duplicates the previous
+                # output_state; the explicit marker tells the player whether
+                # to reconstruct it from the prior frame. Inputs that differ
+                # (LLM prompts, tool args) are always stored.
+                elided = serialized_input == self._previous_state
+                metadata.custom[INPUT_FROM_PREVIOUS_KEY] = elided
+                if elided:
+                    serialized_input = {}
 
             # Only auto-set latency if the caller did not already supply one
             if metadata.latency_ms == 0.0:
@@ -314,6 +449,7 @@ class VCRRecorder:
         with self._lock:
             if self._session is not None:
                 raise RuntimeError("Recorder already has an active session")
+            _validate_session_id(session_id)
             path = self.output_dir / f"{session_id}.vcr"
             if not path.exists():
                 raise FileNotFoundError(f"VCR file not found: {path}")
@@ -408,8 +544,20 @@ class VCRRecorder:
         from_frame: int,
         new_session_id: str | None = None,
         state_overrides: dict | None = None,
+        in_place: bool = False,
     ) -> VCRRecorder:
-        """Create a forked recorder starting from a specific frame."""
+        """Fork a new session that starts from frame ``from_frame``'s **output** state.
+
+        (``VCRPlayer.resume(from_frame=n)`` instead re-runs frame *n* from its
+        *input* state; use this method to continue *after* a frame.)
+
+        Args:
+            in_place: If True, save the current session and continue recording
+                the fork on *this* recorder object (returned for chaining), so
+                framework wrappers holding a reference keep recording into the
+                new branch. Otherwise a new recorder is returned and this one
+                is left untouched.
+        """
         all_frames = self.get_frames()
         if from_frame < 0 or from_frame >= len(all_frames):
             raise ValueError(f"Frame {from_frame} not found (have {len(all_frames)} frames)")
@@ -419,19 +567,26 @@ class VCRRecorder:
         forked_state = dict(base_state)
         if state_overrides:
             forked_state.update(state_overrides)
+        parent_id = self._session.session_id if self._session else None
 
-        new_recorder = VCRRecorder(
-            output_dir=str(self.output_dir),
-            buffer_size=self.buffer_size,
-            auto_save=self.auto_save,
-            diff_mode=self.diff_mode,
-        )
+        if in_place:
+            if self._session is not None:
+                self.save()
+            new_recorder = self
+        else:
+            new_recorder = VCRRecorder(
+                output_dir=str(self.output_dir),
+                buffer_size=self.buffer_size,
+                auto_save=self.auto_save,
+                diff_mode=self.diff_mode,
+                on_frame_recorded=self._on_frame_recorded,
+            )
 
         new_recorder.start_session(
             session_id=new_session_id,
-            parent_session_id=self._session.session_id if self._session else None,
+            parent_session_id=parent_id,
             forked_from_frame=from_frame,
-            metadata={"forked_from": self._session.session_id if self._session else None},
+            metadata={"forked_from": parent_id},
         )
 
         new_recorder.record_step(
@@ -469,17 +624,24 @@ class VCRRecorder:
             return
 
         path = self._get_session_path()
-        with open(path, "w") as f:
-            header = {
-                "type": "session",
-                "schema": "execution/v1",
-                "data": self._session.model_dump(),
-            }
-            f.write(json.dumps(header, separators=(",", ":")) + "\n")
-            f.flush()
-            os.fsync(f.fileno())
-        if self._session is not None:
-            self._header_frame_count = self._session.frame_count
+        header = {
+            "type": "session",
+            "schema": "execution/v1",
+            "data": self._session.model_dump(),
+        }
+        payload = json_dumps_safe(header) + "\n"
+        fd, tmp_path = tempfile.mkstemp(dir=str(self.output_dir), suffix=".tmp", prefix="vcr_")
+        try:
+            with os.fdopen(fd, "w") as f:
+                f.write(payload)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, str(path))
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp_path)
+            raise
+        self._header_frame_count = self._session.frame_count
 
     def _flush_frames(self) -> None:
         """Write buffered frames to disk.
@@ -492,13 +654,14 @@ class VCRRecorder:
             return
 
         path = self._get_session_path()
+        # Serialize everything first: a failure here must not leave a
+        # partially-written batch that would be re-appended on the next flush.
+        payload = "".join(
+            json_dumps_safe({"type": "frame", "data": frame.model_dump()}) + "\n"
+            for frame in self._frames
+        )
         with open(path, "a") as f:
-            for frame in self._frames:
-                line = {
-                    "type": "frame",
-                    "data": frame.model_dump(),
-                }
-                f.write(json.dumps(line, separators=(",", ":")) + "\n")
+            f.write(payload)
             f.flush()
             os.fsync(f.fileno())
 
@@ -514,76 +677,17 @@ class VCRRecorder:
         """
         if self._session is None:
             return
-        path = self._get_session_path()
-        frames = self._cache.get_frames(self._session.session_id)
-        fd, tmp_path = tempfile.mkstemp(
-            dir=str(self.output_dir), suffix=".tmp", prefix="vcr_"
+        rewrite_session_file(
+            self._get_session_path(),
+            self._session,
+            self._cache.get_frames(self._session.session_id),
         )
-        try:
-            with os.fdopen(fd, "w") as f:
-                header = {
-                    "type": "session",
-                    "schema": "execution/v1",
-                    "data": self._session.model_dump(),
-                }
-                f.write(json.dumps(header, separators=(",", ":")) + "\n")
-                for frame in frames:
-                    line = {"type": "frame", "data": frame.model_dump()}
-                    f.write(json.dumps(line, separators=(",", ":")) + "\n")
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp_path, str(path))
-            self._header_frame_count = self._session.frame_count
-        except Exception:
-            with contextlib.suppress(OSError):
-                os.unlink(tmp_path)
-            raise
+        self._header_frame_count = self._session.frame_count
 
     def _update_session_manifest(self) -> None:
-        """Update the session manifest file using atomic write to prevent corruption."""
-        if self._session is None:
-            return
-
-        manifest_path = self.output_dir / "manifest.json"
-        manifest: dict = {}
-
-        if manifest_path.exists():
-            try:
-                with open(manifest_path) as f:
-                    manifest = json.load(f)
-            except (json.JSONDecodeError, OSError) as e:
-                logger.warning("Failed to read manifest, starting fresh: %s", e)
-                manifest = {}
-
-        sessions = manifest.get("sessions", [])
-        session_data = self._session.model_dump()
-
-        existing_idx = next(
-            (i for i, s in enumerate(sessions) if s["session_id"] == self._session.session_id),
-            None,
-        )
-
-        if existing_idx is not None:
-            sessions[existing_idx] = session_data
-        else:
-            sessions.append(session_data)
-
-        manifest["sessions"] = sessions
-        manifest["updated_at"] = datetime.now(timezone.utc).isoformat()
-
-        # Atomic write: write to temp file, then rename
-        fd, tmp_path = tempfile.mkstemp(
-            dir=str(self.output_dir), suffix=".tmp", prefix="manifest_"
-        )
-        try:
-            with os.fdopen(fd, "w") as f:
-                json.dump(manifest, f, indent=2)
-            os.replace(tmp_path, str(manifest_path))
-        except Exception:
-            # Clean up temp file on failure
-            with contextlib.suppress(OSError):
-                os.unlink(tmp_path)
-            raise
+        """Update the session manifest (atomic write, cross-process locked)."""
+        if self._session is not None:
+            update_manifest(self.output_dir, self._session.model_dump(mode="json"))
 
     def _compute_diff(self, before: dict, after: dict) -> list[dict]:
         """Compute the diff between two states (canonical JSON-patch view)."""

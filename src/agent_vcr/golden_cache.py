@@ -14,6 +14,8 @@ import contextlib
 import hashlib
 import json
 import logging
+import os
+import tempfile
 import time
 from datetime import datetime, timezone
 from enum import Enum
@@ -21,13 +23,30 @@ from pathlib import Path
 from typing import Any, Callable
 
 from agent_vcr.models import (
+    SCHEMA_NAME,
     FrameMetadata,
     StateSerializer,
+    json_dumps_safe,
 )
 from agent_vcr.player import VCRPlayer
 from agent_vcr.recorder import VCRRecorder
 
 logger = logging.getLogger(__name__)
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    """Write ``text`` to ``path`` via a sibling temp file + ``os.replace``."""
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=path.name + ".", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
 
 
 class GhostReplayMode(str, Enum):
@@ -77,9 +96,20 @@ class CostLedger:
 
     @property
     def savings_percent(self) -> float:
-        if self.original_cost_usd == 0:
+        """Savings vs the golden run: by cost, else tokens, else replayed steps.
+
+        Falls back to the replayed-step fraction when the golden run carried no
+        cost or token data, so a replay that re-ran every step reports 0%, not
+        100%. An empty ledger (nothing replayed or re-run) reports 100%.
+        """
+        if self.original_cost_usd > 0:
+            return (self.cost_saved_usd / self.original_cost_usd) * 100
+        if self.original_tokens > 0:
+            return (self.tokens_saved / self.original_tokens) * 100
+        total_steps = self.steps_replayed + self.steps_rerun
+        if total_steps == 0:
             return 100.0
-        return (self.cost_saved_usd / self.original_cost_usd) * 100
+        return (self.steps_replayed / total_steps) * 100
 
     def summary(self) -> dict[str, Any]:
         return {
@@ -101,6 +131,9 @@ class CostLedger:
             },
             "steps_replayed": self.steps_replayed,
             "steps_rerun": self.steps_rerun,
+            # Re-run steps are charged the golden frame's recorded tokens/cost;
+            # step executors don't report their actual usage.
+            "rerun_cost_estimated": self.steps_rerun > 0,
             "cache_hit_reason": self.cache_hit_reason,
             "step_sources": self.step_sources,
         }
@@ -163,14 +196,15 @@ class GoldenRunCache:
         if not session or not frames:
             raise ValueError("Cannot save an empty run as golden.")
 
-        # Persist the golden run as a .vcr file
+        # Persist the golden run as a .vcr file (atomic: tmp + os.replace)
         golden_path = self.cache_dir / f"{fingerprint}.vcr"
-        with open(golden_path, "w") as f:
-            header = {"type": "session", "data": session.model_dump()}
-            f.write(json.dumps(header, default=str) + "\n")
-            for frame in frames:
-                line = {"type": "frame", "data": frame.model_dump()}
-                f.write(json.dumps(line, default=str) + "\n")
+        lines = [json_dumps_safe(
+            {"type": "session", "schema": SCHEMA_NAME, "data": session.model_dump()}
+        )]
+        lines.extend(
+            json_dumps_safe({"type": "frame", "data": frame.model_dump()}) for frame in frames
+        )
+        _atomic_write_text(golden_path, "\n".join(lines) + "\n")
 
         # Update the index
         self._index[fingerprint] = {
@@ -182,7 +216,9 @@ class GoldenRunCache:
             "created_at": datetime.now(timezone.utc).isoformat(),
             "tags": tags or [],
             "identity": normalized_identity,
-            "file": str(golden_path),
+            # Stored relative to cache_dir so a committed cache keeps working
+            # from any working directory (CI, other checkouts).
+            "file": golden_path.name,
         }
         self._save_index()
 
@@ -197,9 +233,25 @@ class GoldenRunCache:
         return self._fingerprint(task, self._normalize_identity(identity)) in self._index
 
     def get_golden_info(self, task: str, identity: dict[str, Any] | None = None) -> dict | None:
-        """Get metadata about a cached golden run."""
+        """Get metadata about a cached golden run (``file`` is an absolute path)."""
         fp = self._fingerprint(task, self._normalize_identity(identity))
-        return self._index.get(fp)
+        info = self._index.get(fp)
+        if info is None:
+            return None
+        return {**info, "file": str(self._resolve_file(info))}
+
+    def _resolve_file(self, info: dict[str, Any]) -> Path:
+        """Locate a golden ``.vcr`` regardless of the current working directory.
+
+        New indexes store a bare file name; legacy ones stored a path relative
+        to whatever directory ``save_golden_run`` ran in. Prefer the copy inside
+        ``cache_dir``; fall back to the stored path if it still resolves.
+        """
+        stored = Path(str(info.get("file", "")))
+        local = self.cache_dir / stored.name
+        if local.exists() or not stored.exists():
+            return local
+        return stored
 
     def replay(
         self,
@@ -240,7 +292,7 @@ class GoldenRunCache:
             raise KeyError(f"No golden run found for task: {task!r}")
 
         golden_info = self._index[fingerprint]
-        golden_player = VCRPlayer.load(golden_info["file"])
+        golden_player = VCRPlayer.load(self._resolve_file(golden_info))
 
         changed_steps = changed_steps or set()
         if changed_steps and step_executor is None:
@@ -291,6 +343,7 @@ class GoldenRunCache:
                         cost_usd=frame.metadata.cost_usd,
                         custom={"source": "re_executed", "reason": source},
                     ),
+                    frame_type=frame.frame_type,
                 )
 
                 # Charge the re-run to the ledger
@@ -319,6 +372,7 @@ class GoldenRunCache:
                             "reason": ledger.cache_hit_reason,
                         },
                     ),
+                    frame_type=frame.frame_type,
                 )
 
                 ledger.replay_latency_ms += 0.1
@@ -403,7 +457,7 @@ class GoldenRunCache:
     def list_golden_runs(self) -> list[dict]:
         """List all cached golden runs."""
         return [
-            {"fingerprint": fp, **info}
+            {"fingerprint": fp, **info, "file": str(self._resolve_file(info))}
             for fp, info in self._index.items()
         ]
 
@@ -416,7 +470,7 @@ class GoldenRunCache:
         fp = self._fingerprint(task, self._normalize_identity(identity))
         if fp in self._index:
             # Delete the file
-            golden_file = Path(self._index[fp]["file"])
+            golden_file = self._resolve_file(self._index[fp])
             if golden_file.exists():
                 golden_file.unlink()
             del self._index[fp]
@@ -488,9 +542,6 @@ class GoldenRunCache:
 
     def _save_index(self) -> None:
         """Persist the golden run index to disk (atomic write)."""
-        import os
-        import tempfile
-
         index_path = self.cache_dir / "index.json"
         # Atomic write: write to temp file, then rename.
         # os.replace is atomic on POSIX, preventing corruption on crash.

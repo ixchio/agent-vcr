@@ -100,14 +100,15 @@ class LocalWorkflowBackend(WorkflowBackend):
             return None
 
     def cancel_run(self, run_id: str) -> bool:
+        """Cooperatively cancel a RUNNING run (compensates, then ABORTED).
+
+        A run executing in this engine stops at its next unit boundary; an
+        idle run is compensated and aborted immediately. The engine never
+        overwrites the cancellation (it is a sidecar marker, not a status
+        flip on the record it holds in memory).
+        """
         try:
-            record = self.engine.runs.load(run_id)
-            if record.status == RunStatus.RUNNING:
-                record.status = RunStatus.ABORTED
-                record.error = "Cancelled by user"
-                self.engine.runs.persist(record)
-                return True
-            return False
+            return bool(self.engine.cancel(run_id, "Cancelled by user"))
         except (KeyError, FileNotFoundError):
             return False
 
@@ -203,7 +204,7 @@ class InngestWorkflowBackend(WorkflowBackend):
         """Store memoized step output for deterministic recovery and replay."""
         self._memoized_steps[(run_id, step_id)] = output
         record = self.get_run(run_id)
-        if record is not None:
+        if record is not None and record.status == RunStatus.RUNNING:
             out_dict = output if isinstance(output, dict) else {"result": output}
             record.outputs[step_id] = out_dict
             if step_id not in record.completed_top_steps:
@@ -268,7 +269,9 @@ class InngestWorkflowBackend(WorkflowBackend):
         try:
             record = self.runs.load(run_id)
             if record.status == RunStatus.RUNNING:
+                self.runs.request_cancel(run_id, "Cancelled via Inngest backend")
                 record.status = RunStatus.ABORTED
+                record.cancelled = True
                 record.error = "Cancelled via Inngest backend"
                 self.runs.persist(record)
                 return True
@@ -346,10 +349,12 @@ def create_workflow_backend(
         target = "inngest" if (inngest_available and has_inngest_cfg) else "local"
 
     if target == "inngest":
+        simulate = bool(simulate_inngest or kwargs.pop("simulate", False))
         return InngestWorkflowBackend(
             client=inngest_client,
             run_store=run_store,
-            simulate=simulate_inngest or kwargs.get("simulate", False),
+            simulate=simulate,
+            vcr_dir=vcr_dir,
             **kwargs,
         )
     elif target in ("local", "engine", "in_process"):

@@ -18,9 +18,11 @@ Stdlib only (tarfile/hashlib/json) — no new dependencies.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import logging
+import os
 import subprocess
 import tarfile
 import tempfile
@@ -133,6 +135,8 @@ def export_bundle(
     source = Path(source_vcr)
     if not source.exists():
         raise FileNotFoundError(f"VCR file not found: {source}")
+    if not source.is_file():
+        raise ValueError(f"Not a .vcr file: {source} is a directory")
 
     player = VCRPlayer.load(source)
     integrity = player.verify_integrity()
@@ -155,17 +159,39 @@ def export_bundle(
         extra=extra or {},
     )
 
-    dest = Path(output) if output is not None else source.parent / f"{player.session.session_id}{BUNDLE_SUFFIX}"
+    default_name = f"{player.session.session_id}{BUNDLE_SUFFIX}"
+    if output is None:
+        dest = source.parent / default_name
+    else:
+        dest = Path(output)
+        if dest.is_dir():
+            # ``-o some/dir`` means "put the bundle in that directory".
+            dest = dest / default_name
     if dest.suffix != BUNDLE_SUFFIX:
         dest = dest.with_suffix(BUNDLE_SUFFIX)
+    if not dest.parent.is_dir():
+        raise FileNotFoundError(f"Output directory does not exist: {dest.parent}")
 
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp = Path(tmpdir)
         manifest_path = tmp / MANIFEST_NAME
         manifest_path.write_text(manifest.model_dump_json(indent=2) + "\n")
-        with tarfile.open(dest, "w:gz") as tar:
-            tar.add(str(source), arcname=EXECUTION_NAME)
-            tar.add(str(manifest_path), arcname=MANIFEST_NAME)
+        # Build next to the destination, then os.replace: an interrupted export
+        # never leaves a truncated .vcrb at the final path.
+        fd, tmp_bundle = tempfile.mkstemp(
+            dir=str(dest.parent), prefix=f".{dest.name}.", suffix=".tmp"
+        )
+        os.close(fd)
+        try:
+            os.chmod(tmp_bundle, 0o644)  # mkstemp is 0600; bundles are shared
+            with tarfile.open(tmp_bundle, "w:gz") as tar:
+                tar.add(str(source), arcname=EXECUTION_NAME)
+                tar.add(str(manifest_path), arcname=MANIFEST_NAME)
+            os.replace(tmp_bundle, dest)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp_bundle)
+            raise
 
     logger.info("Exported bundle %s (%d frames)", dest, len(player.frames))
     return dest
@@ -234,9 +260,21 @@ def import_bundle(bundle_path: str | Path, dest_dir: str | Path = ".") -> Path:
     if not report["ok"]:
         raise ValueError(f"Bundle verification failed: {report['issues']}")
 
+    session_id = str(report.get("session_id") or "")
+    # The manifest is not covered by the integrity hash, so its session_id is
+    # untrusted input: it must be a plain file name that stays inside dest_dir.
+    if (
+        not session_id
+        or session_id in {".", ".."}
+        or any(ch in session_id for ch in ("/", "\\", "\0"))
+        or Path(session_id).is_absolute()
+    ):
+        raise ValueError(f"Bundle has an unsafe session_id: {session_id!r}")
     dest = Path(dest_dir)
     dest.mkdir(parents=True, exist_ok=True)
-    out = dest / f"{report['session_id']}.vcr"
+    out = dest / f"{session_id}.vcr"
+    if out.resolve().parent != dest.resolve():
+        raise ValueError(f"Bundle session_id escapes destination: {session_id!r}")
     with tarfile.open(bundle_path, "r:gz") as tar:
         with tempfile.TemporaryDirectory() as tmpdir:
             _extract_member(tar, EXECUTION_NAME, tmpdir)

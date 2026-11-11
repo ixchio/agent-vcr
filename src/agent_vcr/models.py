@@ -13,15 +13,48 @@ Backward-compatibility contract:
 
 from __future__ import annotations
 
+import base64
+import contextlib
+import dataclasses
+import json
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from enum import Enum
+from pathlib import PurePath
 from typing import Any, ClassVar
 
 from pydantic import BaseModel, ConfigDict, Field, field_serializer
 
 SCHEMA_NAME = "execution/v1"
 SCHEMA_VERSION = "1.0.0"
+
+#: ``FrameMetadata.custom`` key set by diff-mode recorders: ``True`` means the
+#: frame's input_state was omitted because it equals the previous frame's
+#: output_state; ``False`` means input_state is stored verbatim.
+INPUT_FROM_PREVIOUS_KEY = "vcr_input_from_prev"
+
+
+def _json_key(key: Any) -> Any:
+    """JSON object keys must be str/int/float/bool/None; stringify the rest."""
+    if key is None or isinstance(key, (str, int, float, bool)):
+        return key
+    return str(key)
+
+
+def _json_default(obj: Any) -> Any:
+    """``json.dumps`` fallback: never raise on unexpected types."""
+    if isinstance(obj, (datetime, date)):
+        return obj.isoformat()
+    if isinstance(obj, (set, frozenset, tuple)):
+        return list(obj)
+    if isinstance(obj, BaseModel):
+        return obj.model_dump(mode="json")
+    return repr(obj)
+
+
+def json_dumps_safe(obj: Any) -> str:
+    """Compact JSON encoding that degrades unknown values to ``repr`` instead of raising."""
+    return json.dumps(obj, separators=(",", ":"), default=_json_default)
 
 
 class FrameType(str, Enum):
@@ -169,24 +202,50 @@ class StateSerializer:
 
     @classmethod
     def serialize(cls, obj: Any) -> Any:
-        """Serialize an object to a JSON-compatible format with type info."""
-        if obj is None:
-            return None
+        """Serialize an object to a JSON-compatible format with type info.
+
+        Total: never raises for unknown types. Anything without a lossless
+        JSON form is stored as ``{"__type__": "repr", ...}`` so recording can
+        never crash the agent being observed.
+        """
+        if obj is None or isinstance(obj, (bool, int, float, str)):
+            return obj
         if isinstance(obj, BaseModel):
+            try:
+                data = obj.model_dump(mode="json")
+            except Exception:
+                data = cls.serialize(obj.__dict__)
             return {
                 "__type__": obj.__class__.__name__,
                 "__module__": obj.__class__.__module__,
-                "data": obj.model_dump(mode="json"),
+                "data": data,
             }
-        if isinstance(obj, list):
+        if isinstance(obj, (list, tuple)):
             return [cls.serialize(item) for item in obj]
         if isinstance(obj, dict):
-            return {k: cls.serialize(v) for k, v in obj.items()}
+            return {_json_key(k): cls.serialize(v) for k, v in obj.items()}
         if isinstance(obj, datetime):
             return {"__type__": "datetime", "data": obj.isoformat()}
         if isinstance(obj, Enum):
             return {"__type__": "Enum", "__class__": obj.__class__.__name__, "data": obj.value}
-        return obj
+        if isinstance(obj, (set, frozenset)):
+            items = [cls.serialize(item) for item in obj]
+            with contextlib.suppress(TypeError):
+                items.sort(key=lambda v: json.dumps(v, sort_keys=True))
+            return {"__type__": "set", "data": items}
+        if isinstance(obj, (bytes, bytearray)):
+            return {"__type__": "bytes", "data": base64.b64encode(bytes(obj)).decode("ascii")}
+        if isinstance(obj, PurePath):
+            return str(obj)
+        if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
+            return {
+                "__type__": obj.__class__.__name__,
+                "__module__": obj.__class__.__module__,
+                "data": cls.serialize(
+                    {f.name: getattr(obj, f.name) for f in dataclasses.fields(obj)}
+                ),
+            }
+        return {"__type__": "repr", "__class__": type(obj).__name__, "data": repr(obj)}
 
     @classmethod
     def deserialize(cls, obj: Any) -> Any:
@@ -200,6 +259,14 @@ class StateSerializer:
                     return datetime.fromisoformat(obj["data"])
                 if type_name == "Enum":
                     return obj["data"]
+                if type_name == "set" and isinstance(obj.get("data"), list):
+                    items = [cls.deserialize(item) for item in obj["data"]]
+                    try:
+                        return set(items)
+                    except TypeError:  # unhashable members (e.g. dicts)
+                        return items
+                if type_name == "bytes" and isinstance(obj.get("data"), str):
+                    return base64.b64decode(obj["data"])
                 if type_name in cls._registry:
                     return cls._registry[type_name](**obj["data"])
                 return obj["data"]

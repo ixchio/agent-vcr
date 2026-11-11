@@ -5,8 +5,11 @@ avg cost/latency) from recorded sessions — the same frames CI already
 produces. :func:`route` picks deterministically:
 
 1. honor an explicit ``prefer`` list order (first viable wins);
-2. else the cheapest model with ``success_rate >= min_success``;
-3. ``fallbacks`` chain when the pick later fails (returned for the
+2. else the cheapest model (per successful call) with
+   ``success_rate >= min_success``; models with no success are never picked;
+3. if nothing satisfies the constraints, return the most reliable model
+   with ``constraints_met=False`` (never a silent relaxation);
+4. ``fallbacks`` chain when the pick later fails (returned for the
    caller to walk — the router never executes).
 
 No live calls, no API keys: routing is pure policy over evidence.
@@ -67,22 +70,52 @@ class ModelRegistry:
 def route(registry: ModelRegistry, *, prefer: list[str] | None = None,
           min_success: float = 0.8, max_avg_cost: float | None = None,
           fallbacks: list[str] | None = None) -> RouteDecision:
-    """Pick a model from observed stats (deterministic, auditable)."""
+    """Pick a model from observed stats (deterministic, auditable).
+
+    Models with no successful call are never picked (an always-failing model
+    records $0 cost and would otherwise look cheapest). Cost ranking uses
+    spend per successful call. If no model satisfies the constraints, the
+    decision has ``constraints_met=False`` and names the most reliable
+    model as an explicit fallback instead of silently ignoring them.
+    """
     stats = registry.stats()
     if not stats:
         raise ValueError("No model observations — record sessions first")
-    viable = {name: s for name, s in stats.items() if s.success_rate >= min_success}
+    eligible = {name: s for name, s in stats.items() if s.success_calls > 0}
+    if not eligible:
+        raise ValueError("No model has a successful observation — nothing safe to route to")
+    viable = {name: s for name, s in eligible.items() if s.success_rate >= min_success}
     if max_avg_cost is not None:
         viable = {n: s for n, s in viable.items() if s.avg_cost <= max_avg_cost}
-    pool = viable or dict(stats)  # constraints matched nothing: fall back openly
-    fallback_note = "" if viable else " (constraints matched nothing; relaxed)"
+    chain = list(fallbacks or [])
+
+    def _decision(model: str, pool: dict[str, ModelStats], reason: str,
+                  met: bool) -> RouteDecision:
+        return RouteDecision(model=model, candidates=sorted(pool), reason=reason,
+                             constraints_met=met,
+                             fallbacks=[f for f in chain if f != model])
+
+    if viable:
+        for name in prefer or []:
+            if name in viable:
+                return _decision(name, viable, "explicit preference", True)
+        cheapest = min(viable.values(),
+                       key=lambda s: (s.cost_per_success, -s.success_rate, s.model))
+        return _decision(
+            cheapest.model, viable,
+            (f"cheapest viable: ${cheapest.cost_per_success:.4f}/successful call at "
+             f"{cheapest.success_rate:.0%} success"), True)
+
+    wanted = f"min_success={min_success:.0%}"
+    if max_avg_cost is not None:
+        wanted += f", max_avg_cost=${max_avg_cost:.4f}"
+    note = f"constraints not met — no model satisfies {wanted}; relaxed to best available"
     for name in prefer or []:
-        if name in pool:
-            return RouteDecision(model=name, candidates=sorted(pool),
-                                 reason=f"explicit preference{fallback_note}")
-    cheapest = min(pool.values(), key=lambda s: (s.avg_cost, -s.success_rate, s.model))
-    return RouteDecision(
-        model=cheapest.model, candidates=sorted(pool),
-        reason=(f"cheapest viable: ${cheapest.avg_cost:.4f}/call at "
-                f"{cheapest.success_rate:.0%} success{fallback_note}"),
-    )
+        if name in eligible:
+            return _decision(name, eligible, f"explicit preference ({note})", False)
+    best = min(eligible.values(),
+               key=lambda s: (-s.success_rate, s.cost_per_success, s.model))
+    return _decision(
+        best.model, eligible,
+        (f"{note}: {best.model} at {best.success_rate:.0%} success, "
+         f"${best.avg_cost:.4f}/call"), False)

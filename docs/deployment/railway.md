@@ -46,6 +46,29 @@ Use the generated Railway public domain as `AGENT_VCR_APP_URL` temporarily, or
 your final HTTPS application domain once it exists. The value must be an origin
 without a path, query, or trailing route.
 
+### Authentication variables
+
+The container binds `0.0.0.0`, so `vcr-server` **refuses to start** unless at
+least one token is set. Generate secrets with
+`python -c "import secrets; print(secrets.token_urlsafe(32))"` and store them only
+in Railway Variables:
+
+| Variable | Required | Purpose |
+| --- | --- | --- |
+| `AGENT_VCR_ADMIN_TOKEN` | Yes | Admin token, required to create projects (`POST /api/projects`) and mint project tokens (`POST /api/projects/{id}/tokens`). |
+| `AGENT_VCR_AUTH_TOKEN` | No | Separate admin-equivalent token for the dashboard API, recorders (`/api/push`) and the `/ws/live` WebSocket. |
+| `AGENT_VCR_ALLOW_UNAUTHENTICATED` | No | Set to `1` to start without any token on a public host. Insecure; never set it in production. |
+
+These variables are defaults for the `--admin-token`, `--auth-token` and
+`--allow-unauthenticated` flags; an explicit flag wins. Prefer the variables in
+containers so secrets never appear in the process list.
+
+With a token configured, every `/api` route except `/api/health` and
+`/api/hosted/*` requires `Authorization: Bearer <token>` (or the
+`x-agent-vcr-token` header). Project tokens are only accepted on that project's
+`/api/projects/{id}/...` routes. Browsers cannot set headers on a WebSocket, so
+`/ws/live` also accepts `?token=<token>`; HTTP routes do not.
+
 [`deploy/railway.json`](../../deploy/railway.json) runs the idempotent database migration before
 each deployment and requires `/api/health` to return a successful health check before Railway marks
 the deployment active.
@@ -56,13 +79,19 @@ Railway finds the repository's `Dockerfile` automatically. It installs the
 `dashboard` and `hosted` extras and runs:
 
 ```text
-vcr-server --host 0.0.0.0 --port $PORT --vcr-dir /data --data-dir /data --hosted
+vcr-server --host 0.0.0.0 --port $PORT --vcr-dir /data --data-dir /data \
+  --allowed-origin $AGENT_VCR_APP_URL --hosted
 ```
+
+Tokens come from `AGENT_VCR_ADMIN_TOKEN` / `AGENT_VCR_AUTH_TOKEN`; if neither is
+set the deployment fails fast instead of exposing an open API.
 
 After Railway reports a successful health check, verify:
 
 ```bash
 curl -fsS https://YOUR_RAILWAY_DOMAIN/api/health
+# Unauthenticated access to the self-hosted API must be rejected (expect 401):
+curl -s -o /dev/null -w '%{http_code}\n' https://YOUR_RAILWAY_DOMAIN/api/sessions
 ```
 
 From an authenticated application client, send the Supabase access token:

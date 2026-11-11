@@ -21,4 +21,10 @@ USER agentvcr
 EXPOSE 8000
 
 # Railway injects PORT. A mounted Railway Volume should be mounted at /data.
-CMD ["sh", "-c", "vcr-server --host 0.0.0.0 --port ${PORT:-8000} --vcr-dir /data --data-dir /data --allowed-origin ${AGENT_VCR_APP_URL} --hosted"]
+#
+# Authentication is read from the environment, never baked into the image:
+#   AGENT_VCR_ADMIN_TOKEN  admin token (create projects, mint project tokens)
+#   AGENT_VCR_AUTH_TOKEN   optional dashboard/recorder token for /api and /ws/live
+# vcr-server refuses to bind 0.0.0.0 unless at least one of them is set.
+# Tokens are not passed on the command line so they never show up in `ps`.
+CMD ["sh", "-c", "exec vcr-server --host 0.0.0.0 --port ${PORT:-8000} --vcr-dir /data --data-dir /data --allowed-origin ${AGENT_VCR_APP_URL} --hosted"]

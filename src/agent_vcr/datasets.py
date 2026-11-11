@@ -74,13 +74,38 @@ class DatasetFile(BaseModel):
     updated_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
 
+def validate_dataset_name(name: str) -> str:
+    """Return ``name`` if it is a plain file name, else raise ``ValueError``.
+
+    The name becomes ``<datasets_dir>/<name>.json``, so path separators,
+    ``.``/``..``, NUL bytes and absolute paths would write outside the
+    datasets directory.
+    """
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError("Dataset name must be a non-empty string")
+    if (
+        name in {".", ".."}
+        or name.startswith(".")
+        or any(ch in name for ch in ("/", "\\", "\0"))
+        or (os.sep in name)
+        or (os.altsep is not None and os.altsep in name)
+        or Path(name).is_absolute()
+    ):
+        raise ValueError(
+            f"Invalid dataset name {name!r}: use a plain name without path separators "
+            "or a leading '.' (e.g. 'refunds')"
+        )
+    return name
+
+
 class ReplayDataset:
     """Versioned store of annotated golden-run references."""
 
     def __init__(self, name: str, datasets_dir: str | Path = ".vcr/datasets"):
-        self.name = name
+        self.name = validate_dataset_name(name)
         self.dir = Path(datasets_dir)
-        self.dir.mkdir(parents=True, exist_ok=True)
+        # The directory is created on first save, so loading a dataset from a
+        # mistyped directory fails instead of silently creating it.
         self._doc = self._load()
 
     # -- construction ----------------------------------------------------
@@ -185,18 +210,21 @@ class ReplayDataset:
         if not path.exists():
             return DatasetFile(name=self.name)
         try:
-            return DatasetFile(**json.loads(path.read_text()))
-        except (json.JSONDecodeError, OSError) as err:
+            return DatasetFile(**json.loads(path.read_text(encoding="utf-8")))
+        except (json.JSONDecodeError, OSError, TypeError) as err:
             raise ValueError(f"Corrupt dataset file {path}: {err}") from err
 
     def _save(self) -> None:
         self._doc.updated_at = datetime.now(timezone.utc).isoformat()
+        self.dir.mkdir(parents=True, exist_ok=True)
         fd, tmp_path = tempfile.mkstemp(dir=str(self.dir), suffix=".tmp", prefix="ds_")
         try:
-            with os.fdopen(fd, "w") as f:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
                 json.dump(self._doc.model_dump(), f, indent=2)
+                f.write("\n")
+            os.chmod(tmp_path, 0o644)  # mkstemp is 0600; datasets are shared
             os.replace(tmp_path, str(self._path()))
-        except Exception:
+        except BaseException:
             with contextlib.suppress(OSError):
                 os.unlink(tmp_path)
             raise

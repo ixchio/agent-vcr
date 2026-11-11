@@ -33,7 +33,7 @@ def test_init_claude_code_is_idempotent(tmp_path):
     data = json.loads((tmp_path / ".claude" / "settings.json").read_text())
     for event in CLAUDE_CODE_EVENTS:
         commands = [hook["command"] for entry in data["hooks"][event] for hook in entry["hooks"]]
-        assert commands.count(f"python -m agent_vcr.hooks.claude_code {event}") == 1
+        assert sum(f"-m agent_vcr.hooks.claude_code {event}" in c for c in commands) == 1
 
 
 def test_cli_init_creates_local_workspace(tmp_path, capsys):
@@ -57,7 +57,7 @@ def test_claude_code_hook_records_vcr_frame(tmp_path, monkeypatch):
     )
 
     player = VCRPlayer.load(path)
-    assert player.session.session_id == "claude-code-hooks"
+    assert player.session.session_id == "claude-claude-session"
     assert len(player.frames) == 1
     assert player.frames[0].node_name == "claude:PostToolUse"
     assert player.frames[0].output_state["tool_name"] == "Write"

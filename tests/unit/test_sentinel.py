@@ -570,14 +570,17 @@ class TestSentinelCLI:
         exit_code = scan_directory(str(tmp_path), config)
         assert exit_code >= 1  # critical or blocker found
 
-    def test_scan_empty_directory_passes(self, tmp_path):
-        """Scanning an empty directory (no .py files) should pass cleanly."""
-        from openhands_sentinel.cli import scan_directory
+    def test_scan_empty_directory_reports_no_files(self, tmp_path):
+        """Scanning a directory with no .py files must not report a plain PASS.
+
+        Previously asserted exit 0, which is the false-PASS bug: nothing was checked.
+        """
+        from openhands_sentinel.cli import EXIT_NO_FILES, scan_directory
 
         empty = tmp_path / "empty_project"
         empty.mkdir()
         exit_code = scan_directory(str(empty), SentinelConfig())
-        assert exit_code == 0
+        assert exit_code == EXIT_NO_FILES
 
     def test_scan_skips_hidden_and_venv(self, tmp_path):
         (tmp_path / ".hidden").mkdir()

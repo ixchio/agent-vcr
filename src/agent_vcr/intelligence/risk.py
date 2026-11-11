@@ -1,12 +1,17 @@
 """Risk scoring over recorded sessions (Phase 6, §14 + §27).
 
-Deterministic 0–100 score from observable factors (weights sum to 100):
+Deterministic 0–100 score from observable factors (weights sum to 100,
+see ``_WEIGHTS``):
 
-- errors (30): error-frame rate across analyzed sessions.
-- denials (20): policy denials / approval denials / budget blocks.
-- drift (20): new tools or models vs the first (baseline) session.
-- cost (15): spend vs baseline median (spikes only; savings don't punish).
-- latency (15): latency vs baseline median (spikes only).
+- errors (70): error-frame rate — ``min(1, rate * 4) * 45``, plus 25 more
+  when >= 75% of frames are errors (total failure is HIGH on its own).
+- denials (10): policy denials / approval denials / budget blocks
+  (saturates at 3).
+- drift (8): new tools or models vs the baseline session (saturates at 4).
+- cost (6): total spend vs the baseline session's (spikes only, saturates
+  at +100%; savings don't punish).
+- latency (6): total latency vs the baseline session's (spikes only,
+  saturates at +100%).
 
 Levels: <30 LOW, <65 MEDIUM, else HIGH. Baselines come from the data
 itself (first session by time, or an explicit baseline session id) —

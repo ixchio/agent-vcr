@@ -9,14 +9,21 @@ approvals, tool/agent outputs, verifications, checkpoints), so any run
 can be inspected, forked, replayed, bundled, and CI-gated with the
 Phase 0–2 machinery. Sub-agents are plain callables — including
 ``other_agent.as_handler(sub_plan)`` for real nesting.
+
+Recorded inputs *and* outputs are secret-redacted before they reach the
+``.vcr`` file (and therefore vector memory indexed from it). Each run gets
+its own :class:`BudgetTracker` built from the agent's configured caps, so a
+plan's ``max_total_cost_usd`` never leaks into later runs. A step that times
+out is only retried (by ``max_retries`` or the recovery engine) when its tool
+is declared ``idempotent`` — the timed-out thread may still be running.
 """
 
 from __future__ import annotations
 
 import concurrent.futures
 import logging
+import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable
 
 from agent_vcr.intelligence.recovery import plan_recovery
@@ -24,7 +31,7 @@ from agent_vcr.models import FrameMetadata, FrameType
 from agent_vcr.player import VCRPlayer
 from agent_vcr.recorder import VCRRecorder
 from agent_vcr.superagent.approval import ApprovalRequest, Approver, AutoApprover
-from agent_vcr.superagent.memory import MemoryStore, redact_value
+from agent_vcr.superagent.memory import MemoryStore, redact_text, redact_value
 from agent_vcr.superagent.models import (
     Plan,
     RunReport,
@@ -34,7 +41,7 @@ from agent_vcr.superagent.models import (
 )
 from agent_vcr.superagent.planner import PlanBuilder
 from agent_vcr.superagent.policy import BudgetTracker, Policy
-from agent_vcr.superagent.router import ToolGateway
+from agent_vcr.superagent.router import ToolGateway, run_in_daemon_thread
 from agent_vcr.superagent.verifier import Verifier
 
 logger = logging.getLogger(__name__)
@@ -78,7 +85,7 @@ class SuperAgent:
         )
         self._recovery_enabled = recovery
         self._max_recovery_attempts = max_recovery_attempts
-        self._exec_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="vcr-agent")
+        self._budget_lock = threading.Lock()
 
     # -- public ----------------------------------------------------------
 
@@ -89,13 +96,21 @@ class SuperAgent:
         *,
         session_id: str | None = None,
         tags: list[str] | None = None,
+        inputs: dict[str, Any] | None = None,
     ) -> RunReport:
-        """Execute a plan to completion (or abort). Always saves the session."""
+        """Execute a plan to completion (or abort). Always saves the session.
+
+        ``inputs`` are the run's inputs, referenced from step inputs as
+        ``"$inputs.<key>"``. Budget usage is tracked per run; when the run
+        ends, ``self.budget`` reflects the most recently finished run.
+        """
         executable = self.builder.build(plan, goal=goal)
         order = self.builder.order(executable)
-        self.budget.reset_usage()
-        if executable.max_total_cost_usd is not None and self.budget.max_total_cost_usd is None:
-            self.budget.max_total_cost_usd = executable.max_total_cost_usd
+        budget = self._new_run_budget(executable)
+        run_inputs = dict(inputs) if inputs is not None else None
+        plan_input: dict[str, Any] = {"goal": goal}
+        if run_inputs is not None:
+            plan_input["inputs"] = redact_value(run_inputs)
         session = self.recorder.start_session(
             session_id=session_id,
             metadata={"goal": goal, "plan_version": executable.version,
@@ -104,8 +119,8 @@ class SuperAgent:
         )
         self.recorder.record_step(
             node_name="plan",
-            input_state={"goal": goal},
-            output_state=executable.model_dump(),
+            input_state=plan_input,
+            output_state=redact_value(executable.model_dump()),
             metadata=FrameMetadata(custom={"plan_version": executable.version}),
         )
         report = RunReport(session_id=session.session_id, goal=goal)
@@ -115,7 +130,8 @@ class SuperAgent:
 
         for index, step_id in enumerate(order):
             step = next(s for s in executable.steps if s.id == step_id)
-            outcome = self._run_step(executable, step_id, index, outputs, failed_ids)
+            outcome = self._run_step(executable, step_id, index, outputs, failed_ids,
+                                     budget, run_inputs)
             report.outcomes.append(outcome)
             if outcome.status == "ok":
                 outputs[step_id] = outcome.output
@@ -129,7 +145,7 @@ class SuperAgent:
                     and recovery_attempts < self._max_recovery_attempts
                 ):
                     self.recorder.save()
-                    plan_result = self._attempt_recovery()
+                    plan_result = self._attempt_recovery(self._step_idempotent(step))
                     if plan_result and plan_result.actions and plan_result.actions[0].auto:
                         action = plan_result.actions[0]
                         recovery_attempts += 1
@@ -148,6 +164,7 @@ class SuperAgent:
                             failed_ids.discard(step_id)
                             outcome = self._run_step(
                                 executable, step_id, index, outputs, failed_ids,
+                                budget, run_inputs,
                             )
                             report.outcomes.append(outcome)
                             if outcome.status == "ok":
@@ -161,7 +178,8 @@ class SuperAgent:
         if totals is not None:
             report.total_tokens = totals.total_tokens
             report.total_cost_usd = totals.total_cost_usd
-        report.total_latency_ms = self.budget.latency_ms
+        report.total_latency_ms = budget.latency_ms
+        self._publish_usage(budget)
         self.recorder.save()
         logger.info("SuperAgent run %s: %s (%d steps)",
                     report.session_id, report.status, len(report.outcomes))
@@ -178,12 +196,15 @@ class SuperAgent:
         def handle(inputs: dict[str, Any] | None = None, **kwargs: Any) -> StepResult:
             merged_inputs = dict(inputs or {})
             merged_inputs.update(kwargs)
-            sub_report = self.run(goal or "sub-task", plan)
+            sub_report = self.run(goal or "sub-task", plan, inputs=merged_inputs)
             merged: dict[str, Any] = {}
             for outcome in sub_report.outcomes:
                 if outcome.status == "ok":
                     merged.update(outcome.output)
             merged["_run_status"] = sub_report.status
+            # Lets cost analysis attribute this aggregate to the sub-session
+            # instead of counting the sub-agent's spend twice.
+            merged["_sub_session_id"] = sub_report.session_id
             if sub_report.status != "committed":
                 return StepResult(output=merged, error=f"sub-agent {sub_report.status}",
                                   tokens_used=sub_report.total_tokens,
@@ -195,25 +216,48 @@ class SuperAgent:
 
     def shutdown(self) -> None:
         self.gateway.shutdown()
-        self._exec_pool.shutdown(wait=True, cancel_futures=True)
 
     # -- internals ---------------------------------------------------------
 
-    def _attempt_recovery(self) -> Any:
+    def _new_run_budget(self, plan: Plan) -> BudgetTracker:
+        """Fresh per-run ledger: the agent's caps, tightened by the plan's cap."""
+        with self._budget_lock:
+            cost_cap = self.budget.max_total_cost_usd
+            token_cap = self.budget.max_total_tokens
+            latency_cap = self.budget.max_total_latency_ms
+        if plan.max_total_cost_usd is not None:
+            cost_cap = (plan.max_total_cost_usd if cost_cap is None
+                        else min(cost_cap, plan.max_total_cost_usd))
+        return BudgetTracker(max_total_cost_usd=cost_cap, max_total_tokens=token_cap,
+                             max_total_latency_ms=latency_cap)
+
+    def _publish_usage(self, budget: BudgetTracker) -> None:
+        """Mirror a finished run's usage onto ``self.budget`` (caps untouched)."""
+        with self._budget_lock:
+            self.budget.tokens_used = budget.tokens_used
+            self.budget.cost_usd = budget.cost_usd
+            self.budget.latency_ms = budget.latency_ms
+
+    def _step_idempotent(self, step: Any) -> bool:
+        """Only tools declared ``idempotent`` may be re-run after a failure/timeout."""
+        return step.kind.value == "tool" and self.gateway.is_idempotent(step.ref)
+
+    def _attempt_recovery(self, idempotent: bool = False) -> Any:
         """Classify failure and plan recovery from the current recording."""
         try:
             player = VCRPlayer.load(self.recorder._get_session_path())
             has_cp = any(
                 f.frame_type == FrameType.CHECKPOINT for f in player.frames
             )
-            return plan_recovery(player, has_checkpoint=has_cp)
+            return plan_recovery(player, has_checkpoint=has_cp, idempotent=idempotent)
         except Exception:
             logger.warning("Recovery planning failed", exc_info=True)
             return None
 
     def _run_step(self, plan: Plan, step_id: str, index: int,
                   outputs: dict[str, dict[str, Any]],
-                  failed_ids: set[str]) -> StepOutcome:
+                  failed_ids: set[str], budget: BudgetTracker,
+                  run_inputs: dict[str, Any] | None = None) -> StepOutcome:
         from agent_vcr.superagent.models import PlanStep
 
         step: PlanStep = next(s for s in plan.steps if s.id == step_id)
@@ -225,7 +269,7 @@ class SuperAgent:
                                reasons=["upstream step failed or skipped"])
 
         try:
-            inputs = self.builder.step_inputs(plan, step_id, outputs)
+            inputs = self.builder.step_inputs(plan, step_id, outputs, run_inputs)
         except KeyError as err:
             self._record("policy", step_id, {"decision": "blocked"}, {"reason": str(err)})
             return StepOutcome(step_id=step_id, status="blocked", reasons=[str(err)])
@@ -244,7 +288,7 @@ class SuperAgent:
                 return StepOutcome(step_id=step_id, status="skipped", reasons=[reason])
             return StepOutcome(step_id=step_id, status="blocked", reasons=[reason])
 
-        ok, budget_reason = self.budget.check(step.max_cost_usd)
+        ok, budget_reason = budget.check(step.max_cost_usd)
         if not ok:
             self._record("budget", step_id, {}, {"blocked": budget_reason})
             return StepOutcome(step_id=step_id, status="blocked", reasons=[budget_reason])
@@ -260,18 +304,20 @@ class SuperAgent:
                 return StepOutcome(step_id=step_id, status="denied", reasons=[approved[1]])
 
         attempts = 1 + max(0, step.max_retries)
+        idempotent = self._step_idempotent(step)
         last_error = ""
         for attempt in range(1, attempts + 1):
             try:
                 result = self._execute(step, inputs)
             except Exception as err:  # noqa: BLE001 — handler errors become outcomes
-                last_error = f"{type(err).__name__}: {err}"
-                self.recorder.record_error(
-                    node_name=f"{step.kind.value}:{step.ref}",
-                    input_state=redact_value(inputs),
-                    error=err if isinstance(err, Exception) else RuntimeError(str(err)),
-                    latency_ms=0.0,
-                )
+                last_error = redact_text(f"{type(err).__name__}: {err}")
+                self._record_error(step, inputs, err, attempt, idempotent)
+                if isinstance(err, TimeoutError) and not idempotent:
+                    # The timed-out call may still be running; a retry could
+                    # duplicate its side effect. Only idempotent tools retry.
+                    return self._fail_or_skip(
+                        step, [f"{last_error} (not retried: step is not idempotent "
+                               "and may still be running)"], attempt)
                 if attempt < attempts:
                     continue
                 return self._fail_or_skip(step, [last_error], attempt)
@@ -280,7 +326,7 @@ class SuperAgent:
                          {"passed": verdict.passed, "reasons": verdict.reasons,
                           "attempt": attempt})
             if verdict.passed:
-                return self._commit_step(step, inputs, result, attempt)
+                return self._commit_step(step, inputs, result, attempt, budget)
             last_error = "; ".join(verdict.reasons)
             if attempt < attempts:
                 continue
@@ -293,11 +339,11 @@ class SuperAgent:
         handler = self.agents.get(step.ref)
         if handler is None:
             raise KeyError(f"Unknown agent {step.ref!r}")
-        future = self._exec_pool.submit(handler, inputs)
+        # Daemon thread per call: a hung agent can't occupy a shared pool slot.
+        future = run_in_daemon_thread(handler, (inputs,), thread_name=f"vcr-agent-{step.ref}")
         try:
             return coerce_result(future.result(timeout=step.timeout_s))
         except concurrent.futures.TimeoutError as err:
-            future.cancel()
             raise TimeoutError(f"Agent {step.ref!r} exceeded {step.timeout_s}s") from err
 
     def _approve(self, step_id: str, step: Any, inputs: dict[str, Any],
@@ -313,29 +359,50 @@ class SuperAgent:
                       "reason": decision.note or policy_reason})
         return decision.approved, decision.note or policy_reason
 
+    def _record_error(self, step: Any, inputs: dict[str, Any], err: BaseException,
+                      attempt: int, idempotent: bool) -> None:
+        """Record a handler failure (redacted) with the step's idempotency."""
+        message = redact_text(str(err))
+        self.recorder.record_step(
+            node_name=f"{step.kind.value}:{step.ref}",
+            input_state=redact_value(inputs),
+            output_state={"error": message},
+            metadata=FrameMetadata(
+                latency_ms=0.0, error_message=message, error_type=type(err).__name__,
+                custom={"step_id": step.id, "attempt": attempt, "idempotent": idempotent},
+            ),
+            frame_type=FrameType.ERROR,
+        )
+
     def _commit_step(self, step: Any, inputs: dict[str, Any],
-                     result: StepResult, attempt: int) -> StepOutcome:
+                     result: StepResult, attempt: int,
+                     budget: BudgetTracker) -> StepOutcome:
         node = f"{step.kind.value}:{step.ref}"
+        custom: dict[str, Any] = {"step_id": step.id, "attempt": attempt}
+        sub_session = result.output.get("_sub_session_id")
+        if isinstance(sub_session, str) and sub_session:
+            custom["sub_session_id"] = sub_session
+        error_message = redact_text(result.error) if result.error else None
         self.recorder.record_step(
             node_name=node,
             input_state=redact_value(inputs),
-            output_state=result.output,
+            output_state=redact_value(result.output),
             metadata=FrameMetadata(
                 latency_ms=result.latency_ms, tokens_used=result.tokens_used or None,
                 cost_usd=result.cost_usd or None,
                 error_type="StepError" if result.error else None,
-                error_message=result.error,
-                custom={"step_id": step.id, "attempt": attempt},
+                error_message=error_message,
+                custom=custom,
             ),
             frame_type=FrameType.TOOL_CALL if step.kind.value == "tool" else FrameType.NODE_EXECUTION,
         )
         if result.error:
             return self._fail_or_skip(step, [result.error], attempt)
         self.memory.put(step.id, result.output, namespace=step.id)
-        self.budget.account(tokens=result.tokens_used, cost_usd=result.cost_usd,
-                            latency_ms=result.latency_ms)
+        budget.account(tokens=result.tokens_used, cost_usd=result.cost_usd,
+                       latency_ms=result.latency_ms)
         if step.checkpoint_after:
-            state = dict(result.output)
+            state = redact_value(dict(result.output))
             self.recorder.record_checkpoint(state, label=step.id)
         return StepOutcome(step_id=step.id, status="ok", attempts=attempt,
                            output=result.output)

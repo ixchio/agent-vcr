@@ -15,6 +15,7 @@ from agent_vcr.models import (
     Session,
     StateSerializer,
 )
+from agent_vcr.player import _parse_iso
 
 logger = logging.getLogger(__name__)
 
@@ -79,7 +80,7 @@ class AsyncVCRPlayer:
         if session is None:
             raise ValueError(f"No session header found in {filepath}")
 
-        frames.sort(key=lambda f: f.timestamp)
+        # Keep file (append) order — see VCRPlayer.load.
         logger.info("Async loaded session %s with %d frames", session.session_id, len(frames))
 
         return cls(session, frames, source_path=filepath, skipped_lines=skipped)
@@ -95,7 +96,7 @@ class AsyncVCRPlayer:
 
     def goto_time(self, timestamp: str | datetime) -> dict[str, Any]:
         """Jump to the frame closest to a timestamp."""
-        target_time = datetime.fromisoformat(timestamp) if isinstance(timestamp, str) else timestamp
+        target_time = _parse_iso(timestamp) if isinstance(timestamp, str) else timestamp
 
         if target_time.tzinfo is None:
             target_time = target_time.replace(tzinfo=timezone.utc)

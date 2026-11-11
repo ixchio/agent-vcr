@@ -110,11 +110,15 @@ class TestRecovery:
         assert kind == FailureKind.UNKNOWN
 
     def test_plan_transient_auto_retry(self, tmp_path):
+        # Auto-retry requires the failed step to be known idempotent; with
+        # unknown idempotency the retry is proposed but needs approval.
         d = _fleet(tmp_path)
-        plan = plan_recovery(VCRPlayer.load(d / "s-timeout-1.vcr"))
+        plan = plan_recovery(VCRPlayer.load(d / "s-timeout-1.vcr"), idempotent=True)
         assert plan.failure_kind == FailureKind.TRANSIENT
         assert plan.actions[0].action == "retry" and plan.actions[0].auto is True
         assert plan.actions[-1].action == "escalate"
+        unknown = plan_recovery(VCRPlayer.load(d / "s-timeout-1.vcr"))
+        assert unknown.actions[0].action == "retry" and unknown.actions[0].auto is False
 
     def test_plan_policy_and_resume(self, tmp_path):
         rec = VCRRecorder(output_dir=str(tmp_path), auto_save=False)

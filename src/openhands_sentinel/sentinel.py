@@ -24,6 +24,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import threading
 import time
 from dataclasses import dataclass
 from typing import Any, Callable
@@ -52,10 +54,14 @@ class SentinelConfig:
     max_function_params: int = 7
 
     # Behavior
-    block_on_blocker: bool = True  # Halt agent on BLOCKER violations
+    # Mark results with BLOCKER violations as ``blocked`` (AnalysisResult.blocked,
+    # stats.blocked_actions, "BLOCKED" warning header, VCR frame output).
+    block_on_blocker: bool = True
     warn_agent: bool = True  # Inject warnings into EventStream
     record_to_vcr: bool = True  # Record checks as VCR frames
-    auto_analyze: bool = True  # Auto-analyze on file write events
+    # Auto-analyze file write/edit events from an attached EventStream. When False,
+    # events are still recorded but only explicit check_file() calls analyze.
+    auto_analyze: bool = True
 
     # Frame size guardrail (addresses OpenHands issue #7402)
     max_frame_bytes: int = 50_000  # Warn if any recorded frame > 50KB
@@ -74,6 +80,7 @@ class SentinelStats:
     infos: int = 0
     self_corrections: int = 0
     agent_warnings_sent: int = 0
+    blocked_actions: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -85,6 +92,7 @@ class SentinelStats:
             "infos": self.infos,
             "self_corrections": self.self_corrections,
             "agent_warnings_sent": self.agent_warnings_sent,
+            "blocked_actions": self.blocked_actions,
         }
 
 
@@ -122,8 +130,11 @@ class Sentinel:
 
         self.stats = SentinelStats()
         self._session_started = False
-        self._event_stream = None
+        self._event_stream: Any = None
         self._results_history: list[AnalysisResult] = []
+        # Paths of FileEditActions without inline content, awaiting their observation.
+        self._pending_edits: set[str] = set()
+        self._pending_lock = threading.Lock()
 
     def start_session(self, session_id: str | None = None) -> None:
         """Start a Sentinel monitoring session."""
@@ -167,6 +178,9 @@ class Sentinel:
             and not result.violations
         ):
             self.stats.self_corrections += 1
+        if self.config.block_on_blocker and result.blocker_count > 0:
+            result.blocked = True
+            self.stats.blocked_actions += 1
 
         self._results_history.append(result)
 
@@ -194,8 +208,17 @@ class Sentinel:
             )
         else:
             logger.info("[sentinel] %s: clean ✓ (%.1fms)", file_path, elapsed_ms)
+        if result.blocked:
+            logger.warning(
+                "[sentinel] BLOCKED: %s has %d blocker violation(s)",
+                file_path, result.blocker_count,
+            )
 
         return result
+
+    def forget_file(self, file_path: str) -> None:
+        """Drop trajectory memory for a deleted file so it no longer counts as a duplicate."""
+        self.analyzer.forget_file(file_path)
 
     def check_and_warn(self, file_path: str, content: str) -> tuple[AnalysisResult, str | None]:
         """
@@ -210,9 +233,15 @@ class Sentinel:
             return result, None
 
         # Build a concise warning message for the agent
-        lines = [
-            "🛡️ SENTINEL CODE REVIEW — Issues detected, please fix before proceeding:\n"
-        ]
+        if result.blocked:
+            lines = [
+                "🛑 SENTINEL BLOCKED — This change has blocker-level issues and must "
+                "not proceed. Please fix before proceeding:\n"
+            ]
+        else:
+            lines = [
+                "🛡️ SENTINEL CODE REVIEW — Issues detected, please fix before proceeding:\n"
+            ]
 
         for v in result.violations:
             lines.append(f"  {v.to_agent_warning()}")
@@ -240,6 +269,7 @@ class Sentinel:
             f"    ╰─ Criticals:     {self.stats.criticals}",
             f"    ╰─ Warnings:      {self.stats.warnings}",
             f"  Warnings sent:      {self.stats.agent_warnings_sent}",
+            f"  Blocked actions:    {self.stats.blocked_actions}",
             f"  Self-corrections:   {self.stats.self_corrections}",
             "",
         ]
@@ -344,33 +374,109 @@ class Sentinel:
                 metadata=FrameMetadata(custom={"event_type": event_type}),
             )
         except Exception:
-            logger.debug("[sentinel] Failed to record event", exc_info=True)
+            logger.warning("[sentinel] Failed to record event", exc_info=True)
+
+        if not self.config.auto_analyze:
+            return
 
         # Analyze file writes
         if event_type in ("FileWriteAction", "FileEditAction"):
             self._handle_file_event(event)
+        elif event_type == "FileEditObservation":
+            self._handle_edit_observation(event)
 
-    def _handle_file_event(self, event: Any) -> None:
-        """Analyze a file write/edit event and optionally warn the agent."""
-        file_path = getattr(event, "path", None) or getattr(event, "file_path", None)
-        content = getattr(event, "content", None) or getattr(event, "new_content", None)
+    @staticmethod
+    def _event_path(event: Any) -> str | None:
+        path = getattr(event, "path", None) or getattr(event, "file_path", None)
+        return str(path) if path else None
 
-        if not file_path or not content:
-            return
+    @staticmethod
+    def _read_from_disk(file_path: str) -> str | None:
+        """Read the post-edit file contents, or None if not readable on this host."""
+        if not os.path.isfile(file_path):
+            return None
+        try:
+            with open(file_path, encoding="utf-8", errors="ignore") as fh:
+                return fh.read()
+        except OSError:
+            logger.warning("[sentinel] Could not read %s from disk", file_path, exc_info=True)
+            return None
 
+    def _handle_file_event(self, event: Any) -> AnalysisResult | None:
+        """Analyze a file write/edit action and optionally warn the agent.
+
+        FileWriteAction carries the full ``content``. OpenHands' FileEditAction
+        (OH_ACI mode) carries ``command``/``file_text``/``old_str``/``new_str``
+        instead: ``create`` provides the full text in ``file_text``; for other
+        commands (str_replace, insert, ...) the action is only a patch, so the
+        file is analyzed once the edit has happened — when its
+        FileEditObservation arrives (using ``new_content`` or reading the file
+        from disk if the path exists).
+        """
+        file_path = self._event_path(event)
+        if not file_path:
+            return None
+
+        content: str | None
+        if type(event).__name__ == "FileEditAction":
+            # ``content`` on an LLM-based edit is a draft snippet, not the file.
+            content = getattr(event, "new_content", None) or getattr(event, "file_text", None)
+            if not content:
+                with self._pending_lock:
+                    self._pending_edits.add(file_path)
+                return None
+        else:
+            content = getattr(event, "content", None) or getattr(event, "new_content", None)
+            if not content:
+                content = self._read_from_disk(file_path)
+        if not content:
+            return None
+        return self._analyze_and_warn(file_path, content)
+
+    def _handle_edit_observation(self, event: Any) -> AnalysisResult | None:
+        """Analyze the post-edit file for a FileEditAction that had no inline content."""
+        file_path = self._event_path(event)
+        if not file_path:
+            return None
+        with self._pending_lock:
+            if file_path not in self._pending_edits:
+                return None
+            self._pending_edits.discard(file_path)
+        content = getattr(event, "new_content", None) or self._read_from_disk(file_path)
+        if not content:
+            logger.warning("[sentinel] No post-edit content available for %s", file_path)
+            return None
+        return self._analyze_and_warn(file_path, content)
+
+    def _analyze_and_warn(self, file_path: str, content: str) -> AnalysisResult:
         result, warning = self.check_and_warn(file_path, content)
 
         # Inject warning back into the EventStream
         if warning and self.config.warn_agent and self._event_stream:
             try:
                 from openhands.events.action import MessageAction
-                warning_action = MessageAction(content=warning, wait_for_response=False)
-                self._event_stream.add_event(warning_action, "sentinel")
-                logger.info("[sentinel] Warning injected for %s", file_path)
             except ImportError:
                 logger.info("[sentinel] OpenHands not available for warning injection")
+                return result
+            try:
+                warning_action = MessageAction(content=warning, wait_for_response=False)
+                self._event_stream.add_event(warning_action, self._warning_source())
+                logger.info("[sentinel] Warning injected for %s", file_path)
             except Exception:
-                logger.debug("[sentinel] Failed to inject warning", exc_info=True)
+                logger.warning("[sentinel] Failed to inject warning", exc_info=True)
+        return result
+
+    @staticmethod
+    def _warning_source() -> Any:
+        """EventSource for injected warnings (USER, so the agent reads it as feedback)."""
+        try:
+            from openhands.events.event import EventSource
+        except ImportError:
+            try:
+                from openhands.events import EventSource
+            except ImportError:
+                return "user"  # EventSource is a str enum; "user" == EventSource.USER
+        return EventSource.USER
 
     # ──────────────────────────────────────────────
     #  Internal
@@ -388,6 +494,7 @@ class Sentinel:
             },
             output_state={
                 "passed": result.passed,
+                "blocked": result.blocked,
                 "violation_count": len(result.violations),
                 "violations": [v.to_dict() for v in result.violations],
                 "metrics": result.metrics,
@@ -399,6 +506,7 @@ class Sentinel:
                     "file_path": file_path,
                     "blocker_count": result.blocker_count,
                     "critical_count": result.critical_count,
+                    "blocked": result.blocked,
                 },
             ),
             frame_type=FrameType.TOOL_CALL,

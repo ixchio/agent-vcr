@@ -416,7 +416,9 @@ class TestSuperAgentRecovery:
         gateway = ToolGateway()
         calls = []
 
-        @gateway.tool("flaky_net", parameters={"type": "object"})
+        # Recovery only auto-retries tools declared idempotent (a retry of a
+        # non-idempotent tool could repeat its side effect).
+        @gateway.tool("flaky_net", parameters={"type": "object"}, idempotent=True)
         def flaky_net() -> dict:
             calls.append(1)
             if len(calls) <= 1:

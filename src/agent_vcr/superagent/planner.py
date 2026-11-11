@@ -16,11 +16,48 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any, Callable
 
 from agent_vcr.superagent.models import Plan
 
 logger = logging.getLogger(__name__)
+
+#: ``$<identifier>`` optionally followed by ``.dotted.path``. Only heads that
+#: name a step in the plan (or the reserved ``inputs``) are references; any
+#: other ``$`` string (``"$10"``, ``"$HOME"``) is a literal. ``$$`` escapes.
+_REF = re.compile(r"^\$(?P<head>[A-Za-z_][A-Za-z0-9_-]*)(?P<path>(?:\.[^.]+)*)$")
+
+#: Reference head for the inputs a run was started with (``$inputs.x``).
+RUN_INPUTS_REF = "inputs"
+
+
+def parse_ref(value: Any, step_ids: set[str] | frozenset[str]) -> tuple[str, str] | None:
+    """Return ``(head, dotted_path)`` if ``value`` is a ``$ref``, else None.
+
+    ``$$...`` is an escaped literal and never a reference.
+    """
+    if not isinstance(value, str) or not value.startswith("$") or value.startswith("$$"):
+        return None
+    match = _REF.match(value)
+    if match is None:
+        return None
+    head = match.group("head")
+    if head not in step_ids and head != RUN_INPUTS_REF:
+        return None
+    return head, match.group("path")[1:]
+
+
+def iter_refs(value: Any, step_ids: set[str] | frozenset[str]) -> list[str]:
+    """All reference heads used anywhere inside ``value`` (nested dict/list)."""
+    ref = parse_ref(value, step_ids)
+    if ref is not None:
+        return [ref[0]]
+    if isinstance(value, dict):
+        return [h for v in value.values() for h in iter_refs(v, step_ids)]
+    if isinstance(value, list):
+        return [h for v in value for h in iter_refs(v, step_ids)]
+    return []
 
 _PLAN_SYSTEM_PROMPT = """You are a planner for an autonomous agent runtime.
 Respond with a single JSON object and nothing else, matching this schema:
@@ -30,6 +67,7 @@ Respond with a single JSON object and nothing else, matching this schema:
 "on_failure": "abort"|"retry"|"skip", "check": object}],
 "max_total_cost_usd": number|null, "max_steps": int|null}
 Rules: ids unique; depends_on only references earlier-listed ids (DAG, no cycles);
+an input string "$<step-id>.<path>" is replaced by that step's output ("$$" escapes "$");
 mark requires_approval=true for payments, deletions, external messages;
 set checkpoint_after=true before any irreversible step."""
 
@@ -71,6 +109,14 @@ class PlanBuilder:
                 raise ValueError(f"Step {step.id!r} has non-positive timeout")
             if step.max_retries < 0:
                 raise ValueError(f"Step {step.id!r} has negative max_retries")
+            # A ``$producer.x`` input is an implicit dependency: auto-add it so
+            # the producer is guaranteed to run (and succeed) first.
+            for head in iter_refs(step.inputs, known):
+                if head == step.id:
+                    raise ValueError(f"Step {step.id!r} references its own output (${head})")
+                if head in known and head not in step.depends_on:
+                    logger.debug("Step %s: adding implicit dependency on %s", step.id, head)
+                    step.depends_on.append(head)
         self.order(plan)  # raises on cycles
         if plan.max_steps is not None and len(plan.steps) > plan.max_steps:
             raise ValueError(f"Plan has {len(plan.steps)} steps, max is {plan.max_steps}")
@@ -99,30 +145,52 @@ class PlanBuilder:
         return ordered
 
     def step_inputs(self, plan: Plan, step_id: str,
-                    outputs: dict[str, dict[str, Any]]) -> dict[str, Any]:
+                    outputs: dict[str, dict[str, Any]],
+                    run_inputs: dict[str, Any] | None = None) -> dict[str, Any]:
         """Resolve a step's inputs: explicit inputs + `$dep.path` references.
 
-        Any string value of the form ``"$<step-id>.<dotted.path>"`` is
-        replaced with the referenced value from that step's output.
+        A string ``"$<step-id>(.dotted.path)"`` naming a step of this plan is
+        replaced with the referenced value from that step's output, and
+        ``"$inputs(.path)"`` with the run's inputs (unless a step is called
+        ``inputs``). Any other ``$`` string is a literal; ``"$$x"`` yields
+        the literal ``"$x"``.
         """
         step = next(s for s in plan.steps if s.id == step_id)
-        return {k: self._resolve(v, outputs) for k, v in step.inputs.items()}
+        step_ids = frozenset(s.id for s in plan.steps)
+        return {k: self._resolve(v, outputs, step_ids, run_inputs)
+                for k, v in step.inputs.items()}
 
-    def _resolve(self, value: Any, outputs: dict[str, dict[str, Any]]) -> Any:
-        if isinstance(value, str) and value.startswith("$"):
-            ref, _, path = value[1:].partition(".")
-            if ref not in outputs:
-                raise KeyError(f"Input reference to unknown step output {ref!r}")
-            current: Any = outputs[ref]
+    def _resolve(self, value: Any, outputs: dict[str, dict[str, Any]],
+                 step_ids: frozenset[str] = frozenset(),
+                 run_inputs: dict[str, Any] | None = None) -> Any:
+        if isinstance(value, str):
+            if value.startswith("$$"):
+                return value[1:]
+            ref = parse_ref(value, step_ids)
+            if ref is None:
+                return value
+            head, path = ref
+            current: Any
+            if head in step_ids:
+                if head not in outputs:
+                    raise KeyError(f"Input reference to unknown step output {head!r}")
+                current = outputs[head]
+            else:  # $inputs
+                if run_inputs is None:
+                    raise KeyError(f"Input reference {value!r} but the run has no inputs")
+                current = run_inputs
             for part in path.split(".") if path else []:
-                if not isinstance(current, dict) or part not in current:
+                if isinstance(current, dict) and part in current:
+                    current = current[part]
+                elif isinstance(current, list) and part.isdigit() and int(part) < len(current):
+                    current = current[int(part)]
+                else:
                     raise KeyError(f"Unresolvable input reference {value!r}")
-                current = current[part]
             return current
         if isinstance(value, dict):
-            return {k: self._resolve(v, outputs) for k, v in value.items()}
+            return {k: self._resolve(v, outputs, step_ids, run_inputs) for k, v in value.items()}
         if isinstance(value, list):
-            return [self._resolve(v, outputs) for v in value]
+            return [self._resolve(v, outputs, step_ids, run_inputs) for v in value]
         return value
 
 

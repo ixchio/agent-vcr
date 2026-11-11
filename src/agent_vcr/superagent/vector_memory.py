@@ -2,6 +2,17 @@
 
 Provides vector database abstraction (Qdrant client integration + in-memory cosine fallback).
 All stored values are automatically sanitized with secret redaction.
+
+Semantics shared by both backends:
+
+- Reserved payload keys (``text``, ``namespace``, ``session_id``,
+  ``timestamp``, ``_orig_id``) always win over user metadata with the same
+  name; colliding metadata keys are dropped with a warning.
+- ``search`` never returns zero-similarity hits (unrelated text, an empty
+  query, or a vector of the wrong dimension) unless ``min_score`` is negative.
+- ``delete(id)`` deletes in any namespace unless ``namespace`` is given.
+- ``index_vcr_session`` uses deterministic ids, so re-indexing a session is a
+  no-op (check-then-skip).
 """
 
 from __future__ import annotations
@@ -11,6 +22,7 @@ import hashlib
 import json
 import logging
 import math
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -18,7 +30,7 @@ from typing import Any, Callable
 
 from pydantic import BaseModel, Field
 
-from agent_vcr.superagent.memory import redact_text, redact_value
+from agent_vcr.superagent.memory import atomic_write_text, redact_text, redact_value
 
 logger = logging.getLogger(__name__)
 
@@ -139,6 +151,36 @@ def cosine_similarity(v1: list[float], v2: list[float]) -> float:
     return max(-1.0, min(1.0, dot / (norm1 * norm2)))
 
 
+#: Payload keys owned by the store; user metadata can never override them.
+RESERVED_PAYLOAD_KEYS = frozenset({"_orig_id", "text", "session_id", "namespace", "timestamp"})
+
+
+def _user_metadata(metadata: dict[str, Any] | None) -> dict[str, Any]:
+    """Redacted user metadata minus any key that collides with a reserved key."""
+    clean = redact_value(metadata or {})
+    clashes = sorted(k for k in clean if k in RESERVED_PAYLOAD_KEYS)
+    if clashes:
+        logger.warning("Dropping metadata keys that collide with reserved payload keys: %s",
+                       clashes)
+    return {k: v for k, v in clean.items() if k not in RESERVED_PAYLOAD_KEYS}
+
+
+def _score_passes(score: float, min_score: float) -> bool:
+    """Zero similarity is "unrelated", not a weak match (unless min_score < 0)."""
+    if min_score < 0.0:
+        return score >= min_score
+    return score > 0.0 and score >= min_score
+
+
+def _is_zero_vector(vec: list[float]) -> bool:
+    return not vec or all(abs(x) < 1e-12 for x in vec)
+
+
+def vcr_record_id(namespace: str, session_id: str, frame_id: str) -> str:
+    """Deterministic memory id for one indexed VCR frame."""
+    return f"vcr:{namespace}:{session_id}:{frame_id}"
+
+
 def _normalize_qdrant_id(raw_id: str | int) -> str | int:
     """Ensure point IDs sent to Qdrant conform to 64-bit unsigned integer or UUID string."""
     if isinstance(raw_id, int):
@@ -197,8 +239,8 @@ class BaseVectorMemory(abc.ABC):
         """Retrieve a record by ID."""
 
     @abc.abstractmethod
-    def delete(self, id: str, namespace: str = "default") -> bool:
-        """Delete a record by ID."""
+    def delete(self, id: str, namespace: str | None = None) -> bool:
+        """Delete a record by ID (only within ``namespace`` when given)."""
 
     @abc.abstractmethod
     def clear(self, namespace: str | None = None) -> int:
@@ -214,7 +256,13 @@ class BaseVectorMemory(abc.ABC):
         namespace: str = "sessions",
         include_errors: bool = True,
     ) -> int:
-        """Index steps from a recorded VCR session for cross-session knowledge recall."""
+        """Index steps from a recorded VCR session for cross-session knowledge recall.
+
+        Idempotent: each frame gets a deterministic id (namespace, session,
+        frame) and frames already indexed are skipped. Returns the number of
+        records newly added. Frame states are secret-redacted (keys and
+        values) before they are embedded.
+        """
         from agent_vcr.player import VCRPlayer
 
         player: VCRPlayer
@@ -232,11 +280,11 @@ class BaseVectorMemory(abc.ABC):
 
             # Include relevant frame inputs and outputs
             if frame.input_state:
-                inp_str = json.dumps(frame.input_state, default=str)
+                inp_str = json.dumps(redact_value(frame.input_state), default=str)
                 text_pieces.append(f"Node {frame.node_name} input: {inp_str}")
 
             if frame.output_state:
-                out_str = json.dumps(frame.output_state, default=str)
+                out_str = json.dumps(redact_value(frame.output_state), default=str)
                 text_pieces.append(f"Node {frame.node_name} ({frame_type}) output: {out_str}")
 
             err_msg = getattr(frame.metadata, "error_message", None)
@@ -245,6 +293,10 @@ class BaseVectorMemory(abc.ABC):
 
             if not text_pieces:
                 continue
+
+            rec_id = vcr_record_id(namespace, session_id, str(frame.frame_id or idx))
+            if self.get(rec_id) is not None:
+                continue  # already indexed — re-indexing is a no-op
 
             combined_text = "\n".join(text_pieces)
             meta = {
@@ -258,6 +310,7 @@ class BaseVectorMemory(abc.ABC):
                 metadata=meta,
                 session_id=session_id,
                 namespace=namespace,
+                id=rec_id,
             )
             count += 1
 
@@ -274,6 +327,7 @@ class InMemoryVectorStore(BaseVectorMemory):
     ) -> None:
         super().__init__(embedding_fn=embedding_fn, vector_dim=vector_dim)
         self._records: dict[str, MemoryRecord] = {}
+        self._lock = threading.RLock()
 
     def add(
         self,
@@ -298,7 +352,8 @@ class InMemoryVectorStore(BaseVectorMemory):
             namespace=namespace,
             timestamp=time.time(),
         )
-        self._records[rec_id] = rec
+        with self._lock:
+            self._records[rec_id] = rec
         return rec_id
 
     def add_batch(self, records: list[MemoryRecord]) -> list[str]:
@@ -316,7 +371,8 @@ class InMemoryVectorStore(BaseVectorMemory):
                 namespace=r.namespace,
                 timestamp=r.timestamp or time.time(),
             )
-            self._records[rec.id] = rec
+            with self._lock:
+                self._records[rec.id] = rec
             ids.append(rec.id)
         return ids
 
@@ -330,8 +386,12 @@ class InMemoryVectorStore(BaseVectorMemory):
     ) -> list[MemorySearchResult]:
         q_vec = self.embed(query)
         scored: list[MemorySearchResult] = []
+        if _is_zero_vector(q_vec):
+            return scored  # empty / unembeddable query matches nothing
 
-        for rec in self._records.values():
+        with self._lock:
+            records = list(self._records.values())
+        for rec in records:
             if namespace is not None and rec.namespace != namespace:
                 continue
 
@@ -344,47 +404,53 @@ class InMemoryVectorStore(BaseVectorMemory):
                 if not match:
                     continue
 
-            if rec.vector is None:
-                continue
+            if rec.vector is None or len(rec.vector) != len(q_vec):
+                continue  # missing or wrong-dimension vector: not comparable
 
             score = cosine_similarity(q_vec, rec.vector)
-            if score >= min_score:
+            if _score_passes(score, min_score):
                 scored.append(MemorySearchResult(record=rec, score=round(score, 4)))
 
         scored.sort(key=lambda res: res.score, reverse=True)
         return scored[:limit]
 
     def get(self, id: str) -> MemoryRecord | None:
-        return self._records.get(id)
+        with self._lock:
+            return self._records.get(id)
 
-    def delete(self, id: str, namespace: str = "default") -> bool:
-        if id in self._records:
-            if namespace and self._records[id].namespace != namespace:
+    def delete(self, id: str, namespace: str | None = None) -> bool:
+        with self._lock:
+            rec = self._records.get(id)
+            if rec is None:
+                return False
+            if namespace is not None and rec.namespace != namespace:
                 return False
             del self._records[id]
             return True
-        return False
 
     def clear(self, namespace: str | None = None) -> int:
-        if namespace is None:
-            c = len(self._records)
-            self._records.clear()
-            return c
-        to_del = [k for k, v in self._records.items() if v.namespace == namespace]
-        for k in to_del:
-            del self._records[k]
-        return len(to_del)
+        with self._lock:
+            if namespace is None:
+                c = len(self._records)
+                self._records.clear()
+                return c
+            to_del = [k for k, v in self._records.items() if v.namespace == namespace]
+            for k in to_del:
+                del self._records[k]
+            return len(to_del)
 
     def count(self, namespace: str | None = None) -> int:
-        if namespace is None:
-            return len(self._records)
-        return sum(1 for v in self._records.values() if v.namespace == namespace)
+        with self._lock:
+            if namespace is None:
+                return len(self._records)
+            return sum(1 for v in self._records.values() if v.namespace == namespace)
 
     def export_json(self, path: str | Path) -> Path:
+        """Write all records to ``path`` atomically (tmp sibling + ``os.replace``)."""
         out = Path(path)
-        out.parent.mkdir(parents=True, exist_ok=True)
-        data = [r.to_dict() for r in self._records.values()]
-        out.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+        with self._lock:
+            data = [r.to_dict() for r in self._records.values()]
+        atomic_write_text(out, json.dumps(data, indent=2) + "\n")
         return out
 
     def load_json(self, path: str | Path) -> None:
@@ -392,9 +458,10 @@ class InMemoryVectorStore(BaseVectorMemory):
         if not p.exists():
             return
         data = json.loads(p.read_text(encoding="utf-8"))
-        for item in data:
-            rec = MemoryRecord(**item)
-            self._records[rec.id] = rec
+        records = [MemoryRecord(**item) for item in data]
+        with self._lock:
+            for rec in records:
+                self._records[rec.id] = rec
 
 
 class QdrantVectorStore(BaseVectorMemory):
@@ -467,17 +534,17 @@ class QdrantVectorStore(BaseVectorMemory):
         id: str | None = None,
     ) -> str:
         clean_text = redact_text(text)
-        clean_meta = redact_value(metadata or {})
+        clean_meta = _user_metadata(metadata)
         rec_id = id or str(uuid.uuid4())
         vec = self.embed(clean_text)
 
         payload = {
+            **clean_meta,  # reserved keys below always win
             "_orig_id": str(rec_id),
             "text": clean_text,
             "session_id": session_id,
             "namespace": namespace,
             "timestamp": time.time(),
-            **clean_meta,
         }
 
         norm_id = _normalize_qdrant_id(rec_id)
@@ -498,15 +565,15 @@ class QdrantVectorStore(BaseVectorMemory):
         ids: list[str] = []
         for r in records:
             clean_text = redact_text(r.text)
-            clean_meta = redact_value(r.metadata)
+            clean_meta = _user_metadata(r.metadata)
             vec = self.embed(clean_text) if (clean_text != r.text or r.vector is None) else r.vector
             payload = {
+                **clean_meta,  # reserved keys below always win
                 "_orig_id": str(r.id),
                 "text": clean_text,
                 "session_id": r.session_id,
                 "namespace": r.namespace,
                 "timestamp": r.timestamp or time.time(),
-                **clean_meta,
             }
             norm_id = _normalize_qdrant_id(r.id)
             points.append(PointStruct(id=norm_id, vector=vec, payload=payload))
@@ -524,6 +591,8 @@ class QdrantVectorStore(BaseVectorMemory):
         filter_metadata: dict[str, Any] | None = None,
     ) -> list[MemorySearchResult]:
         q_vec = self.embed(query)
+        if _is_zero_vector(q_vec):
+            return []  # empty / unembeddable query matches nothing
 
         # Build filter if namespace or metadata provided
         qdrant_filter: Any = None
@@ -545,18 +614,33 @@ class QdrantVectorStore(BaseVectorMemory):
             except Exception:  # noqa: BLE001
                 pass
 
-        search_kwargs: dict[str, Any] = {
-            "collection_name": self.collection_name,
-            "query_vector": q_vec,
-            "limit": limit,
-            "score_threshold": min_score if min_score > 0.0 else None,
-        }
-        if qdrant_filter is not None:
-            search_kwargs["query_filter"] = qdrant_filter
-
-        hits = self.client.search(**search_kwargs)
+        score_threshold = min_score if min_score > 0.0 else None
+        if hasattr(self.client, "query_points"):
+            # qdrant-client >= 1.10: ``search`` is deprecated and removed in
+            # current releases; ``query_points`` returns a QueryResponse.
+            response = self.client.query_points(
+                collection_name=self.collection_name,
+                query=q_vec,
+                limit=limit,
+                score_threshold=score_threshold,
+                query_filter=qdrant_filter,
+                with_payload=True,
+            )
+            hits = response.points
+        else:  # pragma: no cover - legacy qdrant-client
+            search_kwargs: dict[str, Any] = {
+                "collection_name": self.collection_name,
+                "query_vector": q_vec,
+                "limit": limit,
+                "score_threshold": score_threshold,
+            }
+            if qdrant_filter is not None:
+                search_kwargs["query_filter"] = qdrant_filter
+            hits = self.client.search(**search_kwargs)
         results: list[MemorySearchResult] = []
         for hit in hits:
+            if not _score_passes(float(hit.score), min_score):
+                continue
             payload = hit.payload or {}
             text = payload.get("text", "")
             session_id = payload.get("session_id")
@@ -566,7 +650,7 @@ class QdrantVectorStore(BaseVectorMemory):
             meta = {
                 k: v
                 for k, v in payload.items()
-                if k not in ("text", "session_id", "namespace", "timestamp", "_orig_id")
+                if k not in RESERVED_PAYLOAD_KEYS
             }
             rec = MemoryRecord(
                 id=orig_id,
@@ -597,7 +681,7 @@ class QdrantVectorStore(BaseVectorMemory):
                 metadata={
                     k: v
                     for k, v in payload.items()
-                    if k not in ("text", "session_id", "namespace", "timestamp", "_orig_id")
+                    if k not in RESERVED_PAYLOAD_KEYS
                 },
                 session_id=payload.get("session_id"),
                 namespace=payload.get("namespace", "default"),
@@ -606,13 +690,24 @@ class QdrantVectorStore(BaseVectorMemory):
         except Exception:  # noqa: BLE001
             return None
 
-    def delete(self, id: str, namespace: str = "default") -> bool:
+    def delete(self, id: str, namespace: str | None = None) -> bool:
         try:
             norm_id = _normalize_qdrant_id(id)
+            points = self.client.retrieve(collection_name=self.collection_name, ids=[norm_id])
+            if not points:
+                return False
+            if namespace is not None and (points[0].payload or {}).get("namespace") != namespace:
+                return False
             self.client.delete(collection_name=self.collection_name, points_selector=[norm_id])
             return True
         except Exception:  # noqa: BLE001
             return False
+
+    @staticmethod
+    def _namespace_filter(namespace: str) -> Any:
+        from qdrant_client.models import FieldCondition, Filter, MatchValue
+
+        return Filter(must=[FieldCondition(key="namespace", match=MatchValue(value=namespace))])
 
     def clear(self, namespace: str | None = None) -> int:
         try:
@@ -621,8 +716,7 @@ class QdrantVectorStore(BaseVectorMemory):
                 self.client.delete_collection(collection_name=self.collection_name)
                 self._ensure_collection()
             else:
-                from qdrant_client.models import FieldCondition, Filter, MatchValue
-                flt = Filter(must=[FieldCondition(key="namespace", match=MatchValue(value=namespace))])
+                flt = self._namespace_filter(namespace)
                 try:
                     from qdrant_client.models import FilterSelector
                     selector: Any = FilterSelector(filter=flt)
@@ -635,8 +729,15 @@ class QdrantVectorStore(BaseVectorMemory):
 
     def count(self, namespace: str | None = None) -> int:
         try:
-            res = self.client.count(collection_name=self.collection_name)
-            return getattr(res, "count", 0)
+            if namespace is None:
+                res = self.client.count(collection_name=self.collection_name, exact=True)
+            else:
+                res = self.client.count(
+                    collection_name=self.collection_name,
+                    count_filter=self._namespace_filter(namespace),
+                    exact=True,
+                )
+            return int(getattr(res, "count", 0))
         except Exception:  # noqa: BLE001
             return 0
 

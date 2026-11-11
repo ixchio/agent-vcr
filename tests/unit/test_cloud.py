@@ -166,7 +166,8 @@ class TestCloudAPI:
         _, client = _bouquet(tmp_path, admin=None)
         assert client.get("/api/health").json()["status"] == "ok"
         r = client.post("/api/projects", json={"name": "Open"})
-        assert r.status_code == 201  # open dev mode
+        # Project creation / token minting is never anonymous, even in dev mode.
+        assert r.status_code == 403
 
     def test_admin_gate(self, tmp_path):
         _, client = _bouquet(tmp_path)

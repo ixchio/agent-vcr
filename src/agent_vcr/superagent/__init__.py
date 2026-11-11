@@ -20,7 +20,12 @@ from agent_vcr.superagent.models import (
 )
 from agent_vcr.superagent.planner import LLMPlanner, PlanBuilder
 from agent_vcr.superagent.policy import BudgetTracker, Policy
-from agent_vcr.superagent.router import ToolGateway, ToolSpec, validate_against_schema
+from agent_vcr.superagent.router import (
+    ToolGateway,
+    ToolSpec,
+    ToolTimeoutError,
+    validate_against_schema,
+)
 from agent_vcr.superagent.vector_memory import (
     BaseVectorMemory,
     InMemoryVectorStore,
@@ -44,6 +49,7 @@ __all__ = [
     "coerce_result",
     "ToolGateway",
     "ToolSpec",
+    "ToolTimeoutError",
     "validate_against_schema",
     "MemoryStore",
     "redact_text",

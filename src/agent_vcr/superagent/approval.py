@@ -51,11 +51,19 @@ class Approver:
 
 
 class AutoApprover(Approver):
-    """Deterministic auto-decisions for unattended runs.
+    """Deterministic unattended approver — fail-closed.
 
-    Approves when the step ref is allow-listed (empty allow-list = all
-    refs eligible) AND under the ceilings AND not deny-listed.
-    Everything else is denied — fail-closed.
+    Approves a request only when **all** hold:
+
+    - the ref is not deny-listed;
+    - the ref is allow-listed, or ``allow_all=True`` was passed explicitly
+      (an empty allow-list approves *nothing*);
+    - the estimated cost is known and within ``max_auto_cost_usd`` — or the
+      ref is explicitly allow-listed (naming a ref is an explicit opt-in even
+      when its cost cannot be estimated).
+
+    ``AutoApprover()`` with no arguments therefore denies every request, so a
+    step marked ``requires_approval`` never runs unattended by accident.
     """
 
     name = "auto"
@@ -63,19 +71,31 @@ class AutoApprover(Approver):
     def __init__(self, allow_refs: list[str] | None = None,
                  deny_refs: list[str] | None = None,
                  max_auto_cost_usd: float = 0.0,
-                 max_auto_latency_ms: float = 0.0):
+                 max_auto_latency_ms: float = 0.0,
+                 allow_all: bool = False):
         self.allow_refs = allow_refs or []
         self.deny_refs = deny_refs or []
         self.max_auto_cost_usd = max_auto_cost_usd
-        self.max_auto_latency_ms = max_auto_latency_ms
+        self.max_auto_latency_ms = max_auto_latency_ms  # reserved; not yet evaluated
+        self.allow_all = allow_all
 
     def decide(self, request: ApprovalRequest) -> ApprovalDecision:
         if request.ref in self.deny_refs:
             return ApprovalDecision(False, self.name, f"{request.ref!r} is deny-listed")
-        if self.allow_refs and request.ref not in self.allow_refs:
-            return ApprovalDecision(False, self.name, f"{request.ref!r} not in auto-allow list")
-        cost = request.cost_estimate_usd or 0.0
-        if cost > self.max_auto_cost_usd:
+        allow_listed = request.ref in self.allow_refs
+        if not allow_listed and not self.allow_all:
+            reason = (
+                f"{request.ref!r} not in auto-allow list"
+                if self.allow_refs
+                else "no auto-approval policy configured (fail-closed); pass allow_refs, "
+                "allow_all=True, or a CallbackApprover"
+            )
+            return ApprovalDecision(False, self.name, reason)
+        cost = request.cost_estimate_usd
+        if cost is None and not allow_listed:
+            return ApprovalDecision(
+                False, self.name, "cost estimate unknown; only allow-listed refs auto-approve")
+        if cost is not None and cost > self.max_auto_cost_usd:
             return ApprovalDecision(
                 False, self.name,
                 f"estimated ${cost:.4f} exceeds auto ceiling ${self.max_auto_cost_usd:.4f}")

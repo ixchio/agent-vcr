@@ -3,11 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
-import json
 import logging
 import os
-import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -15,6 +12,7 @@ from typing import Any
 import aiofiles
 
 from agent_vcr.models import (
+    INPUT_FROM_PREVIOUS_KEY,
     Frame,
     FrameMetadata,
     FrameType,
@@ -22,6 +20,14 @@ from agent_vcr.models import (
     StateDiff,
     StateSerializer,
     VCRCache,
+    json_dumps_safe,
+)
+from agent_vcr.recorder import (
+    _IF_EXISTS_CHOICES,
+    _handle_existing_recording,
+    _validate_session_id,
+    rewrite_session_file,
+    update_manifest,
 )
 
 logger = logging.getLogger(__name__)
@@ -54,6 +60,7 @@ class AsyncVCRRecorder:
         self._previous_state: dict | None = None
         self._lock = asyncio.Lock()
         self._cache = VCRCache()
+        self._header_frame_count: int | None = None
 
     async def __aenter__(self) -> AsyncVCRRecorder:
         """Support ``async with`` usage — auto-saves on exit."""
@@ -74,11 +81,26 @@ class AsyncVCRRecorder:
         forked_from_frame: int | None = None,
         metadata: dict | None = None,
         tags: list[str] | None = None,
+        if_exists: str = "rotate",
     ) -> Session:
-        """Start a new recording session."""
+        """Start a new recording session (``if_exists`` as in the sync recorder)."""
+        if if_exists not in _IF_EXISTS_CHOICES:
+            raise ValueError(f"if_exists must be one of {sorted(_IF_EXISTS_CHOICES)}")
         async with self._lock:
+            if self._session is not None and self._frames:
+                logger.warning(
+                    "start_session() called with %d unsaved frames in session %s; flushing",
+                    len(self._frames),
+                    self._session.session_id,
+                )
+                await self._flush_frames()
+            sid = session_id or self._generate_session_id()
+            _validate_session_id(sid)
+            await asyncio.to_thread(
+                _handle_existing_recording, self.output_dir / f"{sid}.vcr", if_exists
+            )
             self._session = Session(
-                session_id=session_id or self._generate_session_id(),
+                session_id=sid,
                 parent_session_id=parent_session_id,
                 forked_from_frame=forked_from_frame,
                 metadata=metadata or {},
@@ -112,15 +134,21 @@ class AsyncVCRRecorder:
             serialized_input = StateSerializer.serialize(input_state)
             serialized_output = StateSerializer.serialize(output_state)
 
-            state_diff = None
-            if self.diff_mode and self._previous_state is not None:
-                state_diff = self._compute_diff(self._previous_state, serialized_output)
-                serialized_input = {}
-
             if isinstance(metadata, dict):
                 metadata = FrameMetadata(**metadata)
             elif metadata is None:
                 metadata = FrameMetadata()
+            else:
+                metadata = metadata.model_copy(update={"custom": dict(metadata.custom)})
+
+            state_diff = None
+            if self.diff_mode and self._previous_state is not None:
+                state_diff = self._compute_diff(self._previous_state, serialized_output)
+                # Only elide input that duplicates the previous output (see sync recorder).
+                elided = serialized_input == self._previous_state
+                metadata.custom[INPUT_FROM_PREVIOUS_KEY] = elided
+                if elided:
+                    serialized_input = {}
 
             frame = Frame(
                 session_id=self._session.session_id,
@@ -151,17 +179,19 @@ class AsyncVCRRecorder:
                 logger.debug("Auto-flushing %d frames to disk", len(self._frames))
                 await self._flush_frames()
 
-            # Fire live-push callback if registered
-            if self._on_frame_recorded is not None:
-                try:
-                    result = self._on_frame_recorded(frame)
-                    # Support both sync and async callbacks
-                    if asyncio.iscoroutine(result):
-                        await result
-                except Exception:
-                    logger.debug("on_frame_recorded callback error", exc_info=True)
+        # Fire the live-push callback *outside* the lock: asyncio.Lock is not
+        # reentrant, so a callback that records (or a slow websocket push)
+        # would otherwise deadlock or stall every other recorder call.
+        if self._on_frame_recorded is not None:
+            try:
+                result = self._on_frame_recorded(frame)
+                # Support both sync and async callbacks
+                if asyncio.iscoroutine(result):
+                    await result
+            except Exception:
+                logger.debug("on_frame_recorded callback error", exc_info=True)
 
-            return frame
+        return frame
 
     async def record_llm_call(
         self,
@@ -268,6 +298,16 @@ class AsyncVCRRecorder:
                 await self._write_session_header()
 
             await self._flush_frames()
+            if self._header_frame_count != self._session.frame_count:
+                # Header totals (frame_count, tokens, cost) were written at
+                # session start; rewrite atomically so they match the frames.
+                await asyncio.to_thread(
+                    rewrite_session_file,
+                    path,
+                    self._session,
+                    list(self._cache.get_frames(self._session.session_id)),
+                )
+                self._header_frame_count = self._session.frame_count
             await self._update_session_manifest()
 
             logger.info("Saved async session %s to %s", self._session.session_id, path)
@@ -359,12 +399,13 @@ class AsyncVCRRecorder:
         record = {
             "type": "session",
             "schema": "execution/v1",
-            "data": json.loads(self._session.model_dump_json()),
+            "data": self._session.model_dump(),
         }
         async with aiofiles.open(path, "w") as f:
-            await f.write(json.dumps(record) + "\n")
+            await f.write(json_dumps_safe(record) + "\n")
             await f.flush()
         await asyncio.to_thread(self._fsync_path, path)
+        self._header_frame_count = self._session.frame_count
 
     async def _flush_frames(self) -> None:
         """Write buffered frames to disk.
@@ -375,13 +416,14 @@ class AsyncVCRRecorder:
         if not self._frames:
             return
         path = self._get_session_path()
+        # Serialize the whole batch before writing so a failure can't leave
+        # a partial batch on disk that gets re-appended on the next flush.
+        payload = "".join(
+            json_dumps_safe({"type": "frame", "data": frame.model_dump()}) + "\n"
+            for frame in self._frames
+        )
         async with aiofiles.open(path, "a") as f:
-            for frame in self._frames:
-                record = {
-                    "type": "frame",
-                    "data": json.loads(frame.model_dump_json()),
-                }
-                await f.write(json.dumps(record) + "\n")
+            await f.write(payload)
             await f.flush()
         # fsync must use the real fd — aiofiles doesn't expose fileno(),
         # so we open briefly just for the sync.  os.replace-style atomic
@@ -399,50 +441,12 @@ class AsyncVCRRecorder:
             os.close(fd)
 
     async def _update_session_manifest(self) -> None:
+        """Update manifest.json off the event loop (locked + atomic, shared with sync)."""
         if self._session is None:
             return
-
-        manifest_path = self.output_dir / "manifest.json"
-        manifest: dict = {}
-
-        if manifest_path.exists():
-            try:
-                async with aiofiles.open(manifest_path) as f:
-                    content = await f.read()
-                    manifest = json.loads(content)
-            except (json.JSONDecodeError, OSError) as e:
-                logger.warning("Failed to read manifest, starting fresh: %s", e)
-                manifest = {}
-
-        sessions = manifest.get("sessions", [])
-        session_data = json.loads(self._session.model_dump_json())
-
-        existing_idx = next(
-            (i for i, s in enumerate(sessions) if s["session_id"] == self._session.session_id),
-            None,
+        await asyncio.to_thread(
+            update_manifest, self.output_dir, self._session.model_dump(mode="json")
         )
-
-        if existing_idx is not None:
-            sessions[existing_idx] = session_data
-        else:
-            sessions.append(session_data)
-
-        manifest["sessions"] = sessions
-        manifest["updated_at"] = datetime.now(timezone.utc).isoformat()
-
-        # Atomic write
-        fd, tmp_path = tempfile.mkstemp(
-            dir=str(self.output_dir), suffix=".tmp", prefix="manifest_"
-        )
-        try:
-            os.close(fd)  # close the fd from mkstemp; aiofiles will open by path
-            async with aiofiles.open(tmp_path, "w") as f:
-                await f.write(json.dumps(manifest, indent=2))
-            os.replace(tmp_path, str(manifest_path))
-        except Exception:
-            with contextlib.suppress(OSError):
-                os.unlink(tmp_path)
-            raise
 
     def _compute_diff(self, before: dict, after: dict) -> list[dict]:
         """Compute the diff between two states (canonical JSON-patch view)."""

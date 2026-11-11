@@ -423,7 +423,8 @@ class TestVectorMemory:
             "category": "qa",
         }
         mock_hit.vector = [0.1] * 128
-        mock_qdrant.search.return_value = [mock_hit]
+        # qdrant-client >= 1.10 API (``search`` was removed); returns QueryResponse.points
+        mock_qdrant.query_points.return_value = MagicMock(points=[mock_hit])
         mock_qdrant.get_collections.return_value.collections = []
 
         qdrant_store = QdrantVectorStore(client=mock_qdrant)

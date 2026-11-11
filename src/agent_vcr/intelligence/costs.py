@@ -30,29 +30,55 @@ def _canonical(value: Any) -> str:
         return str(value)
 
 
+def _sub_session_of(frame: Any) -> str:
+    """Session id a frame's cost aggregates (nested sub-agent call), if any."""
+    custom = frame.metadata.custom if frame.metadata else {}
+    sub = custom.get("sub_session_id") if isinstance(custom, dict) else None
+    if not sub and isinstance(frame.output_state, dict):
+        sub = frame.output_state.get("_sub_session_id")
+    return sub if isinstance(sub, str) else ""
+
+
 def breakdown(sessions_dir: str | Path, limit: int = 200, top_steps: int = 10) -> CostBreakdown:
-    """Aggregate spend across a session directory."""
+    """Aggregate spend across a session directory.
+
+    A nested sub-agent's spend is recorded twice: per step in its own
+    session, and as one aggregate frame in the parent (tagged with
+    ``sub_session_id``). When the sub-session is part of the analyzed set,
+    the parent's aggregate frame is counted as $0 (``rolled_up_into``) so
+    spend is not double-counted.
+    """
     directory = Path(sessions_dir)
     result = CostBreakdown(subject=str(directory))
-    steps: list[dict[str, Any]] = []
-    seen: dict[str, dict[str, Any]] = {}
+    players: list[VCRPlayer] = []
     for path in sorted(directory.glob("*.vcr")):
-        if len(steps) > limit * 50:
-            break
         try:
-            player = VCRPlayer.load(path)
+            players.append(VCRPlayer.load(path))
         except (ValueError, OSError) as err:
             logger.debug("Skipping unloadable session %s: %s", path.name, err)
-            continue
-        result.total_cost_usd += player.get_total_cost()
-        result.total_tokens += player.get_total_tokens()
+    session_ids = {p.session.session_id for p in players}
+    steps: list[dict[str, Any]] = []
+    seen: dict[str, dict[str, Any]] = {}
+    for player in players:
+        if len(steps) > limit * 50:
+            break
+        sid = player.session.session_id
+        session_cost = player.get_total_cost()
+        session_tokens = player.get_total_tokens()
         for i, frame in enumerate(player.frames):
             cost = (frame.metadata.cost_usd or 0.0) if frame.metadata else 0.0
             model = (frame.metadata.model or "untagged") if frame.metadata else "untagged"
+            step: dict[str, Any] = {"session": sid, "frame": i,
+                                    "node": frame.node_name, "model": model}
+            sub = _sub_session_of(frame)
+            if sub and sub != sid and sub in session_ids:
+                session_cost -= cost
+                session_tokens -= (frame.metadata.tokens_used or 0) if frame.metadata else 0
+                cost = 0.0
+                step["rolled_up_into"] = sub
+            step["cost_usd"] = round(cost, 6)
             result.by_model[model] = result.by_model.get(model, 0.0) + cost
-            steps.append({"session": player.session.session_id, "frame": i,
-                          "node": frame.node_name, "model": model,
-                          "cost_usd": round(cost, 6)})
+            steps.append(step)
             if frame.node_name.startswith("tool:"):
                 key = hashlib.sha256(
                     f"{frame.node_name}\x00{_canonical(frame.input_state)}".encode()
@@ -63,8 +89,10 @@ def breakdown(sessions_dir: str | Path, limit: int = 200, top_steps: int = 10) -
                                               "sessions": []})
                 entry["count"] += 1
                 entry["cost_usd"] = round(entry["cost_usd"] + cost, 6)
-                if player.session.session_id not in entry["sessions"]:
-                    entry["sessions"].append(player.session.session_id)
+                if sid not in entry["sessions"]:
+                    entry["sessions"].append(sid)
+        result.total_cost_usd += max(0.0, session_cost)
+        result.total_tokens += max(0, session_tokens)
     steps.sort(key=lambda s: s["cost_usd"], reverse=True)
     result.by_step = steps[:top_steps]
     result.by_model = {k: round(v, 6) for k, v in

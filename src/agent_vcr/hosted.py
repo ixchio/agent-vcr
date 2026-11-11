@@ -17,12 +17,12 @@ local-first recorder or the self-hosted ``CloudStore`` API.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import time
-import urllib.error
 import urllib.request
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlparse
@@ -40,8 +40,30 @@ class HostedDependencyError(RuntimeError):
     """Raised when an optional hosted dependency was not installed."""
 
 
+class HostedUnavailableError(HostedDependencyError):
+    """Raised when a hosted backing service (database, identity provider) is unreachable.
+
+    It subclasses :class:`HostedDependencyError` so callers that already map
+    dependency failures to "503 Service Unavailable" keep doing so.
+    """
+
+
 class HostedBillingError(RuntimeError):
     """Raised for a billing request that cannot safely be completed."""
+
+
+class HostedConflictError(HostedBillingError):
+    """Raised when a billing request conflicts with the account's current state."""
+
+
+# Subscription statuses that mean "this account already has a subscription":
+# starting another Checkout would bill the customer twice.
+_LIVE_SUBSCRIPTION_STATUSES = frozenset(
+    {"active", "trialing", "past_due", "unpaid", "paused", "pending"}
+)
+_ENTITLED_STATUSES = frozenset({"active", "trialing"})
+# Stripe never moves a subscription out of these statuses.
+_TERMINAL_STATUSES = frozenset({"canceled", "incomplete_expired"})
 
 
 @dataclass(frozen=True)
@@ -150,20 +172,38 @@ class HostedAccount:
     @property
     def entitled(self) -> bool:
         """Whether the account currently has a paid entitlement."""
-        return self.plan != "free" and self.subscription_status in {"active", "trialing"}
+        return self.plan != "free" and self.subscription_status in _ENTITLED_STATUSES
+
+    @property
+    def has_live_subscription(self) -> bool:
+        """Whether a (possibly unpaid) subscription exists that a new Checkout would duplicate."""
+        return self.entitled or self.subscription_status in _LIVE_SUBSCRIPTION_STATUSES
 
 
 class SupabaseJWTVerifier:
-    """Verify Supabase asymmetric access tokens with a small, locked JWKS cache."""
+    """Verify Supabase asymmetric access tokens with a small JWKS cache.
+
+    Cache hits never wait on a lock. Refreshes are single-flight, and an
+    unknown ``kid`` can trigger at most one refetch per
+    ``_MIN_REFETCH_SECONDS`` (a negative cache), so anonymous requests with
+    random key ids cannot queue every login behind identity-provider fetches.
+    """
 
     _CACHE_SECONDS = 600.0
+    _MIN_REFETCH_SECONDS = 60.0
+    _FAILURE_BACKOFF_SECONDS = 5.0
 
     def __init__(self, config: HostedConfig, *, timeout_seconds: float = 5.0):
         self.config = config
         self.timeout_seconds = timeout_seconds
         self._keys: dict[str, dict[str, Any]] = {}
         self._expires_at = 0.0
-        self._lock = asyncio.Lock()
+        self._last_fetch_at: float | None = None
+        self._last_fetch_failed = False
+        # Created lazily inside the running loop: on Python 3.9 a Lock built in
+        # __init__ binds to whatever loop exists at import time, not uvicorn's.
+        self._lock: asyncio.Lock | None = None
+        self._lock_loop: asyncio.AbstractEventLoop | None = None
 
     async def verify(self, token: str) -> HostedUser:
         """Return trusted subject claims or raise a non-sensitive auth error."""
@@ -202,14 +242,48 @@ class SupabaseJWTVerifier:
         email = claims.get("email")
         return HostedUser(id=subject, email=email if isinstance(email, str) else None)
 
+    def _refresh_lock(self) -> asyncio.Lock:
+        loop = asyncio.get_running_loop()
+        if self._lock is None or self._lock_loop is not loop:
+            self._lock = asyncio.Lock()
+            self._lock_loop = loop
+        return self._lock
+
+    def _cached_key(self, key_id: str) -> dict[str, Any] | None:
+        if time.monotonic() >= self._expires_at:
+            return None
+        key = self._keys.get(key_id)
+        return dict(key) if key is not None else None
+
+    def _reject_during_cooldown(self) -> None:
+        """Fail fast instead of refetching when a fetch just happened."""
+        if self._last_fetch_at is None:
+            return
+        elapsed = time.monotonic() - self._last_fetch_at
+        if self._last_fetch_failed:
+            if elapsed < self._FAILURE_BACKOFF_SECONDS:
+                raise HostedUnavailableError("Identity provider keys are unavailable")
+            return
+        if time.monotonic() < self._expires_at and elapsed < self._MIN_REFETCH_SECONDS:
+            # Keys are fresh and were fetched moments ago: this kid is simply unknown.
+            raise HostedAuthenticationError("Unknown signing key")
+
     async def _key_for(self, key_id: str) -> dict[str, Any]:
-        async with self._lock:
-            if time.monotonic() >= self._expires_at or key_id not in self._keys:
-                await self._refresh_keys_locked()
-            key = self._keys.get(key_id)
+        key = self._cached_key(key_id)
+        if key is not None:
+            return key  # lock-free fast path
+        self._reject_during_cooldown()
+        async with self._refresh_lock():
+            # Another coroutine may have refreshed while this one waited.
+            key = self._cached_key(key_id)
+            if key is not None:
+                return key
+            self._reject_during_cooldown()
+            await self._refresh_keys_locked()
+            key = self._cached_key(key_id)
             if key is None:
                 raise HostedAuthenticationError("Unknown signing key")
-            return dict(key)
+            return key
 
     async def _refresh_keys_locked(self) -> None:
         try:
@@ -217,11 +291,13 @@ class SupabaseJWTVerifier:
                 asyncio.to_thread(_fetch_json, self.config.jwks_url, self.timeout_seconds),
                 timeout=self.timeout_seconds + 1.0,
             )
-        except (asyncio.TimeoutError, OSError, urllib.error.URLError, ValueError) as err:
-            raise HostedAuthenticationError("Identity provider keys are unavailable") from err
+        except Exception as err:
+            self._record_fetch(failed=True)
+            raise HostedUnavailableError("Identity provider keys are unavailable") from err
         keys = payload.get("keys") if isinstance(payload, dict) else None
         if not isinstance(keys, list):
-            raise HostedAuthenticationError("Identity provider returned invalid signing keys")
+            self._record_fetch(failed=True)
+            raise HostedUnavailableError("Identity provider returned invalid signing keys")
         refreshed: dict[str, dict[str, Any]] = {}
         for key in keys:
             if not isinstance(key, dict):
@@ -230,9 +306,15 @@ class SupabaseJWTVerifier:
             if isinstance(key_id, str) and key.get("alg") in {"RS256", "ES256"}:
                 refreshed[key_id] = dict(key)
         if not refreshed:
-            raise HostedAuthenticationError("Identity provider has no supported signing keys")
+            self._record_fetch(failed=True)
+            raise HostedUnavailableError("Identity provider has no supported signing keys")
         self._keys = refreshed
         self._expires_at = time.monotonic() + self._CACHE_SECONDS
+        self._record_fetch(failed=False)
+
+    def _record_fetch(self, *, failed: bool) -> None:
+        self._last_fetch_at = time.monotonic()
+        self._last_fetch_failed = failed
 
     @staticmethod
     def _jwt_module() -> Any:
@@ -258,18 +340,36 @@ def _fetch_json(url: str, timeout_seconds: float) -> dict[str, Any]:
     return parsed
 
 
+_ACCOUNTS = "agent_vcr_hosted_accounts"
+_SUBSCRIPTIONS = "agent_vcr_stripe_subscriptions"
+_STATEMENT_TIMEOUT = "10s"
+
+
+def _sql_list(values: frozenset[str]) -> str:
+    """Render trusted module constants as a SQL string-literal list."""
+    return ", ".join(f"'{value}'" for value in sorted(values))
+
+
 class HostedAccountStore:
-    """Small Postgres ledger for customer mappings and idempotent Stripe events."""
+    """Small Postgres ledger for customer mappings and idempotent Stripe events.
+
+    Every Stripe subscription is tracked in its own row, so a customer with
+    two subscriptions keeps its entitlement when either one is cancelled. Each
+    row only accepts an event at least as new (Stripe ``created``) as the last
+    one applied, and a terminal status (``canceled``) is never overwritten, so
+    out-of-order deliveries cannot resurrect or revoke a plan. The account's
+    ``plan`` is then derived from its best subscription.
+    """
 
     def __init__(self, database_url: str):
         self.database_url = database_url
 
     def ensure_schema(self) -> None:
         """Create the hosted-only tables. Safe to run for every deployment."""
-        with self._connection() as connection, connection.cursor() as cursor:
+        with self._cursor() as cursor:
             cursor.execute(
-                """
-                CREATE TABLE IF NOT EXISTS agent_vcr_hosted_accounts (
+                f"""
+                CREATE TABLE IF NOT EXISTS {_ACCOUNTS} (
                     user_id TEXT PRIMARY KEY,
                     email TEXT,
                     stripe_customer_id TEXT UNIQUE,
@@ -288,16 +388,39 @@ class HostedAccountStore:
                 )
                 """
             )
+            cursor.execute(
+                f"""
+                CREATE TABLE IF NOT EXISTS {_SUBSCRIPTIONS} (
+                    subscription_id TEXT PRIMARY KEY,
+                    user_id TEXT,
+                    stripe_customer_id TEXT,
+                    status TEXT NOT NULL,
+                    event_created BIGINT NOT NULL DEFAULT 0,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            # Backfill subscriptions recorded before per-subscription tracking existed.
+            cursor.execute(
+                f"""
+                INSERT INTO {_SUBSCRIPTIONS}
+                    (subscription_id, user_id, stripe_customer_id, status, event_created)
+                SELECT stripe_subscription_id, user_id, stripe_customer_id,
+                       subscription_status, 0
+                FROM {_ACCOUNTS} WHERE stripe_subscription_id IS NOT NULL
+                ON CONFLICT (subscription_id) DO NOTHING
+                """
+            )
 
     def ensure_account(self, user: HostedUser) -> HostedAccount:
         """Insert the authenticated user once and return its subscription state."""
-        with self._connection() as connection, connection.cursor() as cursor:
+        with self._cursor() as cursor:
             cursor.execute(
-                """
-                INSERT INTO agent_vcr_hosted_accounts (user_id, email)
+                f"""
+                INSERT INTO {_ACCOUNTS} (user_id, email)
                 VALUES (%s, %s)
                 ON CONFLICT (user_id) DO UPDATE
-                SET email = COALESCE(EXCLUDED.email, agent_vcr_hosted_accounts.email),
+                SET email = COALESCE(EXCLUDED.email, {_ACCOUNTS}.email),
                     updated_at = CURRENT_TIMESTAMP
                 RETURNING user_id, email, stripe_customer_id, stripe_subscription_id,
                           plan, subscription_status
@@ -309,12 +432,12 @@ class HostedAccountStore:
 
     def get_account(self, user_id: str) -> HostedAccount | None:
         """Load an account without leaking whether other users exist."""
-        with self._connection() as connection, connection.cursor() as cursor:
+        with self._cursor() as cursor:
             cursor.execute(
-                """
+                f"""
                 SELECT user_id, email, stripe_customer_id, stripe_subscription_id,
                        plan, subscription_status
-                FROM agent_vcr_hosted_accounts WHERE user_id = %s
+                FROM {_ACCOUNTS} WHERE user_id = %s
                 """,
                 (user_id,),
             )
@@ -322,7 +445,11 @@ class HostedAccountStore:
         return _account_from_row(row) if row else None
 
     def apply_stripe_event(self, event: Mapping[str, Any]) -> bool:
-        """Record one verified Stripe event exactly once and update entitlement state."""
+        """Record one verified Stripe event exactly once and update entitlement state.
+
+        Returns False for a redelivered event id. The ledger insert and the state
+        change share one transaction, so a failure leaves the event retryable.
+        """
         event_id = event.get("id")
         event_type = event.get("type")
         data = event.get("data")
@@ -331,8 +458,14 @@ class HostedAccountStore:
         obj = data.get("object") if isinstance(data, Mapping) else None
         if not isinstance(obj, Mapping):
             raise HostedBillingError("Stripe event has no object")
+        created = event.get("created")
+        event_created = (
+            int(created)
+            if isinstance(created, (int, float)) and not isinstance(created, bool)
+            else 0
+        )
 
-        with self._connection() as connection, connection.cursor() as cursor:
+        with self._cursor() as cursor:
             cursor.execute(
                 """
                 INSERT INTO agent_vcr_stripe_events (event_id) VALUES (%s)
@@ -345,8 +478,22 @@ class HostedAccountStore:
             if event_type == "checkout.session.completed":
                 self._apply_checkout_completed(cursor, obj)
             elif event_type.startswith("customer.subscription."):
-                self._apply_subscription(cursor, obj)
+                self._apply_subscription(cursor, obj, event_created)
         return True
+
+    def _lock_account(self, cursor: Any, user_id: str, customer_id: str | None) -> None:
+        """Upsert the account row; the row lock serializes concurrent webhooks per user."""
+        cursor.execute(
+            f"""
+            INSERT INTO {_ACCOUNTS} (user_id, stripe_customer_id)
+            VALUES (%s, %s)
+            ON CONFLICT (user_id) DO UPDATE
+            SET stripe_customer_id = COALESCE(EXCLUDED.stripe_customer_id,
+                                              {_ACCOUNTS}.stripe_customer_id),
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (user_id, customer_id),
+        )
 
     def _apply_checkout_completed(self, cursor: Any, checkout: Mapping[str, Any]) -> None:
         metadata = checkout.get("metadata")
@@ -357,74 +504,138 @@ class HostedAccountStore:
         subscription_id = _stripe_id(checkout.get("subscription"))
         if not isinstance(user_id, str) or not user_id:
             return
-        cursor.execute(
-            """
-            INSERT INTO agent_vcr_hosted_accounts
-                (user_id, stripe_customer_id, stripe_subscription_id, subscription_status)
-            VALUES (%s, %s, %s, 'pending')
-            ON CONFLICT (user_id) DO UPDATE
-            SET stripe_customer_id = COALESCE(EXCLUDED.stripe_customer_id,
-                                              agent_vcr_hosted_accounts.stripe_customer_id),
-                stripe_subscription_id = COALESCE(EXCLUDED.stripe_subscription_id,
-                                                  agent_vcr_hosted_accounts.stripe_subscription_id),
-                updated_at = CURRENT_TIMESTAMP
-            """,
-            (user_id, customer_id, subscription_id),
-        )
+        self._lock_account(cursor, user_id, customer_id)
+        if subscription_id:
+            # A placeholder until the subscription's own events arrive (they may
+            # already have): event_created=0 lets any real event supersede it,
+            # and an existing row keeps its status.
+            cursor.execute(
+                f"""
+                INSERT INTO {_SUBSCRIPTIONS} AS s
+                    (subscription_id, user_id, stripe_customer_id, status, event_created)
+                VALUES (%s, %s, %s, 'pending', 0)
+                ON CONFLICT (subscription_id) DO UPDATE
+                SET user_id = COALESCE(s.user_id, EXCLUDED.user_id),
+                    stripe_customer_id = COALESCE(s.stripe_customer_id,
+                                                  EXCLUDED.stripe_customer_id)
+                """,
+                (subscription_id, user_id, customer_id),
+            )
+        if customer_id:
+            cursor.execute(
+                f"""
+                UPDATE {_SUBSCRIPTIONS} SET user_id = %s
+                WHERE stripe_customer_id = %s AND user_id IS NULL
+                """,
+                (user_id, customer_id),
+            )
+        self._recompute_entitlement(cursor, user_id)
 
-    def _apply_subscription(self, cursor: Any, subscription: Mapping[str, Any]) -> None:
+    def _apply_subscription(
+        self, cursor: Any, subscription: Mapping[str, Any], event_created: int
+    ) -> None:
         metadata = subscription.get("metadata")
         user_id = metadata.get("agent_vcr_user_id") if isinstance(metadata, Mapping) else None
         customer_id = _stripe_id(subscription.get("customer"))
         subscription_id = _stripe_id(subscription.get("id"))
         status = subscription.get("status")
-        if not isinstance(status, str):
+        if not isinstance(status, str) or not status:
             status = "inactive"
-        plan = "pro" if status in {"active", "trialing"} else "free"
-
+        if not subscription_id:
+            return
+        if not (isinstance(user_id, str) and user_id) and customer_id:
+            cursor.execute(
+                f"SELECT user_id FROM {_ACCOUNTS} WHERE stripe_customer_id = %s",
+                (customer_id,),
+            )
+            row = cursor.fetchone()
+            user_id = str(row[0]) if row else None
         if isinstance(user_id, str) and user_id:
-            cursor.execute(
-                """
-                INSERT INTO agent_vcr_hosted_accounts
-                    (user_id, stripe_customer_id, stripe_subscription_id, plan, subscription_status)
-                VALUES (%s, %s, %s, %s, %s)
-                ON CONFLICT (user_id) DO UPDATE
-                SET stripe_customer_id = COALESCE(EXCLUDED.stripe_customer_id,
-                                                  agent_vcr_hosted_accounts.stripe_customer_id),
-                    stripe_subscription_id = EXCLUDED.stripe_subscription_id,
-                    plan = EXCLUDED.plan,
-                    subscription_status = EXCLUDED.subscription_status,
-                    updated_at = CURRENT_TIMESTAMP
-                """,
-                (user_id, customer_id, subscription_id, plan, status),
-            )
-        elif customer_id:
-            cursor.execute(
-                """
-                UPDATE agent_vcr_hosted_accounts
-                SET stripe_subscription_id = %s, plan = %s, subscription_status = %s,
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE stripe_customer_id = %s
-                """,
-                (subscription_id, plan, status, customer_id),
-            )
+            self._lock_account(cursor, user_id, customer_id)
+        else:
+            user_id = None  # unknown customer: linked later by checkout completion
+        terminal = _sql_list(_TERMINAL_STATUSES)
+        cursor.execute(
+            f"""
+            INSERT INTO {_SUBSCRIPTIONS} AS s
+                (subscription_id, user_id, stripe_customer_id, status, event_created)
+            VALUES (%s, %s, %s, %s, %s)
+            ON CONFLICT (subscription_id) DO UPDATE
+            SET user_id = COALESCE(EXCLUDED.user_id, s.user_id),
+                stripe_customer_id = COALESCE(EXCLUDED.stripe_customer_id,
+                                              s.stripe_customer_id),
+                status = EXCLUDED.status,
+                event_created = EXCLUDED.event_created,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE s.status NOT IN ({terminal})
+              AND (EXCLUDED.status IN ({terminal})
+                   OR EXCLUDED.event_created >= s.event_created)
+            """,
+            (subscription_id, user_id, customer_id, status, event_created),
+        )
+        if user_id:
+            self._recompute_entitlement(cursor, user_id)
 
-    def _connection(self) -> Any:
+    def _recompute_entitlement(self, cursor: Any, user_id: str) -> None:
+        """Mirror the user's best subscription (entitled first, then live, then newest)."""
+        cursor.execute(
+            f"""
+            SELECT subscription_id, status FROM {_SUBSCRIPTIONS}
+            WHERE user_id = %s
+            ORDER BY CASE WHEN status IN ({_sql_list(_ENTITLED_STATUSES)}) THEN 0
+                          WHEN status IN ({_sql_list(_TERMINAL_STATUSES)}) THEN 2
+                          ELSE 1 END,
+                     event_created DESC,
+                     updated_at DESC
+            LIMIT 1
+            """,
+            (user_id,),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            return
+        subscription_id, status = str(row[0]), str(row[1])
+        plan = "pro" if status in _ENTITLED_STATUSES else "free"
+        cursor.execute(
+            f"""
+            UPDATE {_ACCOUNTS}
+            SET stripe_subscription_id = %s, plan = %s, subscription_status = %s,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE user_id = %s
+            """,
+            (subscription_id, plan, status, user_id),
+        )
+
+    @contextlib.contextmanager
+    def _cursor(self) -> Iterator[Any]:
+        """One transaction; database failures surface as :class:`HostedUnavailableError`."""
+        psycopg = self._driver()
+        try:
+            with psycopg.connect(
+                self.database_url, connect_timeout=5
+            ) as connection, connection.cursor() as cursor:
+                # SET LOCAL is transaction-scoped, so it is also safe behind poolers.
+                cursor.execute(f"SET LOCAL statement_timeout = '{_STATEMENT_TIMEOUT}'")
+                yield cursor
+        except psycopg.Error as err:
+            raise HostedUnavailableError("Hosted account database is unavailable") from err
+        except OSError as err:
+            raise HostedUnavailableError("Hosted account database is unavailable") from err
+
+    @staticmethod
+    def _driver() -> Any:
         try:
             import psycopg
         except ImportError as err:
             raise HostedDependencyError(
                 'Hosted account storage needs: pip install "ai-agent-vcr[hosted]"'
             ) from err
-        try:
-            return psycopg.connect(self.database_url, connect_timeout=5)
-        except Exception as err:
-            raise HostedBillingError("Hosted account database is unavailable") from err
+        return psycopg
 
 
 def _account_from_row(row: Any) -> HostedAccount:
     if not isinstance(row, tuple) or len(row) != 6:
-        raise HostedBillingError("Hosted account database returned an invalid record")
+        raise HostedUnavailableError("Hosted account database returned an invalid record")
     return HostedAccount(
         user_id=str(row[0]),
         email=str(row[1]) if row[1] is not None else None,
@@ -454,7 +665,16 @@ class StripeBilling:
         self.config = config
 
     def create_checkout(self, user: HostedUser, account: HostedAccount) -> str:
-        """Create a subscription Checkout session owned by the verified user."""
+        """Create a subscription Checkout session owned by the verified user.
+
+        Refuses (:class:`HostedConflictError`) when the account already has a
+        subscription, so a second Checkout cannot bill the customer twice; the
+        billing portal is the place to change an existing subscription.
+        """
+        if account.has_live_subscription:
+            raise HostedConflictError(
+                "This account already has a subscription; manage it in the billing portal"
+            )
         client = self._client()
         params: dict[str, Any] = {
             "mode": "subscription",

@@ -3,10 +3,16 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
+import os
+import shlex
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
+
+from agent_vcr import __version__
 
 CLAUDE_CODE_EVENTS = (
     "PreToolUse",
@@ -17,7 +23,24 @@ CLAUDE_CODE_EVENTS = (
 )
 
 
-def build_claude_code_hooks() -> dict[str, list[dict[str, Any]]]:
+_HOOK_MODULE = "agent_vcr.hooks.claude_code"
+
+
+def _hook_command(event: str, python: str | None = None) -> str:
+    """Hook command using the interpreter that has agent_vcr installed.
+
+    A bare ``python`` is often missing (python3-only distros) or resolves to a
+    different environment than the venv/pipx install that owns agent_vcr.
+    """
+    interpreter = python or sys.executable or "python3"
+    return f"{shlex.quote(interpreter)} -m {_HOOK_MODULE} {event}"
+
+
+def _is_agent_vcr_hook(command: Any) -> bool:
+    return isinstance(command, str) and f"-m {_HOOK_MODULE} " in command + " "
+
+
+def build_claude_code_hooks(python: str | None = None) -> dict[str, list[dict[str, Any]]]:
     """Build a Claude Code hooks config that records lifecycle events to VCR."""
     hooks: dict[str, list[dict[str, Any]]] = {}
     for event in CLAUDE_CODE_EVENTS:
@@ -25,7 +48,8 @@ def build_claude_code_hooks() -> dict[str, list[dict[str, Any]]]:
             "hooks": [
                 {
                     "type": "command",
-                    "command": f"python -m agent_vcr.hooks.claude_code {event}",
+                    "command": _hook_command(event, python),
+                    "timeout": 10,
                 }
             ]
         }
@@ -59,35 +83,90 @@ def write_claude_code_hooks(project_dir: str | Path = ".") -> Path:
         if not isinstance(existing, list):
             raise ValueError(f"{settings_path} hooks.{event} must be a JSON array")
 
-        existing_commands = {
-            hook.get("command")
-            for entry in existing
-            if isinstance(entry, dict)
-            for hook in entry.get("hooks", [])
-            if isinstance(hook, dict)
-        }
-        for entry in entries:
-            command = entry["hooks"][0]["command"]
-            if command not in existing_commands:
-                existing.append(entry)
+        # Drop previously installed Agent VCR hook commands (e.g. the legacy
+        # bare ``python -m ...`` form) so re-running init upgrades in place
+        # instead of registering the recorder twice. User hooks are untouched.
+        kept: list[Any] = []
+        for entry in existing:
+            if isinstance(entry, dict) and isinstance(entry.get("hooks"), list):
+                others = [
+                    h
+                    for h in entry["hooks"]
+                    if not (isinstance(h, dict) and _is_agent_vcr_hook(h.get("command")))
+                ]
+                if not others:
+                    continue
+                entry = {**entry, "hooks": others}
+            kept.append(entry)
+        kept.extend(entries)
+        hooks[event] = kept
 
-    with open(settings_path, "w") as f:
-        json.dump(settings, f, indent=2)
-        f.write("\n")
-
+    _atomic_write_json(settings_path, settings)
     return settings_path
 
 
-def _run_tui(filepath: str) -> None:
-    from agent_vcr.tui import VCRApp
+def _atomic_write_json(path: Path, data: Any) -> None:
+    """Write JSON via tmp + os.replace so a crash never truncates settings."""
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=path.name + ".", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(data, f, indent=2)
+            f.write("\n")
+        os.replace(tmp, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
 
+
+TUI_INSTALL_HINT = 'pip install "ai-agent-vcr[tui]"'
+
+# First words that are subcommands (anything else is treated as a .vcr path
+# if it looks like one, or rejected as an unknown command).
+COMMANDS = frozenset({
+    "init", "tui", "serve", "bundle", "dataset", "ci", "cloud", "superagent",
+    "workflow", "intel", "reproduce",
+})
+
+
+def _looks_like_vcr_path(arg: str) -> bool:
+    """True if ``arg`` should be opened in the TUI rather than parsed as a command."""
+    return (
+        Path(arg).exists()
+        or arg.endswith((".vcr", ".jsonl"))
+        or "/" in arg
+        or os.sep in arg
+    )
+
+
+def _run_tui(filepath: str) -> None:
     path = Path(filepath)
     if not path.exists():
         print(f"Error: File not found: {path}", file=sys.stderr)
         raise SystemExit(1)
 
-    app = VCRApp(str(path))
-    app.run()
+    try:
+        from agent_vcr.tui import run_app
+    except ModuleNotFoundError as err:
+        if (err.name or "").split(".")[0] not in {"textual", "rich"}:
+            raise
+        print(
+            f"Error: the terminal UI needs the [tui] extra (missing {err.name}); "
+            f"install it with: {TUI_INSTALL_HINT}",
+            file=sys.stderr,
+        )
+        raise SystemExit(1) from None
+
+    code = run_app(path)
+    if code:
+        raise SystemExit(code)
+
+
+def _run_serve(argv: list[str]) -> None:
+    """``vcr serve`` — alias for the ``vcr-server`` dashboard entry point."""
+    from agent_vcr.server import main as server_main
+
+    server_main(argv)
 
 
 def _cmd_bundle_export(args: argparse.Namespace) -> None:
@@ -170,6 +249,7 @@ def _cmd_dataset_add(args: argparse.Namespace) -> None:
     )
     ds = ReplayDataset.load(args.name, datasets_dir=args.datasets_dir)
     from agent_vcr.golden_cache import GoldenRunCache
+    from agent_vcr.regression import case_slug
 
     case = ds.add_case(
         args.task,
@@ -180,6 +260,7 @@ def _cmd_dataset_add(args: argparse.Namespace) -> None:
         golden_cache=GoldenRunCache(cache_dir=args.golden_dir),
     )
     print(f"Case added: {case.name} (dataset v{ds.version}, golden {case.fingerprint})")
+    print(f"  vcr ci run expects its candidate as: {case_slug(case.name)}.vcr")
 
 
 def _cmd_dataset_list(args: argparse.Namespace) -> None:
@@ -210,25 +291,36 @@ def _cmd_dataset_remove(args: argparse.Namespace) -> None:
 
 
 def _cmd_ci_run(args: argparse.Namespace) -> None:
-    from pathlib import Path as _Path
-
     from agent_vcr.datasets import ReplayDataset
     from agent_vcr.golden_cache import GoldenRunCache
     from agent_vcr.regression import (
+        atomic_write_text,
+        case_slug,
         emit_github_annotations,
         run_regression,
         write_github_summary,
     )
 
+    cand_dir = Path(args.candidates)
+    if not cand_dir.is_dir():
+        raise FileNotFoundError(
+            f"--candidates directory not found: {cand_dir} "
+            "(expected a directory of <case>.vcr recordings)"
+        )
     ds = ReplayDataset.load(args.dataset, datasets_dir=args.datasets_dir)
     cache = GoldenRunCache(cache_dir=args.golden_dir)
-    cand_dir = _Path(args.candidates)
-    candidates = {p.stem: str(p) for p in sorted(cand_dir.glob("*.vcr"))} if cand_dir.exists() else {}
+    candidates = {p.stem: str(p) for p in sorted(cand_dir.glob("*.vcr"))}
+    selected = ds.select(_parse_csv(args.tags) or None)
+    if not candidates:
+        print(f"Warning: no .vcr files in {cand_dir}", file=sys.stderr)
+    known = {c.name for c in selected} | {case_slug(c.name) for c in selected}
+    for stem in sorted(set(candidates) - known):
+        print(f"Warning: {stem}.vcr matches no case in dataset {ds.name!r}", file=sys.stderr)
     report = run_regression(ds, candidates, cache, tags=_parse_csv(args.tags) or None)
 
     markdown = report.to_markdown()
     if args.markdown:
-        _Path(args.markdown).write_text(markdown)
+        atomic_write_text(Path(args.markdown), markdown)
     if args.report:
         report.save(args.report)
     if not args.quiet:
@@ -249,6 +341,14 @@ def _cmd_ci_run(args: argparse.Namespace) -> None:
 def _cloud_client(args: argparse.Namespace) -> Any:
     from agent_vcr.cloud import CloudClient
 
+    if getattr(args, "token", None) is not None and not getattr(args, "base_url", None):
+        # Silently falling back to the stored profile would drop the token.
+        print(
+            "Error: --token requires --base-url (or store credentials with "
+            "`vcr cloud login <url> --token ...` and use --profile)",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
     if getattr(args, "base_url", None) and getattr(args, "token", None) is not None:
         token = args.token
         if token == "-":
@@ -621,14 +721,18 @@ def _cmd_workflow_tick(args: argparse.Namespace) -> None:
 def main(argv: list[str] | None = None) -> None:
     """Run the Agent VCR CLI."""
     raw_args = list(argv if argv is not None else sys.argv[1:])
-    if raw_args and raw_args[0] not in {"init", "tui", "bundle", "dataset", "ci", "cloud",
-                                       "superagent", "workflow", "intel",
-                                       "reproduce", "-h", "--help"}:
-        _run_tui(raw_args[0])
+    if raw_args and raw_args[0] == "serve":
+        # Pass everything through so `vcr serve --help` shows the server's options.
+        _run_serve(raw_args[1:])
         return
 
-    parser = argparse.ArgumentParser(description="Agent VCR")
-    subparsers = parser.add_subparsers(dest="command")
+    parser = argparse.ArgumentParser(
+        prog="vcr",
+        description="Agent VCR — record, replay and regression-test AI agent runs.",
+        epilog="Shortcut: `vcr path/to/run.vcr` opens the terminal debugger.",
+    )
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
+    subparsers = parser.add_subparsers(dest="command", metavar="<command>")
 
     init_parser = subparsers.add_parser("init", help="Initialize Agent VCR integrations")
     init_parser.add_argument(
@@ -644,6 +748,12 @@ def main(argv: list[str] | None = None) -> None:
 
     tui_parser = subparsers.add_parser("tui", help="Open the terminal debugger")
     tui_parser.add_argument("file", help="Path to the .vcr file to replay")
+
+    subparsers.add_parser(
+        "serve",
+        help="Run the dashboard server (same as vcr-server; `vcr serve --help` for options)",
+        add_help=False,
+    )
 
     bundle_parser = subparsers.add_parser("bundle", help="Replay bundle operations")
     bundle_sub = bundle_parser.add_subparsers(dest="bundle_command", required=True)
@@ -709,7 +819,17 @@ def main(argv: list[str] | None = None) -> None:
 
     ci_run = ci_sub.add_parser("run", help="Run dataset regression, print report", parents=[stores])
     ci_run.add_argument("--dataset", required=True)
-    ci_run.add_argument("--candidates", required=True, help="Dir of <case>.vcr files")
+    ci_run.add_argument(
+        "--candidates",
+        required=True,
+        help=(
+            "Directory of candidate recordings, one <case>.vcr per case. A file matches "
+            "when its name (minus .vcr) equals the case name, which defaults to the "
+            "--task string, or the case name's slug: lowercased, with every run of "
+            "characters other than a-z 0-9 . _ - replaced by '-' "
+            "(task 'Refund $10' -> refund-10.vcr)"
+        ),
+    )
     ci_run.add_argument("--tags", default=None, help="Comma-separated tag filter")
     ci_run.add_argument("--fail-on", choices=["degraded", "failed", "never"], default="failed")
     ci_run.add_argument("--report", default=None, help="Write JSON report here")
@@ -878,6 +998,15 @@ def main(argv: list[str] | None = None) -> None:
     in_costs.add_argument("--dir", default=".vcr")
     in_costs.set_defaults(func=_cmd_intel_costs)
 
+    if raw_args and not raw_args[0].startswith("-") and raw_args[0] not in COMMANDS:
+        if _looks_like_vcr_path(raw_args[0]):
+            _run_tui(raw_args[0])
+            return
+        parser.error(
+            f"unknown command {raw_args[0]!r} (choose from {', '.join(sorted(COMMANDS))}, "
+            "or pass a path to a .vcr file)"
+        )
+
     args = parser.parse_args(raw_args)
 
     if args.command == "init":
@@ -888,7 +1017,19 @@ def main(argv: list[str] | None = None) -> None:
         vcr_dir.mkdir(exist_ok=True)
         print(f"Agent VCR workspace ready: {vcr_dir}")
         if args.claude_code:
-            path = write_claude_code_hooks(project_dir)
+            settings_path = project_dir / ".claude" / "settings.json"
+            try:
+                path = write_claude_code_hooks(project_dir)
+            except json.JSONDecodeError as err:
+                print(
+                    f"Error: {settings_path} is not valid JSON ({err}); "
+                    "fix or remove it and re-run `vcr init --claude-code`",
+                    file=sys.stderr,
+                )
+                raise SystemExit(1) from None
+            except (ValueError, OSError) as err:
+                print(f"Error: cannot update {settings_path}: {err}", file=sys.stderr)
+                raise SystemExit(1) from None
             print(f"Claude Code hooks installed: {path}")
         return
 
@@ -903,12 +1044,18 @@ def main(argv: list[str] | None = None) -> None:
             args.func(args)
         except SystemExit:
             raise
-        except (CloudError, KeyError, FileNotFoundError, PermissionError) as err:
+        except KeyError as err:
+            # str(KeyError) is the repr of its argument; show the message itself.
+            print(f"Error: {err.args[0] if err.args else err}", file=sys.stderr)
+            raise SystemExit(1) from None
+        except IsADirectoryError as err:
+            print(f"Error: {err.filename or err}: is a directory", file=sys.stderr)
+            raise SystemExit(1) from None
+        except (CloudError, OSError, ValueError) as err:
+            # OSError covers FileNotFoundError / PermissionError; ValueError covers
+            # json.JSONDecodeError and pydantic validation errors.
             print(f"Error: {err}", file=sys.stderr)
-            raise SystemExit(1) from err
-        except (ValueError, json.JSONDecodeError) as err:
-            print(f"Error: {err}", file=sys.stderr)
-            raise SystemExit(1) from err
+            raise SystemExit(1) from None
         return
 
     parser.print_help()

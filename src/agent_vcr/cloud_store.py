@@ -42,6 +42,8 @@ logger = logging.getLogger(__name__)
 
 _SLUG = re.compile(r"^[a-zA-Z0-9_.-]+$")
 MAX_UPLOAD_BYTES = 100 * 1024 * 1024  # 100 MB per execution object
+# ``last_used_at`` is advisory; refresh it at most this often per token.
+LAST_USED_WRITE_INTERVAL_S = 60.0
 
 Role = Literal["owner", "member"]
 
@@ -86,7 +88,10 @@ def slugify(name: str) -> str:
     """Derive a safe id from a display name (lowercase, dashes)."""
     slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
     if not slug:
-        raise ValueError(f"Cannot derive project id from {name!r}")
+        raise ValueError(
+            f"Cannot derive a project id from {name!r}: use a name with letters or digits, "
+            "or pass an explicit id"
+        )
     return slug
 
 
@@ -98,6 +103,20 @@ def _check_slug(value: str, kind: str) -> str:
 
 def _utcnow() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _last_used_is_stale(value: str | None) -> bool:
+    """True when ``last_used_at`` is unset, unparseable, or older than the interval."""
+    if not value:
+        return True
+    try:
+        then = datetime.fromisoformat(value)
+    except ValueError:
+        return True
+    if then.tzinfo is None:
+        then = then.replace(tzinfo=timezone.utc)
+    age = (datetime.now(timezone.utc) - then).total_seconds()
+    return age >= LAST_USED_WRITE_INTERVAL_S or age < 0
 
 
 def _atomic_json(path: Path, payload: Any) -> None:
@@ -130,9 +149,9 @@ def _sha256_bytes(data: bytes) -> str:
 def _store_lock(root: Path) -> Iterator[None]:
     """Inter-process mutex for registry read-modify-write cycles.
 
-    The server verifies tokens (and flushes ``last_used_at``) on every
-    request, so concurrent workers would otherwise lose each other's
-    updates. POSIX ``flock``; fail-open where unavailable. Body
+    Token minting/revocation and the throttled ``last_used_at`` flush all
+    rewrite ``tokens.json``, so concurrent workers would otherwise lose each
+    other's updates. POSIX ``flock``; fail-open where unavailable. Body
     exceptions always propagate (only lock-acquisition may degrade).
     """
     try:
@@ -223,23 +242,41 @@ class CloudStore:
         return public, secret
 
     def verify_token(self, supplied: str | None) -> ApiTokenRecord | None:
-        """Constant-time token check; None when missing/unknown/revoked."""
+        """Constant-time token check; None when missing/unknown/revoked.
+
+        Verification itself is lock-free (registry writes are atomic
+        ``os.replace`` swaps, so a reader always sees a complete file). The
+        ``last_used_at`` bookkeeping is throttled to one locked rewrite per
+        token every :data:`LAST_USED_WRITE_INTERVAL_S` seconds, so the hot
+        path of every authenticated request no longer rewrites ``tokens.json``.
+        """
         if not supplied:
             return None
         digest = hashlib.sha256(supplied.encode()).hexdigest()
+        record = self._find_token(self._tokens(), digest)
+        if record is None or record.revoked:
+            return None
+        if not _last_used_is_stale(record.last_used_at):
+            return record
         with _store_lock(self.root):
             tokens = self._tokens()
             for raw in tokens:
                 if not hmac.compare_digest(raw.get("token_hash", ""), digest):
                     continue
-                record = ApiTokenRecord(**raw)
-                if record.revoked:
-                    return None
-                record.last_used_at = _utcnow()
-                raw["last_used_at"] = record.last_used_at
-                with contextlib.suppress(Exception):
-                    _atomic_json(self.root / "tokens.json", {"tokens": tokens})
-                return record
+                if raw.get("revoked"):
+                    return None  # revoked between the lock-free read and now
+                if _last_used_is_stale(raw.get("last_used_at")):
+                    raw["last_used_at"] = _utcnow()
+                    with contextlib.suppress(Exception):
+                        _atomic_json(self.root / "tokens.json", {"tokens": tokens})
+                return ApiTokenRecord(**raw)
+        return None  # deleted between the lock-free read and now
+
+    @staticmethod
+    def _find_token(tokens: list[dict], digest: str) -> ApiTokenRecord | None:
+        for raw in tokens:
+            if hmac.compare_digest(raw.get("token_hash", ""), digest):
+                return ApiTokenRecord(**raw)
         return None
 
     def list_tokens(self, project_id: str) -> list[ApiTokenPublic]:

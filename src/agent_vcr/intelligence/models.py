@@ -83,13 +83,24 @@ class ModelStats(BaseModel):
     def avg_cost(self) -> float:
         return self.total_cost_usd / self.calls if self.calls else 0.0
 
+    @property
+    def cost_per_success(self) -> float:
+        """Spend per *successful* call (failed calls still cost; inf if none succeed)."""
+        return self.total_cost_usd / self.success_calls if self.success_calls else float("inf")
+
 
 class RouteDecision(BaseModel):
-    """Model choice with audit trail."""
+    """Model choice with audit trail.
+
+    ``constraints_met`` is False when no model satisfied ``min_success`` /
+    ``max_avg_cost`` and ``model`` is only the best available fallback.
+    """
 
     model: str
     reason: str = ""
     candidates: list[str] = Field(default_factory=list)
+    constraints_met: bool = True
+    fallbacks: list[str] = Field(default_factory=list)
 
 
 class CostBreakdown(BaseModel):

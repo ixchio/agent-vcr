@@ -172,13 +172,16 @@ class TestBranchesLoopsParallel:
             ]))
             assert rec.outputs["loop"] == {"items": [{"loud": "1"}, {"loud": "2"},
                                                       {"loud": "3"}], "count": 3}
-            with pytest.raises(ValueError, match="max"):
-                eng.start(_def([
-                    {"id": "src", "ref": "echo", "inputs": {"value": [1, 2]}},
-                    {"id": "loop", "kind": "for_each", "for_each": "$src.value",
-                     "max_iterations": 1, "depends_on": ["src"],
-                     "body": [{"id": "x", "ref": "echo"}]},
-                ]))
+            # A runtime loop-cap breach used to escape start() as ValueError,
+            # leaving the run RUNNING forever; it now aborts the run cleanly.
+            capped = eng.start(_def([
+                {"id": "src", "ref": "echo", "inputs": {"value": [1, 2]}},
+                {"id": "loop", "kind": "for_each", "for_each": "$src.value",
+                 "max_iterations": 1, "depends_on": ["src"],
+                 "body": [{"id": "x", "ref": "echo"}]},
+            ]))
+            assert capped.status == RunStatus.ABORTED
+            assert "exceed max" in capped.error
         finally:
             eng.shutdown()
 

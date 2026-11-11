@@ -154,7 +154,7 @@ class TestExportEndpoint:
 
     def test_export_unsupported_format(self, client):
         response = client.get("/api/sessions/test-session/export?export_format=csv")
-        assert response.status_code == 500  # Wrapped in generic exception handler
+        assert response.status_code == 400  # client error, not a server error
 
     def test_export_session_not_found(self, client):
         response = client.get("/api/sessions/nonexistent/export?export_format=json")

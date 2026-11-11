@@ -67,7 +67,11 @@ class FilesystemDiff(BaseModel):
 
 
 class FilesystemSnapshot(BaseModel):
-    """Point-in-time snapshot of the sandbox filesystem."""
+    """Point-in-time snapshot of the sandbox filesystem.
+
+    ``root_path`` is the directory that was scanned (the snapshot's scope);
+    entry keys are relative to the sandbox root.
+    """
 
     root_path: str = ""
     timestamp: float = 0.0
@@ -96,7 +100,11 @@ class SandboxConfig(BaseModel):
     """Configuration for provisioning an isolated sandbox."""
 
     provider: Literal["auto", "local", "e2b", "mock"] = "auto"
+    #: Default per-command timeout.
     timeout_seconds: float = 60.0
+    #: How long a remote sandbox (E2B microVM) may live before the provider
+    #: kills it. Independent of the per-command timeout; never shorter than it.
+    lifetime_seconds: float = 3600.0
     memory_limit_mb: int = 512
     cpu_count: int = 1
     workdir: str = "/workspace"
@@ -104,4 +112,7 @@ class SandboxConfig(BaseModel):
     api_key: str | None = None
     template: str = "base"
     network_enabled: bool = True
+    #: Pass the full host environment to commands (LocalSandbox). Off by default
+    #: so API keys and credentials are not exposed to agent-run commands.
+    inherit_env: bool = False
     metadata: dict[str, Any] = Field(default_factory=dict)

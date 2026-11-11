@@ -161,7 +161,9 @@ class TestVCRCrewAI:
             task.execute(context={"key": "value"})
 
             assert len(recorder.frames) == 1
-            assert recorder.frames[0].node_name == "individual"
+            # Node names are short "task:<label>"; the full description lives in the input.
+            assert recorder.frames[0].node_name == "task:individual"
+            assert recorder.frames[0].input_state["task_description"] == "individual"
 
     def test_tasks_restored_after_kickoff(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -259,7 +261,8 @@ class TestVCRCrewAI:
         task_out.raw = "raw results"
         task_out.agent = "Researcher"
         result = vcr_crew._extract_task_output(task_out)
-        assert result["_node_name"] == "research_task"
+        assert result["_node_name"] == "task:research_task"
+        assert result["input"]["description"] == "research_task"
 
 
 class TestVCRCrewCallback:

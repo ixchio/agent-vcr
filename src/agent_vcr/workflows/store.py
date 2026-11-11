@@ -8,6 +8,12 @@
   run executes — the reproducibility contract. Writers persist AFTER
   every top-level step, so a new engine on the same directory resumes
   exactly where the old one died (durability granularity: top-level step).
+  Cancellation requests live in a ``<run-id>.cancel`` sidecar so a request
+  is never overwritten by the engine persisting its in-memory record.
+
+Workflow names and run ids become file names, so both are validated
+(no path separators, no leading dot, no NUL, bounded length) before any
+path is built — a name like ``../x`` can never escape the store directory.
 """
 
 from __future__ import annotations
@@ -25,6 +31,27 @@ from typing import Any
 from agent_vcr.workflows.models import RunRecord, RunStatus, WorkflowDef
 
 logger = logging.getLogger(__name__)
+
+_MAX_NAME_LEN = 200
+
+
+def validate_name(name: str, what: str = "workflow name") -> str:
+    """Return ``name`` if it is safe to use as one path component, else raise ValueError."""
+    if not isinstance(name, str) or not name or len(name) > _MAX_NAME_LEN:
+        raise ValueError(f"Invalid {what} {name!r}: must be 1-{_MAX_NAME_LEN} characters")
+    if name.startswith(".") or name != name.strip():
+        raise ValueError(f"Invalid {what} {name!r}: no leading dot or surrounding whitespace")
+    forbidden = {"/", "\\", "\x00", ":"} | {sep for sep in (os.sep, os.altsep) if sep}
+    if any(ch in name for ch in forbidden) or any(ord(ch) < 32 for ch in name):
+        raise ValueError(f"Invalid {what} {name!r}: path separators/control characters")
+    return name
+
+
+def _inside(directory: Path, path: Path) -> Path:
+    """Defense in depth: the resolved path must stay inside ``directory``."""
+    if path.resolve().parent != directory.resolve():
+        raise ValueError(f"Path {path} escapes {directory}")
+    return path
 
 
 def _utcnow() -> str:
@@ -51,32 +78,44 @@ class WorkflowRegistry:
         self.dir = Path(directory)
         self.dir.mkdir(parents=True, exist_ok=True)
 
+    def _file(self, name: str, suffix: str) -> Path:
+        validate_name(name)
+        return _inside(self.dir, self.dir / f"{name}{suffix}")
+
     def save(self, definition: WorkflowDef) -> WorkflowDef:
         """Store a definition; bumps version only when content changed."""
+        validate_name(definition.name)
         latest = self.latest(definition.name)
         if latest is not None and latest.model_dump(exclude={"version"}) == \
                 definition.model_dump(exclude={"version"}):
             return latest
         version = (latest.version + 1) if latest is not None else 1
         stored = definition.model_copy(update={"version": version})
-        _atomic_json(self.dir / f"{definition.name}.v{version}.json", stored.model_dump())
-        _atomic_json(self.dir / f"{definition.name}.latest", {"version": version})
+        _atomic_json(self._file(definition.name, f".v{version}.json"), stored.model_dump())
+        _atomic_json(self._file(definition.name, ".latest"), {"version": version})
         logger.info("Workflow %s saved at v%d", definition.name, version)
         return stored
 
     def get(self, name: str, version: int | None = None) -> WorkflowDef:
+        try:
+            validate_name(name)
+        except ValueError as err:
+            raise KeyError(f"Workflow {name!r} not found ({err})") from err
         if version is None:
             latest = self.latest(name)
             if latest is None:
                 raise KeyError(f"Workflow {name!r} not found")
             return latest
-        path = self.dir / f"{name}.v{version}.json"
+        path = self._file(name, f".v{int(version)}.json")
         if not path.exists():
             raise KeyError(f"Workflow {name!r} v{version} not found")
         return WorkflowDef(**json.loads(path.read_text()))
 
     def latest(self, name: str) -> WorkflowDef | None:
-        pointer = self.dir / f"{name}.latest"
+        try:
+            pointer = self._file(name, ".latest")
+        except ValueError:
+            return None
         if not pointer.exists():
             return None
         try:
@@ -103,8 +142,17 @@ class RunStore:
         self.dir = Path(directory)
         self.dir.mkdir(parents=True, exist_ok=True)
 
+    def _file(self, run_id: str, suffix: str = ".json") -> Path:
+        try:
+            validate_name(run_id, "run id")
+        except ValueError as err:
+            raise KeyError(f"Run {run_id!r} not found ({err})") from err
+        return _inside(self.dir, self.dir / f"{run_id}{suffix}")
+
     def create(self, definition: WorkflowDef, inputs: dict[str, Any] | None = None,
                run_id: str | None = None, session_id: str = "") -> RunRecord:
+        if run_id is not None:
+            validate_name(run_id, "run id")
         record = RunRecord(
             run_id=run_id or uuid.uuid4().hex[:12],
             workflow=definition.name,
@@ -119,7 +167,7 @@ class RunStore:
         return record
 
     def load(self, run_id: str) -> RunRecord:
-        path = self.dir / f"{run_id}.json"
+        path = self._file(run_id)
         if not path.exists():
             raise KeyError(f"Run {run_id!r} not found")
         try:
@@ -129,7 +177,30 @@ class RunStore:
 
     def persist(self, record: RunRecord) -> None:
         record.updated_at = _utcnow()
-        _atomic_json(self.dir / f"{record.run_id}.json", record.model_dump())
+        _atomic_json(self._file(record.run_id), record.model_dump())
+
+    # -- cooperative cancellation (sidecar marker, never overwritten by persist) --
+
+    def request_cancel(self, run_id: str, reason: str = "Cancelled by user") -> None:
+        """Mark a run for cancellation (idempotent; the engine honours it between steps)."""
+        path = self._file(run_id, ".cancel")
+        if path.exists():
+            return
+        _atomic_json(path, {"reason": reason, "requested_at": _utcnow()})
+
+    def cancel_reason(self, run_id: str) -> str | None:
+        """The pending cancellation reason, or None when no cancel was requested."""
+        path = self._file(run_id, ".cancel")
+        if not path.exists():
+            return None
+        try:
+            return str(json.loads(path.read_text()).get("reason") or "Cancelled")
+        except (ValueError, OSError, AttributeError):
+            return "Cancelled"
+
+    def clear_cancel(self, run_id: str) -> None:
+        with contextlib.suppress(OSError, KeyError):
+            self._file(run_id, ".cancel").unlink()
 
     def list(self, workflow: str | None = None, status: RunStatus | None = None,
              limit: int = 100) -> list[dict[str, Any]]:

@@ -3,113 +3,240 @@
 Phase 0 frozen schema: ``execution/v1`` (``SCHEMA_VERSION = "1.0.0"``).
 """
 
-from agent_vcr.async_player import AsyncVCRPlayer
-from agent_vcr.async_recorder import AsyncVCRRecorder
-from agent_vcr.bundle import (
-    BUNDLE_SUFFIX,
-    BUNDLE_VERSION,
-    BundleManifest,
-    export_bundle,
-    import_bundle,
-    reproduce,
-    verify_bundle,
-)
-from agent_vcr.cloud import CloudClient, CloudError
-from agent_vcr.cloud_store import ApiTokenPublic, CloudStore, Project
-from agent_vcr.datasets import DATASET_VERSION, Expectation, ReplayDataset, TestCase
-from agent_vcr.golden_cache import CostLedger, GhostReplayMode, GoldenRunCache
-from agent_vcr.intelligence import (
-    CostBreakdown,
-    Diagnosis,
-    FailureCluster,
-    FailureKind,
-    ModelRegistry,
-    RecoveryPlan,
-    RiskScore,
-    RouteDecision,
-    auto_recover_workflow,
-    breakdown,
-    classify_player,
-    cluster_sessions,
-    diagnose,
-    normalize_message,
-    plan_recovery,
-    route,
-    score_agent,
-    score_session,
-)
-from agent_vcr.models import (
-    SCHEMA_NAME,
-    SCHEMA_VERSION,
-    Frame,
-    FrameMetadata,
-    FrameType,
-    ResumeConfig,
-    ResumeMode,
-    Session,
-    StateDiff,
-    StateSerializer,
-    VCRCache,
-)
-from agent_vcr.player import VCRPlayer
-from agent_vcr.recorder import VCRRecorder
-from agent_vcr.regression import (
-    CaseResult,
-    CaseVerdict,
-    RegressionReport,
-    RiskLevel,
-    SessionDiff,
-    compare_sessions,
-    evaluate_candidate,
-    run_regression,
-)
-from agent_vcr.sandbox import (
-    BaseSandbox,
-    E2BSandbox,
-    ExecutionResult,
-    FilesystemDiff,
-    FilesystemSnapshot,
-    LocalSandbox,
-    SandboxConfig,
-    create_sandbox,
-)
-from agent_vcr.superagent import (
-    AutoApprover,
-    BaseVectorMemory,
-    BudgetTracker,
-    CallbackApprover,
-    InMemoryVectorStore,
-    MemoryRecord,
-    MemorySearchResult,
-    MemoryStore,
-    Plan,
-    PlanBuilder,
-    PlanStep,
-    Policy,
-    QdrantVectorStore,
-    RunReport,
-    StepResult,
-    SuperAgent,
-    ToolGateway,
-    ToolSpec,
-    Verifier,
-    create_vector_memory,
-)
-from agent_vcr.workflows import (
-    InngestWorkflowBackend,
-    LocalWorkflowBackend,
-    RunRecord,
-    RunStatus,
-    RunStore,
-    Scheduler,
-    ScheduleSpec,
-    WorkflowBackend,
-    WorkflowDef,
-    WorkflowEngine,
-    WorkflowRegistry,
-    WorkflowStep,
-    create_workflow_backend,
-)
+# Imports are lazy (PEP 562): ``import agent_vcr`` stays cheap — the heavy
+# optional layers (qdrant, cloud, workflows, sandbox) load only when one of
+# their names is first accessed. This keeps short-lived entry points such as
+# the Claude Code hook fast.
+from __future__ import annotations
+
+import importlib
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:  # pragma: no cover - for type checkers and IDEs only
+    from agent_vcr.async_player import AsyncVCRPlayer
+    from agent_vcr.async_recorder import AsyncVCRRecorder
+    from agent_vcr.bundle import (
+        BUNDLE_SUFFIX,
+        BUNDLE_VERSION,
+        BundleManifest,
+        export_bundle,
+        import_bundle,
+        reproduce,
+        verify_bundle,
+    )
+    from agent_vcr.cloud import CloudClient, CloudError
+    from agent_vcr.cloud_store import ApiTokenPublic, CloudStore, Project
+    from agent_vcr.datasets import DATASET_VERSION, Expectation, ReplayDataset, TestCase
+    from agent_vcr.golden_cache import CostLedger, GhostReplayMode, GoldenRunCache
+    from agent_vcr.intelligence import (
+        CostBreakdown,
+        Diagnosis,
+        FailureCluster,
+        FailureKind,
+        ModelRegistry,
+        RecoveryPlan,
+        RiskScore,
+        RouteDecision,
+        auto_recover_workflow,
+        breakdown,
+        classify_player,
+        cluster_sessions,
+        diagnose,
+        normalize_message,
+        plan_recovery,
+        route,
+        score_agent,
+        score_session,
+    )
+    from agent_vcr.models import (
+        SCHEMA_NAME,
+        SCHEMA_VERSION,
+        Frame,
+        FrameMetadata,
+        FrameType,
+        ResumeConfig,
+        ResumeMode,
+        Session,
+        StateDiff,
+        StateSerializer,
+        VCRCache,
+    )
+    from agent_vcr.player import VCRPlayer
+    from agent_vcr.recorder import VCRRecorder
+    from agent_vcr.regression import (
+        CaseResult,
+        CaseVerdict,
+        RegressionReport,
+        RiskLevel,
+        SessionDiff,
+        compare_sessions,
+        evaluate_candidate,
+        run_regression,
+    )
+    from agent_vcr.sandbox import (
+        BaseSandbox,
+        E2BSandbox,
+        ExecutionResult,
+        FilesystemDiff,
+        FilesystemSnapshot,
+        LocalSandbox,
+        SandboxConfig,
+        create_sandbox,
+    )
+    from agent_vcr.superagent import (
+        AutoApprover,
+        BaseVectorMemory,
+        BudgetTracker,
+        CallbackApprover,
+        InMemoryVectorStore,
+        MemoryRecord,
+        MemorySearchResult,
+        MemoryStore,
+        Plan,
+        PlanBuilder,
+        PlanStep,
+        Policy,
+        QdrantVectorStore,
+        RunReport,
+        StepResult,
+        SuperAgent,
+        ToolGateway,
+        ToolSpec,
+        Verifier,
+        create_vector_memory,
+    )
+    from agent_vcr.workflows import (
+        InngestWorkflowBackend,
+        LocalWorkflowBackend,
+        RunRecord,
+        RunStatus,
+        RunStore,
+        Scheduler,
+        ScheduleSpec,
+        WorkflowBackend,
+        WorkflowDef,
+        WorkflowEngine,
+        WorkflowRegistry,
+        WorkflowStep,
+        create_workflow_backend,
+    )
+
+_LAZY_ATTRS: dict[str, str] = {
+    "AsyncVCRPlayer": "agent_vcr.async_player",
+    "AsyncVCRRecorder": "agent_vcr.async_recorder",
+    "BUNDLE_SUFFIX": "agent_vcr.bundle",
+    "BUNDLE_VERSION": "agent_vcr.bundle",
+    "BundleManifest": "agent_vcr.bundle",
+    "export_bundle": "agent_vcr.bundle",
+    "import_bundle": "agent_vcr.bundle",
+    "reproduce": "agent_vcr.bundle",
+    "verify_bundle": "agent_vcr.bundle",
+    "CloudClient": "agent_vcr.cloud",
+    "CloudError": "agent_vcr.cloud",
+    "ApiTokenPublic": "agent_vcr.cloud_store",
+    "CloudStore": "agent_vcr.cloud_store",
+    "Project": "agent_vcr.cloud_store",
+    "DATASET_VERSION": "agent_vcr.datasets",
+    "Expectation": "agent_vcr.datasets",
+    "ReplayDataset": "agent_vcr.datasets",
+    "TestCase": "agent_vcr.datasets",
+    "CostLedger": "agent_vcr.golden_cache",
+    "GhostReplayMode": "agent_vcr.golden_cache",
+    "GoldenRunCache": "agent_vcr.golden_cache",
+    "CostBreakdown": "agent_vcr.intelligence",
+    "Diagnosis": "agent_vcr.intelligence",
+    "FailureCluster": "agent_vcr.intelligence",
+    "FailureKind": "agent_vcr.intelligence",
+    "ModelRegistry": "agent_vcr.intelligence",
+    "RecoveryPlan": "agent_vcr.intelligence",
+    "RiskScore": "agent_vcr.intelligence",
+    "RouteDecision": "agent_vcr.intelligence",
+    "auto_recover_workflow": "agent_vcr.intelligence",
+    "breakdown": "agent_vcr.intelligence",
+    "classify_player": "agent_vcr.intelligence",
+    "cluster_sessions": "agent_vcr.intelligence",
+    "diagnose": "agent_vcr.intelligence",
+    "normalize_message": "agent_vcr.intelligence",
+    "plan_recovery": "agent_vcr.intelligence",
+    "route": "agent_vcr.intelligence",
+    "score_agent": "agent_vcr.intelligence",
+    "score_session": "agent_vcr.intelligence",
+    "SCHEMA_NAME": "agent_vcr.models",
+    "SCHEMA_VERSION": "agent_vcr.models",
+    "Frame": "agent_vcr.models",
+    "FrameMetadata": "agent_vcr.models",
+    "FrameType": "agent_vcr.models",
+    "ResumeConfig": "agent_vcr.models",
+    "ResumeMode": "agent_vcr.models",
+    "Session": "agent_vcr.models",
+    "StateDiff": "agent_vcr.models",
+    "StateSerializer": "agent_vcr.models",
+    "VCRCache": "agent_vcr.models",
+    "VCRPlayer": "agent_vcr.player",
+    "VCRRecorder": "agent_vcr.recorder",
+    "CaseResult": "agent_vcr.regression",
+    "CaseVerdict": "agent_vcr.regression",
+    "RegressionReport": "agent_vcr.regression",
+    "RiskLevel": "agent_vcr.regression",
+    "SessionDiff": "agent_vcr.regression",
+    "compare_sessions": "agent_vcr.regression",
+    "evaluate_candidate": "agent_vcr.regression",
+    "run_regression": "agent_vcr.regression",
+    "BaseSandbox": "agent_vcr.sandbox",
+    "E2BSandbox": "agent_vcr.sandbox",
+    "ExecutionResult": "agent_vcr.sandbox",
+    "FilesystemDiff": "agent_vcr.sandbox",
+    "FilesystemSnapshot": "agent_vcr.sandbox",
+    "LocalSandbox": "agent_vcr.sandbox",
+    "SandboxConfig": "agent_vcr.sandbox",
+    "create_sandbox": "agent_vcr.sandbox",
+    "AutoApprover": "agent_vcr.superagent",
+    "BaseVectorMemory": "agent_vcr.superagent",
+    "BudgetTracker": "agent_vcr.superagent",
+    "CallbackApprover": "agent_vcr.superagent",
+    "InMemoryVectorStore": "agent_vcr.superagent",
+    "MemoryRecord": "agent_vcr.superagent",
+    "MemorySearchResult": "agent_vcr.superagent",
+    "MemoryStore": "agent_vcr.superagent",
+    "Plan": "agent_vcr.superagent",
+    "PlanBuilder": "agent_vcr.superagent",
+    "PlanStep": "agent_vcr.superagent",
+    "Policy": "agent_vcr.superagent",
+    "QdrantVectorStore": "agent_vcr.superagent",
+    "RunReport": "agent_vcr.superagent",
+    "StepResult": "agent_vcr.superagent",
+    "SuperAgent": "agent_vcr.superagent",
+    "ToolGateway": "agent_vcr.superagent",
+    "ToolSpec": "agent_vcr.superagent",
+    "Verifier": "agent_vcr.superagent",
+    "create_vector_memory": "agent_vcr.superagent",
+    "InngestWorkflowBackend": "agent_vcr.workflows",
+    "LocalWorkflowBackend": "agent_vcr.workflows",
+    "RunRecord": "agent_vcr.workflows",
+    "RunStatus": "agent_vcr.workflows",
+    "RunStore": "agent_vcr.workflows",
+    "Scheduler": "agent_vcr.workflows",
+    "ScheduleSpec": "agent_vcr.workflows",
+    "WorkflowBackend": "agent_vcr.workflows",
+    "WorkflowDef": "agent_vcr.workflows",
+    "WorkflowEngine": "agent_vcr.workflows",
+    "WorkflowRegistry": "agent_vcr.workflows",
+    "WorkflowStep": "agent_vcr.workflows",
+    "create_workflow_backend": "agent_vcr.workflows",
+}
+
+
+def __getattr__(name: str) -> Any:
+    module_name = _LAZY_ATTRS.get(name)
+    if module_name is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    value = getattr(importlib.import_module(module_name), name)
+    globals()[name] = value  # cache: later lookups skip __getattr__
+    return value
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | set(_LAZY_ATTRS))
 
 __version__ = "1.5.4"
 __all__ = [

@@ -57,25 +57,36 @@ runs:
 
     - name: Install Agent VCR
       shell: bash
-      run: pip install "${{ inputs.package }}"
+      env:
+        VCR_PACKAGE: ${{ inputs.package }}
+      run: pip install "$VCR_PACKAGE"
 
     - name: Run replay regression
       id: ci
       shell: bash
+      # Inputs go through env vars, never ${{ }} inside the script, so values
+      # derived from PR data (branch names, titles) cannot inject shell code.
+      env:
+        VCR_DATASET: ${{ inputs.dataset }}
+        VCR_CANDIDATES: ${{ inputs.candidates-dir }}
+        VCR_DATASETS_DIR: ${{ inputs.datasets-dir }}
+        VCR_GOLDEN_DIR: ${{ inputs.golden-dir }}
+        VCR_FAIL_ON: ${{ inputs.fail-on }}
       run: |
+        # Set the output first so it is available even when the gate fails.
+        echo "report=agent-ci-report.json" >> "$GITHUB_OUTPUT"
         vcr ci run \
-          --dataset "${{ inputs.dataset }}" \
-          --candidates "${{ inputs.candidates-dir }}" \
-          --datasets-dir "${{ inputs.datasets-dir }}" \
-          --golden-dir "${{ inputs.golden-dir }}" \
-          --fail-on "${{ inputs.fail-on }}" \
+          --dataset "$VCR_DATASET" \
+          --candidates "$VCR_CANDIDATES" \
+          --datasets-dir "$VCR_DATASETS_DIR" \
+          --golden-dir "$VCR_GOLDEN_DIR" \
+          --fail-on "$VCR_FAIL_ON" \
           --report agent-ci-report.json \
           --markdown agent-ci-report.md
-        echo "report=agent-ci-report.json" >> "$GITHUB_OUTPUT"
 
     - name: Upload regression report
       if: always()
-      uses: actions/upload-artifact@b9a4f79d0f3c3c1a7f8e932b6536562a39b807 # v4
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
       with:
         name: agent-ci-report
         path: |
