@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Airbag** (`vcr airbag`, `vcr undo`, `vcr redo`, `vcr rewind`): snapshots the project before
+  every agent tool call — shell commands included — into a shadow git store outside the
+  project, and undoes any of them with one command. See `docs/airbag.md`.
+  - Hook adapters and installers for Claude Code, OpenAI Codex CLI, Gemini CLI, Cursor,
+    GitHub Copilot CLI, OpenHands, OpenCode (plugin API v1), Cline and Devin Local (formerly
+    Windsurf), plus
+    `vcr airbag run -- <agent>` (periodic snapshots) for agents without hooks and an
+    in-process OpenHands SDK integration (`agent_vcr.integrations.openhands_airbag`).
+  - Protects tracked and untracked files, small ignored "precious" files (`.env*`, SQLite
+    databases — copied with the online-backup API for consistency), and the project's
+    `.git` (hardlink copy) when a command would delete it. Never touches the user's own
+    `.git`.
+  - Command classifier (`vcr airbag check`): read / write / destructive / irreversible.
+    Irreversible commands (remote or server databases, cloud/infra deletions, force-push,
+    publishing, writes outside the project) are escalated: "ask" where the agent supports
+    it, otherwise blocked until `vcr airbag allow`. The airbag never grants permission.
+  - One tool call reaching the airbag through two agents' hooks (Cursor, Copilot CLI and
+    Devin also run `.claude/settings.json` hooks) is handled once.
+
+### Fixed
+- `ToolGateway` tools with a parameter named `name` failed with "got multiple values for
+  keyword argument 'name'" after the per-call thread change.
+
 ### Security
 - **Dashboard server:**
   - `vcr-server` now refuses to bind a non-loopback host without a token. Set `AGENT_VCR_AUTH_TOKEN` / `AGENT_VCR_ADMIN_TOKEN` (new env vars), or pass `--allow-unauthenticated`. The hosted Docker image was previously open to the internet.

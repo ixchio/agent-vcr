@@ -125,7 +125,7 @@ TUI_INSTALL_HINT = 'pip install "ai-agent-vcr[tui]"'
 # if it looks like one, or rejected as an unknown command).
 COMMANDS = frozenset({
     "init", "tui", "serve", "bundle", "dataset", "ci", "cloud", "superagent",
-    "workflow", "intel", "reproduce",
+    "workflow", "intel", "reproduce", "undo", "redo", "rewind", "airbag",
 })
 
 
@@ -745,6 +745,10 @@ def main(argv: list[str] | None = None) -> None:
         default=".",
         help="Project directory to initialize (default: current directory)",
     )
+
+    from agent_vcr.airbag.cli import register as register_airbag
+
+    register_airbag(subparsers)
 
     tui_parser = subparsers.add_parser("tui", help="Open the terminal debugger")
     tui_parser.add_argument("file", help="Path to the .vcr file to replay")

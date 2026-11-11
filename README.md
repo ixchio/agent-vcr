@@ -25,6 +25,21 @@ pip install ai-agent-vcr
 
 No model key, hosted account, or framework is required for the core runtime.
 
+## New: the airbag — undo anything your coding agent did, including Bash
+
+```bash
+vcr airbag install     # Claude Code, Codex, Gemini CLI, Cursor, Copilot CLI, OpenHands, OpenCode, Cline, Devin
+vcr undo               # after the agent ran `rm -rf .`, `git reset --hard`, a bad migration...
+```
+
+Before every agent tool call, the airbag snapshots the project into a private shadow git
+store **outside** the project — tracked and untracked files, `.env`, SQLite databases, and
+your `.git` when a command would delete it. Agents' built-in checkpoints only track their
+own edit tools; the airbag also covers shell commands. Commands a snapshot cannot undo —
+remote databases, `terraform destroy`, force-pushes, `npm publish` — are stopped for a human
+to confirm. Try it without an agent: `vcr airbag check "rm -rf ."`.
+Details, per-agent support and limits: [docs/airbag.md](docs/airbag.md).
+
 ## The three pillars
 
 1. **[Time-Travel Recording](#1-time-travel-recording)** — capture state, tools, errors, cost, and
