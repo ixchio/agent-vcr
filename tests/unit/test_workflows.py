@@ -395,7 +395,7 @@ class TestSchedules:
             eng.shutdown()
 
     def test_exports(self):
-        assert agent_vcr.__version__ == "1.5.4"
+        assert agent_vcr.__version__ == "1.6.0"
         for name in ("WorkflowEngine", "WorkflowDef", "WorkflowRegistry",
                      "RunStore", "Scheduler", "ScheduleSpec", "RunRecord"):
             assert name in agent_vcr.__all__

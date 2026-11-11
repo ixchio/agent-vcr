@@ -266,7 +266,7 @@ class TestCloudAPI:
         assert client.post("/api/projects", json={"name": "L"} , headers=H).status_code == 201
 
     def test_public_api(self):
-        assert agent_vcr.__version__ == "1.5.4"
+        assert agent_vcr.__version__ == "1.6.0"
         for name in ("CloudStore", "Project", "ApiTokenPublic", "CloudClient", "CloudError"):
             assert name in agent_vcr.__all__
 

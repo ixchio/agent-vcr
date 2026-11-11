@@ -238,7 +238,7 @@ def __getattr__(name: str) -> Any:
 def __dir__() -> list[str]:
     return sorted(set(globals()) | set(_LAZY_ATTRS))
 
-__version__ = "1.5.4"
+__version__ = "1.6.0"
 __all__ = [
     "ApiTokenPublic",
     "AsyncVCRPlayer",

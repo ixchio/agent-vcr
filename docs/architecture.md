@@ -1,6 +1,6 @@
 # Agent VCR architecture
 
-> **Version:** `1.5.4` + Unreleased · **License:** MIT · **Recording schema:** `execution/v1` (frozen)
+> **Version:** `1.6.0` · **License:** MIT · **Recording schema:** `execution/v1` (frozen)
 
 Agent VCR is an *intervention* layer for AI agents: it records what an agent did, and lets you
 go back — files, state and history — instead of only reading logs about it.

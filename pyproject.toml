@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "ai-agent-vcr"
-version = "1.5.4"
+version = "1.6.0"
 description = "The undo button for coding agents: record runs, roll back state and files, replay verified work, and gate regressions in CI."
 readme = "README.md"
 license = "MIT"

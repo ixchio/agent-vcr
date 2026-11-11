@@ -8,7 +8,7 @@
   filesystem rollback via git (not just state), Ghost Replay, Sentinel AST guard
 - **Frameworks / agents:** Claude Code, Codex CLI, Gemini CLI, Cursor, Copilot CLI, OpenHands,
   OpenCode, Cline, Devin Local; LangGraph, CrewAI, raw Python
-- **Version:** 1.5.4 (+ Unreleased)
+- **Version:** 1.6.0
 
 ## Architecture (full map: docs/architecture.md)
 - `src/agent_vcr/` — recording kernel: models, recorder, async_recorder, player, async_player

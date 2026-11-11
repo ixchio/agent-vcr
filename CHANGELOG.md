@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-11-11
+
 ### Repository
 - README rewritten around the airbag, with supported agents, an architecture overview and
   stability levels; `docs/architecture.md` now has a package map (stable vs experimental
