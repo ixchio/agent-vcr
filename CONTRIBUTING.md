@@ -83,6 +83,36 @@ Each agent is an adapter in [`src/agent_vcr/airbag/agents.py`](src/agent_vcr/air
 4. Commit messages follow the existing style: `fix: …`, `feat: …`, `docs: …`, `chore: …`.
 5. Open the PR with the template filled in and make sure CI is green.
 
+## Performance budgets
+
+`tests/benchmarks/test_performance.py` fails the build when core paths get slower. Examples of
+the hard limits (mean time on a CI runner — regression ceilings, not production promises):
+
+| Benchmark | Limit |
+|---|---|
+| record one frame | < 5 ms |
+| load a 10,000-frame recording | < 500 ms |
+| jump to a frame | < 1 ms |
+| compare two frames | < 5 ms |
+| save a golden run / replay it (median) | < 50 ms / < 20 ms |
+| realistic session file size | < 1 MB |
+
+Run them with `make bench`. Results are published at
+[ixchio.github.io/agent-vcr/dev/bench](https://ixchio.github.io/agent-vcr/dev/bench/).
+
+## Releasing (maintainers)
+
+1. Bump the version everywhere it appears: `pyproject.toml`, `src/agent_vcr/__init__.py`,
+   `src/openhands_sentinel/__init__.py`, the version assertions in tests, and the docs/site pages
+   (`git grep -n "<old version>"`).
+2. Move the `Unreleased` notes in `CHANGELOG.md` under `## [x.y.z] - YYYY-MM-DD`.
+3. `make verify`, then `python -m build && python -m twine check dist/*`.
+4. Push to `main` and wait for CI to pass on every Python version.
+5. Tag and push: `git tag -a vX.Y.Z -m "Agent VCR X.Y.Z" && git push origin vX.Y.Z`. The
+   `Publish to PyPI` workflow builds from the tag and uploads with the `PYPI_API_TOKEN`
+   repository secret — never paste tokens into commands or chats.
+6. Create the GitHub release from the changelog section.
+
 ## Cleanup
 
 Generated caches, build output and local recordings are git-ignored. `make clean` removes

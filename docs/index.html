@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Agent VCR — Undo, Replay, and Regression Gates for AI Agents</title>
-    <meta name="description" content="Agent VCR gives coding and stateful AI agents an undo boundary: record execution, roll back state and files, replay verified runs, and gate regressions in CI.">
+    <meta name="description" content="Agent VCR is the undo button for AI agents: undo anything a coding agent did (including shell commands), record execution, roll back state and files, replay verified runs, and gate regressions in CI.">
     <meta name="author" content="ixchio">
     <meta name="robots" content="index, follow">
     <link rel="canonical" href="https://ixchio.github.io/agent-vcr/">
@@ -66,7 +66,7 @@
             <div class="hero-copy">
                 <p class="eyebrow"><span></span> Open source · Python 3.9–3.13</p>
                 <h1>The undo button for coding agents.</h1>
-                <p class="hero-lede">Record every step. Roll back state and files together. Reuse verified runs without another model call.</p>
+                <p class="hero-lede">Undo anything your coding agent did — even <code>rm -rf</code>. Record and rewind your own agents. Replay verified runs without another model call.</p>
                 <div class="hero-actions">
                     <a class="button" href="#install">Install Agent VCR</a>
                     <a class="button button-secondary" href="guides.html">Read the docs <span aria-hidden="true">→</span></a>
@@ -88,23 +88,23 @@
             <div class="hero-panel" aria-label="Agent VCR workflow">
                 <div class="panel-top">
                     <span class="panel-dot"></span>
-                    <span>task/refactor-auth</span>
-                    <span class="panel-status">protected</span>
+                    <span>~/code/myapp</span>
+                    <span class="panel-status">airbag armed</span>
                 </div>
                 <div class="event-list">
                     <div class="event complete">
                         <span class="event-icon">01</span>
-                        <div><strong>Record</strong><small>planner, model, tool, and state frames</small></div>
+                        <div><strong>Snapshot</strong><small>taken before every agent tool call</small></div>
                         <span class="event-state">saved</span>
                     </div>
                     <div class="event failed">
                         <span class="event-icon">02</span>
-                        <div><strong>Run fails</strong><small>tracked files and .env changed</small></div>
+                        <div><strong>Agent runs rm -rf</strong><small>code, .env and .git deleted</small></div>
                         <span class="event-state">failed</span>
                     </div>
                     <div class="event restored">
                         <span class="event-icon">03</span>
-                        <div><strong>Roll back</strong><small>state + workspace restored together</small></div>
+                        <div><strong>vcr undo</strong><small>files, .env and git history back</small></div>
                         <span class="event-state">restored</span>
                     </div>
                     <div class="event replayed">
@@ -133,17 +133,17 @@
                 <p>Use the recorder alone, or combine it with workspace rollback, replay, and CI as your agent becomes more consequential.</p>
             </div>
             <div class="pillar-grid">
-                <article class="pillar">
-                    <span class="pillar-number">01</span>
-                    <h3>Time-travel recording</h3>
-                    <p>Capture ordered JSONL frames for nodes, model calls, tools, errors, and checkpoints. Inspect any boundary, compare states, or fork a run.</p>
-                    <a href="guides.html#recording">Recording guide <span aria-hidden="true">→</span></a>
-                </article>
                 <article class="pillar pillar-featured">
+                    <span class="pillar-number">01</span>
+                    <h3>Airbag for coding agents</h3>
+                    <p>Snapshots before every tool call — shell commands included — for Claude Code, Codex, Gemini CLI, Cursor, Copilot CLI, OpenHands, OpenCode, Cline and Devin. <code>vcr undo</code> brings it all back.</p>
+                    <a href="guides.html#airbag">Airbag guide <span aria-hidden="true">→</span></a>
+                </article>
+                <article class="pillar">
                     <span class="pillar-number">02</span>
-                    <h3>State + filesystem rollback</h3>
-                    <p>Restore Git-tracked work and eligible pre-existing local files to the same savepoint. Modified or deleted ignored files such as <code>.env</code> come back byte-for-byte.</p>
-                    <a href="guides.html#acid">ACID guide <span aria-hidden="true">→</span></a>
+                    <h3>Record + roll back your own agents</h3>
+                    <p>Capture every step as JSONL frames, jump to any one, fork and resume — and roll back state and files together with ACID savepoints, <code>.env</code> included.</p>
+                    <a href="guides.html#recording">Recording and rollback guides <span aria-hidden="true">→</span></a>
                 </article>
                 <article class="pillar">
                     <span class="pillar-number">03</span>
@@ -212,7 +212,7 @@ tx.commit()</code></pre>
                 <a href="https://github.com/ixchio/agent-vcr/blob/main/docs/integrations/README.md#langgraph"><strong>LangGraph</strong><span>Wrap graph nodes</span></a>
                 <a href="https://github.com/ixchio/agent-vcr/blob/main/docs/integrations/README.md#crewai"><strong>CrewAI</strong><span>Attach callbacks</span></a>
                 <a href="sentinel/"><strong>OpenHands</strong><span>Rollback + Sentinel</span></a>
-                <a href="https://github.com/ixchio/agent-vcr/blob/main/docs/integrations/README.md#claude-code"><strong>Claude Code</strong><span>Install lifecycle hooks</span></a>
+<a href="https://github.com/ixchio/agent-vcr/blob/main/docs/airbag.md"><strong>9 coding agents</strong><span>Claude Code, Codex, Cursor &amp; more</span></a>
                 <a href="https://github.com/ixchio/agent-vcr/blob/main/docs/integrations/n8n.md"><strong>n8n</strong><span>Record workflow events</span></a>
                 <a href="guides.html#integrations"><strong>Raw Python</strong><span>Use four recorder calls</span></a>
             </div>
@@ -223,7 +223,7 @@ tx.commit()</code></pre>
                 <p class="eyebrow">Clear boundary</p>
                 <h2>Local recovery, not magic.</h2>
             </div>
-            <p>Agent VCR can restore recorded state and repository-local files. It cannot undo email, payments, database writes, or arbitrary external APIs. Put consequential tools behind approvals and explicit compensation.</p>
+            <p>Agent VCR restores your project — files, <code>.env</code>, local SQLite and <code>.git</code> — and recorded agent state. It cannot undo email, payments, server-side database writes, or cloud deletions; the airbag spots those commands and makes a human confirm first.</p>
         </section>
 
         <section class="install-section" id="install">
@@ -236,6 +236,7 @@ tx.commit()</code></pre>
                 <div class="install-box">
                     <pre><code>pip install ai-agent-vcr
 
+vcr airbag install
 python examples/basic_usage.py
 vcr tui .vcr/&lt;session-id&gt;.vcr</code></pre>
                     <div class="install-links">

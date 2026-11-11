@@ -60,8 +60,8 @@
     <main>
         <section class="docs-hero">
             <div class="hero-pill">Documentation · v1.6.0 · Python 3.9–3.13</div>
-            <h1>Build agents with an undo boundary.</h1>
-            <p>Start with recording, add workspace rollback where files matter, promote reviewed runs to identity-aware replay, and gate the next change in CI.</p>
+            <h1>The undo button for AI agents.</h1>
+            <p>Arm the airbag for your coding agent, record and rewind your own agents, replay verified runs without model calls, and gate the next change in CI.</p>
             <div class="hero-cta">
                 <a href="#quickstart" class="btn-solid large">Start building</a>
                 <a href="https://pypi.org/project/ai-agent-vcr/" class="btn-ghost large" target="_blank">View on PyPI ↗</a>
@@ -70,6 +70,11 @@
 
         <div class="docs-shell">
             <div class="docs-grid">
+                <a class="doc-card" href="#airbag">
+                    <span class="eyebrow">New in 1.6</span>
+                    <h2>Airbag: undo your coding agent</h2>
+                    <p>Snapshot before every tool call — shell commands included — for Claude Code, Codex, Gemini CLI, Cursor, Copilot CLI, OpenHands, OpenCode, Cline and Devin. <code>vcr undo</code> brings it back.</p>
+                </a>
                 <a class="doc-card" href="#recording">
                     <span class="eyebrow">Core</span>
                     <h2>Record and time-travel</h2>
@@ -109,10 +114,28 @@
                     <div class="code-bar"><span class="dots"><span></span><span></span><span></span></span><span class="code-label">terminal</span></div>
                     <pre><code>pip install ai-agent-vcr
 
+vcr airbag install
 python examples/basic_usage.py
 vcr tui .vcr/&lt;session-id&gt;.vcr</code></pre>
                 </div>
+                <p><a class="doc-link" href="https://github.com/ixchio/agent-vcr/blob/main/docs/quickstart.md">Five-minute quickstart →</a> · <a class="doc-link" href="https://github.com/ixchio/agent-vcr/blob/main/docs/README.md">All docs →</a></p>
                 <div class="callout"><strong>Package name:</strong> install <code>ai-agent-vcr</code>. The similarly named <code>agent-vcr</code> package on PyPI is a different project.</div>
+            </section>
+
+            <section class="docs-section" id="airbag">
+                <h2>Undo anything your coding agent did</h2>
+                <p>Agents' built-in rewind only tracks their own edit tools. The airbag snapshots your project into a private store outside it before <em>every</em> tool call, so <code>rm -rf</code>, <code>git reset --hard</code> or a bad migration on a local SQLite file can be undone. Commands a snapshot cannot undo — server databases, cloud deletions, force-pushes — are stopped for a human.</p>
+                <div class="code-block">
+                    <div class="code-bar"><span class="dots"><span></span><span></span><span></span></span><span class="code-label">terminal</span></div>
+                    <pre><code>pip install ai-agent-vcr
+vcr airbag install          <span class="cm"># hooks for every agent on your PATH</span>
+
+<span class="cm"># ...the agent runs `rm -rf .`...</span>
+vcr undo                    <span class="cm"># files, .env and .git are back</span>
+vcr redo                    <span class="cm"># changed your mind</span>
+vcr airbag check <span class="str">"psql -h prod -c 'DROP TABLE users'"</span>   <span class="cm"># ⚠ irreversible</span></code></pre>
+                </div>
+                <p><a class="doc-link" href="https://github.com/ixchio/agent-vcr/blob/main/docs/airbag.md">Airbag guide: every agent, every command, every limit →</a></p>
             </section>
 
             <section class="docs-section" id="recording">
@@ -210,8 +233,10 @@ vcr ci run \
             <section class="docs-section" id="operations">
                 <h2>Production building blocks</h2>
                 <ul class="docs-list">
-                    <li><a class="doc-link" href="https://github.com/ixchio/agent-vcr/blob/main/docs/workflow.md">Workflow engine</a> — durable runs, resume, schedules, approvals, retries, and saga compensation.</li>
-                    <li><a class="doc-link" href="https://github.com/ixchio/agent-vcr/blob/main/docs/superagent.md">SuperAgent</a> — validated plans, policy, budgets, tool schemas, and output verification.</li>
+                    <li><a class="doc-link" href="https://github.com/ixchio/agent-vcr/blob/main/docs/experimental/workflow.md">Workflow engine</a> — durable runs, resume, schedules, approvals, retries, and saga compensation.</li>
+                    <li><a class="doc-link" href="https://github.com/ixchio/agent-vcr/blob/main/docs/experimental/superagent.md">SuperAgent</a> — validated plans, policy, budgets, tool schemas, and output verification.</li>
+                    <li><a class="doc-link" href="https://github.com/ixchio/agent-vcr/blob/main/docs/dashboard.md">Dashboard and self-hosted store</a> — terminal debugger, local web UI, scoped project tokens.</li>
+                    <li><a class="doc-link" href="https://github.com/ixchio/agent-vcr/blob/main/docs/faq.md">FAQ</a> — what it is, what it isn't, and how it compares.</li>
                     <li><a class="doc-link" href="sentinel/">Sentinel</a> — local AST quality analysis and optional OpenHands feedback.</li>
                     <li><a class="doc-link" href="https://github.com/ixchio/agent-vcr/blob/main/docs/deployment/railway.md">Railway foundation</a> — optional auth/billing control plane with an explicit multitenancy boundary.</li>
                     <li><a class="doc-link" href="dev/bench/">Benchmark dashboard</a> — measured history and local regression ceilings.</li>

@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Documentation
+- Rebuilt the docs so every topic lives on exactly one page: new hub, 5-minute quickstart, FAQ,
+  Sentinel and dashboard guides; experimental SuperAgent, workflow and intelligence guides under
+  `docs/experimental/`; `docs/development.md` folded into `CONTRIBUTING.md`. Every command and
+  snippet was run against the code; stale or untrue claims were removed.
+- The website's landing and guides pages now lead with the airbag.
+
+### Fixed
+- `vcr bundle verify` exits 1 for a tampered or unreadable bundle (it printed `"ok": false`
+  but exited 0).
+- `vcr undo --dry-run` shows the same `+`/`-` signs as the real undo.
+- Airbag: `ssh`/`scp` to another machine, mail senders, cloud `send`/`publish` commands, and
+  schema migrations against a database server are now treated as irreversible.
+- The n8n template sends `inputs` as a JSON object and includes the workflow secret.
+
 ## [1.6.0] - 2026-11-11
 
 ### Repository

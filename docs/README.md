@@ -1,94 +1,67 @@
-# Agent VCR documentation
+# Agent VCR docs
 
-Agent VCR is the local-first intervention layer for coding and stateful AI agents. It records
-execution as inspectable JSONL, joins agent state to filesystem savepoints, replays verified runs
-without another model call, and turns recordings into regression gates.
+**Agent VCR is the undo button for AI agents.** Your agent deleted a folder, rewrote the wrong
+file, or nuked a SQLite table? Rewind it. Want to replay a run that worked without paying for the
+model again, or stop a pull request that makes your agent worse? That's here too.
 
 ```bash
 pip install ai-agent-vcr
 ```
 
-The core package needs no model key, hosted account, or agent framework. Python 3.9 through 3.13
-is tested in CI.
+No API key. No account. Nothing leaves your machine. Python 3.9–3.13.
 
-## Start here
+New here? → **[Quickstart: every superpower in 5 minutes](quickstart.md)**
 
-- [Airbag: undo anything your coding agent did](airbag.md) — snapshot before every tool call for
-  Claude Code, Codex, Gemini CLI, Cursor, Copilot CLI, OpenHands, OpenCode, Cline and Devin;
-  `vcr undo` / `redo` / `rewind`; what it can and cannot undo.
-- [Record, inspect, resume, and Ghost Replay](recording-and-replay.md) — recorder/player APIs,
-  identity-safe replay, bundles, and privacy boundaries.
-- [Roll back state and files together](acid-workspace.md) — Git savepoints, content-aware escrow
-  for `.env` and other local files, limits, and recovery semantics.
-- [Gate agent changes in CI](agent-ci.md) — versioned golden datasets, candidate naming,
-  expectations, exit thresholds, and the reusable GitHub Action.
-- [Connect a framework](integrations/README.md) — raw Python, LangGraph, CrewAI, OpenHands,
-  Claude Code hooks, and the generic integration boundary.
-- [Architecture](architecture.md) — package map, stable vs experimental layers, data contracts.
+## Pick your path
 
-## Experimental runtime guides
+| You are… | Start with | Then |
+|---|---|---|
+| 🧑‍💻 **Using a coding agent** (Claude Code, Codex, Cursor, Gemini CLI, Copilot CLI, OpenCode, Cline, Devin, OpenHands) | [Airbag](airbag.md) — undo anything the agent did, shell commands included | [FAQ](faq.md) |
+| 🛠️ **Building an agent** (LangGraph, CrewAI, OpenHands SDK, plain Python) | [Recording & time travel](recording-and-replay.md) | [Integrations](integrations/README.md) · [ACID workspace](acid-workspace.md) |
+| ✅ **Owning CI / quality** for an agent | [Agent CI](agent-ci.md) — regression tests for agent behavior | [Sentinel](sentinel.md) |
+| 🏗️ **Running it for a team** | [Dashboard & self-hosted store](dashboard.md) | [Railway deployment](deployment/railway.md) |
+| 🔧 **Contributing** | [CONTRIBUTING.md](../CONTRIBUTING.md) | [Architecture](architecture.md) |
 
-These layers are experimental: their APIs may change between minor releases.
+## Every feature, one line each
 
-- [Workflow engine](workflow.md) — durable run state, schedules, crash resume, approvals, and saga
-  compensation.
-- [SuperAgent runtime](superagent.md) — validated plans, tool schemas, policy, budgets, approvals,
-  verification, and recorded decisions.
-- [Development and release verification](development.md) — local setup, tests, benchmark gates,
-  packaging, and `make verify`.
+| Feature | What it does for you | Guide |
+|---|---|---|
+| 🛟 **Airbag** | Snapshots your project before every coding-agent tool call; `vcr undo` brings it back | [airbag.md](airbag.md) |
+| ⏪ **Recording & time travel** | Records every step of your agent; jump to any step, diff, fork, resume | [recording-and-replay.md](recording-and-replay.md) |
+| 👻 **Ghost Replay** | Re-runs a verified run from its recording — zero model calls, zero tokens | [recording-and-replay.md](recording-and-replay.md) |
+| 🔁 **ACID workspace** | Transactions for your own agent: savepoint, rollback, commit — files and state together | [acid-workspace.md](acid-workspace.md) |
+| ✅ **Agent CI** | Fails a pull request when the agent's behavior, cost or speed regresses | [agent-ci.md](agent-ci.md) |
+| 🔍 **Sentinel** | Catches broken, bloated or duplicated code your agent just wrote | [sentinel.md](sentinel.md) |
+| 📺 **Dashboard & TUI** | Browse recordings in the terminal or a local web UI; share them with your team | [dashboard.md](dashboard.md) |
+| 🔌 **Integrations** | LangGraph, CrewAI, OpenHands, Claude Code, n8n, or your own framework | [integrations/](integrations/README.md) |
 
-## Operations and extensions
+🧪 **Experimental** (works and is tested, API may change):
+[SuperAgent runtime](experimental/superagent.md) ·
+[Workflow engine](experimental/workflow.md) ·
+[Reliability intelligence](experimental/intelligence.md)
 
-- [Live documentation site](https://ixchio.github.io/agent-vcr/) — product overview, demo, and
-  developer documentation map.
-- [Self-hosted server and dashboard](../README.md#self-hosted-store) — local HTTP/WebSocket access,
-  scoped project tokens, and the production boundary.
-- [Railway deployment](deployment/railway.md) — optional Supabase Auth, Stripe, Postgres, and
-  volume-backed deployment. This is a foundation, not a finished managed SaaS.
-- [n8n integration](integrations/n8n.md) — trigger workflows, wait for callbacks, and inspect
-  failures through the HTTP API.
-- [Sentinel](sentinel/index.html) — standalone and OpenHands-connected AST quality checks.
+## The honest fine print
 
-## Contracts and release evidence
+* Agent VCR restores **your project directory** — files, `.env`, local SQLite, your `.git`. It
+  cannot un-send an email, un-charge a card, or un-drop a table on a server. The airbag spots
+  those commands and makes a human confirm first.
+* Recordings contain what your agent saw and did (prompts, tool inputs, outputs). Keep `.vcr`
+  folders private or redact before recording.
 
-- [`../schemas/`](../schemas/) contains versioned JSON contracts for execution, bundles, datasets,
-  workflows, cloud APIs, intelligence, and SuperAgent.
-- [`../examples/`](../examples/) contains credential-free examples for the core runtime, async
-  APIs, integrations, Agent CI, ACID rollback, workflows, and Sentinel.
-- [`dev/bench/`](dev/bench/) is the benchmark dashboard. Limits are local regression ceilings, not
-  universal production latency promises.
-- [`../CHANGELOG.md`](../CHANGELOG.md) is the release history.
-- [`../SECURITY.md`](../SECURITY.md) explains private vulnerability reporting.
+## Words you'll see
 
-## Boundaries you should know
+| Word | Meaning |
+|---|---|
+| **Snapshot** | The airbag's copy of your project, taken right before an agent tool call |
+| **Session / recording** | One agent run, saved as a `.vcr` file (one JSON object per line) |
+| **Frame** | One step inside a recording: state in, state out, timing, cost |
+| **Checkpoint** | A named frame you can jump back to (`"plan-approved"`) |
+| **Savepoint** | An ACID workspace checkpoint that also pins the files (a git commit) |
+| **Golden run** | A recording you've verified and want to replay or test against |
+| **Ghost Replay** | Re-running a golden run from its recording instead of calling the model |
+| **Bundle** | A portable, checksummed `.vcrb` file you can share or attach to a bug |
 
-Agent VCR can restore a project directory — tracked and untracked files, `.env`, local SQLite files
-and the project's `.git` — but not an email, payment, server-side database write, cloud deletion or
-any other third-party side effect. The airbag classifies those commands as irreversible and stops
-them for a human; use approval gates and workflow compensation for consequential tools.
+## More
 
-Recordings can contain prompts, tool inputs, outputs, and state. Redact secrets before recording or
-keep `.vcr` storage private. The ACID local-file escrow is deliberately separate from Git and VCR
-recordings, but it does not sanitize data your application explicitly records.
-
-## Repository map
-
-```text
-src/agent_vcr/          the package — layer map in architecture.md
-  airbag/               snapshot-before-every-tool-call, vcr undo / redo / rewind
-  integrations/         LangGraph, CrewAI, OpenHands (ACIDWorkspace, airbag)
-  hooks/                Claude Code recording hook
-src/openhands_sentinel/ Sentinel AST quality guard
-tests/                  unit, end-to-end and benchmark suites
-docs/                   guides (markdown) and the GitHub Pages site (html, css, demo media)
-schemas/                versioned JSON contract artifacts
-examples/               runnable, credential-free examples (see examples/README.md)
-deploy/                 optional hosted-deployment configuration (Railway, env template)
-scripts/                maintenance and artifact-generation tools
-.github/                CI, publishing, security workflows and issue/PR templates
-action.yml              reusable Agent CI GitHub Action
-```
-
-Current behavior is defined by the package, tests, schemas, and the guides above.
-
-Copyright © 2026 QueryXLabs and ixchio.
+[Architecture](architecture.md) · [FAQ](faq.md) · [Examples](../examples/README.md) ·
+[Changelog](../CHANGELOG.md) · [Security](../SECURITY.md) · [Live site](https://ixchio.github.io/agent-vcr/)

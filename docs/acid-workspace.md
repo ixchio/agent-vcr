@@ -1,155 +1,246 @@
-# ACID workspace rollback
+# 🔁 ACID workspace
 
-`ACIDWorkspace` joins an Agent VCR state frame to a physical filesystem savepoint. It is intended
-for coding agents and other repository-writing agents where restoring only the Python state object
-would leave the working tree polluted.
+Save points for the agent *you* write: files on disk and agent state roll back together, on a
+git branch of their own, and only the good attempt gets merged.
 
-The implementation has two recovery layers:
+**TL;DR**
 
-1. **Git owns tracked content.** Each transaction runs on an isolated `acid/<session_id>` branch.
-   Every savepoint commits tracked state and agent-created files that are safe to stage.
-2. **Private escrow owns pre-existing local content.** Eligible untracked and ignored files are
-   captured per savepoint in `.git/vcr-escrow/<session>/blobs/`, outside the working tree, Git
-   objects, commits, and `.vcr` recordings.
+- `ACIDWorkspace` wraps your agent loop in a transaction: `begin()` → `savepoint()` →
+  `rollback()` or `commit()` / `abort()`. Each savepoint is a git commit **and** a recorded frame.
+- Files that git doesn't own, like an ignored `.env` or a local SQLite file, are copied into a
+  private escrow, so rollback restores them too, and their bytes never land in a commit.
+- It ships in the core package (`pip install ai-agent-vcr`). OpenHands isn't required.
 
-This second layer makes a pre-existing ignored `.env` recoverable after an agent modifies, deletes,
-renames, type-changes, or changes permissions on it.
+## Try it in 60 seconds
 
-## Install and prerequisites
-
-The core package contains `ACIDWorkspace`; the `openhands` extra is needed only when your application
-also imports OpenHands.
+Make a throwaway repo with a tracked file and an ignored secret:
 
 ```bash
-pip install ai-agent-vcr
+mkdir acid-demo && cd acid-demo
+git init -q -b main repo
+echo 'print("v1")' > repo/app.py
+echo '.env' > repo/.gitignore
+echo 'API_KEY=secret' > repo/.env
+git -C repo add .
+git -C repo -c user.name=demo -c user.email=demo@example.com commit -qm init
 ```
 
-Use a Git repository with a clean tracked worktree. By default, `begin()` refuses to run when
-tracked files already have uncommitted changes because a later rollback would otherwise discard
-work that predates the agent session.
+Save this as `acid_demo.py` next to `repo/` and run `python acid_demo.py`:
 
-## Transaction lifecycle
+```python
+from pathlib import Path
+
+from agent_vcr import VCRRecorder
+from agent_vcr.integrations.openhands import ACIDWorkspace
+
+repo = Path("repo")
+ws = ACIDWorkspace(str(repo), recorder=VCRRecorder(output_dir=".vcr"))
+ws.begin(session_id="fix-bug-42")
+ws.savepoint({"phase": "planned"}, node_name="planner")        # frame 0: a safe point
+
+# The "agent" goes wild.
+(repo / "app.py").write_text('print("v2 - broken")\n')
+(repo / "junk.txt").write_text("hallucinated file\n")
+(repo / ".env").unlink()
+ws.savepoint({"phase": "coded"}, node_name="coder")             # frame 1
+
+ws.rollback(to_frame_index=0)                                   # files AND state rewind
+print((repo / "app.py").read_text().strip(), (repo / "junk.txt").exists(),
+      (repo / ".env").read_text().strip())
+
+(repo / "app.py").write_text('print("v2 - fixed")\n')            # the good attempt
+ws.commit()                                                     # merge into main
+```
+
+```text
+print("v1") False API_KEY=secret
+```
+
+The broken edit is gone, the hallucinated file is gone, and the deleted `.env` is back. Then
+`git -C repo log --oneline --graph` shows one merge commit on `main` with the fixed `app.py`.
+The `acid/fix-bug-42` branch and the escrow have been cleaned up.
+
+## How it works
+
+```text
+            begin()                savepoint()            rollback(i)          commit()
+ main ──●────────┐                                                        ┌──▶ ● merge
+                 └─ acid/<id> ──● SAVEPOINT ──● SAVEPOINT ──◀ reset to i ─┘   (--no-ff)
+                                │             │
+            .git/vcr-escrow/    ├─ escrow     ├─ escrow     restore escrow i
+            (private copies)    └─ frame 0    └─ frame 1    + fork recording
+```
+
+- **Git owns tracked files.** `begin()` creates an `acid/<session_id>` branch and points `HEAD`
+  at it. That's a ref switch only, so no file changes. Each savepoint commits tracked edits and
+  any new files the agent created onto that branch, and records a frame with the commit hash
+  in `metadata.custom["acid_commit_hash"]`.
+- **Escrow owns everything else.** At `begin()` and at every savepoint, untracked and ignored
+  files are copied into `.git/vcr-escrow/<session>-<random>/blobs/<sha256>`. The folder is mode
+  `0700`, the blobs `0600`, and identical bytes are stored once. That's outside your working
+  tree, outside git objects and outside `.vcr` recordings. Files that existed before `begin()`
+  are never handed to `git add`, so a secret can't even become an unreachable git object.
+- **Rollback rewinds both worlds.** Tracked files are reset to the savepoint commit. Files created
+  after it are deleted, along with empty folders that are new. Escrowed files that were
+  modified, deleted, renamed, retyped, chmod-ed or re-pointed (symlinks) are restored. Restores go
+  through a temp file and `os.replace`, with the original permission bits. Only after the files
+  are back does the recording fork in place, so wrappers holding the recorder keep recording.
+- **Commit locks it in.** `commit()` saves the recording, commits anything changed since the last
+  savepoint, merges the branch into the branch you started on with a merge commit, deletes
+  `acid/<id>` and removes the escrow. `abort()` puts the working tree **and** index back exactly as
+  they were at `begin()`, including uncommitted edits you had before, and drops the branch.
+- **It stays in its lane.** Only paths inside `workspace_dir` change, even when it's a
+  subdirectory of a bigger repo. Every path is checked to be relative and to resolve inside the
+  workspace, so `..`, absolute paths and directory-symlink escapes are rejected. Git runs with
+  hooks and signing disabled, a private index, a timeout (`git_timeout`, 60 s by default) and
+  captured output. Savepoints use an internal `agent-vcr` identity; the merge uses yours when
+  git has one. `.vcr/`, `.venv/`, `node_modules/` and friends go into `.git/info/exclude`. Your
+  `.gitignore` isn't touched.
+
+## Everyday recipes
+
+### Commit on success, abort on a crash
+
+```python
+from pathlib import Path
+
+from agent_vcr import VCRRecorder
+from agent_vcr.integrations.openhands import ACIDWorkspace
+
+repo = Path("repo")
+
+try:
+    with ACIDWorkspace(str(repo), recorder=VCRRecorder(output_dir=".vcr")) as ws:
+        ws.savepoint({"phase": "start"}, node_name="boundary")
+        (repo / "app.py").write_text("oops\n")
+        raise RuntimeError("agent crashed")
+except RuntimeError:
+    pass
+print("after abort:", (repo / "app.py").read_text().strip())
+```
+
+The `with` block calls `begin()` with a fresh session id, `commit()` on a clean exit and
+`abort()` when an exception escapes. The exception still propagates. For production control
+flow, explicit calls make the review step clearer: roll back, inspect and run your tests, *then*
+call `commit()`.
+
+### Start with uncommitted edits
+
+By default `begin()` refuses a dirty tracked worktree, so a rollback can't discard work that
+predates the agent:
 
 ```python
 from agent_vcr import VCRRecorder
 from agent_vcr.integrations.openhands import ACIDWorkspace
 
-recorder = VCRRecorder(output_dir=".vcr")
-workspace = ACIDWorkspace(
-    "/path/to/repository",
-    recorder=recorder,
-    max_untracked_file_bytes=10 * 1024 * 1024,
-)
-
-workspace.begin(session_id="issue-42")
-workspace.savepoint({"phase": "planned"}, node_name="planner")
-
-# Let the agent work inside the isolated branch.
-
-workspace.savepoint({"phase": "implemented"}, node_name="coder")
-workspace.rollback(to_frame_index=0)
-
-# Inspect and verify the restored workspace before accepting it.
-workspace.commit()
+ws = ACIDWorkspace("repo", recorder=VCRRecorder(output_dir=".vcr"),
+                   dirty_worktree_policy="allow")
+ws.begin("dirty-ok")
 ```
 
-The context-manager form commits on a clean exit and aborts on an exception:
+With `"allow"`, your edits become part of the transaction (a `commit()` merges them along with
+the agent's work). `abort()` restores them as they were either way. Untracked files never count
+as dirty: they go to escrow.
+
+### Look at where you are
+
+```python
+print(ws.status())       # session_id, branch, base_ref, savepoints, workspace
+print(ws.savepoints())   # [{"index", "node_name", "frame_id", "acid_commit_hash"}, ...]
+ws.abort()
+```
+
+Run this right after the previous recipe. After a `rollback(i)`, the recording has forked: the
+new session starts with one `fork:<node>` frame at index 0, so savepoint indices count from there.
+
+### Tune what escrow copies
 
 ```python
 from agent_vcr.integrations.openhands import ACIDWorkspace
 
-with ACIDWorkspace("/path/to/repository") as workspace:
-    workspace.savepoint({"phase": "before-agent"}, node_name="boundary")
-    run_coding_agent()
-```
-
-For production control flow, explicit lifecycle calls make the review boundary clearer.
-
-## Operation guarantees
-
-### `begin()`
-
-- validates the session ID before using it in Git commands;
-- records the current branch or detached commit as the base ref;
-- refuses a dirty tracked worktree unless `dirty_worktree_policy="allow"` is explicit;
-- snapshots eligible pre-existing untracked and ignored files into private local escrow; and
-- creates an isolated `acid/<session_id>` branch.
-
-### `savepoint(state, node_name=...)`
-
-- stages tracked mutations and agent-created untracked files;
-- never presents pre-existing escrow-owned paths to `git add`, preventing secret bytes from being
-  written even as unreachable Git objects;
-- creates a Git savepoint commit;
-- snapshots eligible current local files into the same content-addressed escrow; and
-- records a VCR frame carrying the savepoint commit hash.
-
-### `rollback(to_frame_index)`
-
-- resets tracked content to the target savepoint commit;
-- removes untracked/ignored files created after that boundary when they are inside the cleanup
-  policy;
-- removes newly created empty parent directories;
-- restores missing, deleted, renamed, type-changed, content-changed, mode-changed, and
-  symlink-target-changed local files from escrow; and
-- forks the in-memory recording only after filesystem restoration succeeds.
-
-Regular files are restored through a sibling temporary file followed by `os.replace`. Original
-permission bits are reapplied. Symlinks are restored as symlinks with their exact target. Every
-candidate path is validated as relative and its resolved parent must remain inside the workspace,
-so `..`, absolute paths, and directory-symlink escapes are rejected.
-
-Rollback may be called more than once while the transaction is active. Escrow blobs are immutable,
-addressed as `blobs/<sha256>`, and remain available until `commit()` or `abort()` cleans the session.
-
-### `commit()` and `abort()`
-
-`commit()` saves the recording, returns to the base ref, merges the isolated branch with a merge
-commit, and removes the escrow directory. `abort()` resets and discards the transaction branch,
-restores the initial local snapshot, and removes the escrow directory.
-
-## Local-file safety policy
-
-The default maximum escrow size is 10 MiB per regular file. Configure it and add exclusions with:
-
-```python
-workspace = ACIDWorkspace(
-    "/path/to/repository",
-    max_untracked_file_bytes=2 * 1024 * 1024,
+ws = ACIDWorkspace(
+    "repo",
+    max_untracked_file_bytes=2 * 1024 * 1024,     # default 10 MiB per file
     untracked_exclude_dirs={"vendor", "artifacts"},
+    git_timeout=120,
 )
 ```
 
-Custom exclusions are added to `.git`, `.venv`, `venv`, `node_modules`, `__pycache__`, `.vcr`, and
-the supported tool-cache defaults. Oversized files, excluded trees, sockets, devices, FIFOs, and
-other special files are not copied. Pre-existing skipped paths are preserved rather than mistaken
-for hallucinated output and deleted. Their original content cannot be reconstructed if mutated.
+Your exclusions are added to the defaults: `.git`, `.venv`, `venv`, `node_modules`,
+`__pycache__`, `.vcr`, `.mypy_cache`, `.pytest_cache`, `.ruff_cache`, plus the recorder's own
+output folder when it sits inside the workspace. Oversized files, excluded trees, sockets, FIFOs
+and devices aren't copied. If one of those existed before `begin()`, it is left in place on
+rollback, never deleted as if the agent had made it up.
 
-Escrow directories use `0700` permissions and SHA-256-addressed blobs use `0600`. Identical bytes
-within a transaction share one blob.
+### Plug in your agent's recorder
 
-## Secret boundary
+Pass the recorder your framework wrapper already uses (`ACIDWorkspace(path, recorder=rec)`), and
+savepoints land in the same `.vcr` timeline as the agent's LLM and tool frames. Rollback forks
+that recorder in place, so a `VCRLangGraph` or `VCRCrewAI` wrapper holding it keeps recording
+into the new branch. See [integrations](integrations/README.md). Without a recorder, one is
+created that writes to `.vcr/` in the current directory.
 
-Escrow protects local-file payloads from Git staging and VCR serialization, but it is local
-plaintext protected by filesystem permissions, not an encrypted secret store. A process running as
-the repository owner can read it, and abrupt host termination can leave an orphaned session
-directory for manual cleanup.
+### Not a git repo yet?
 
-Prompts, states, tool arguments, and outputs explicitly passed to `VCRRecorder` are still written
-to `.vcr`. Git/workspace rollback also cannot compensate external APIs or services.
+Point it at any folder. If it isn't inside a repo, `begin()` runs `git init` (branch `main`) and
+makes a baseline commit containing only an empty `.acid_init` marker. Every other file you
+already had goes to escrow, not into git. On an existing repo with no commits, it adds the same
+baseline commit.
 
-## Verify locally
+## Airbag or ACIDWorkspace?
 
-```bash
-python examples/acid_golden_run.py
-pytest tests/unit/test_acid_golden.py -v
-```
+| | 🛟 [Airbag](airbag.md) | 🔁 ACIDWorkspace |
+|---|---|---|
+| **For** | Coding-agent CLIs you *use*: Claude Code, Codex, Cursor, Gemini CLI, Copilot CLI and more | Agents you *write* in Python |
+| **Who decides when to snapshot** | Hooks, automatically, before every tool call (shell commands included) | Your code, by calling `savepoint()` |
+| **Where snapshots live** | A shadow git store **outside** the project; your `.git` is never touched | An `acid/<id>` branch **in** your repo, plus escrow under `.git/vcr-escrow/` |
+| **Undo** | `vcr undo` / `vcr rewind`, any time later | `rollback(i)` inside the running transaction |
+| **Ends with** | Nothing to finish; snapshots pile up until pruned | `commit()` merges the result, `abort()` discards it |
+| **Records agent state** | No, files only | Yes, every savepoint is a `.vcr` frame |
 
-Issue [#2](https://github.com/ixchio/agent-vcr/issues/2) contains the original rollback-boundary
-question. Content-aware per-savepoint escrow shipped in `ai-agent-vcr==1.5.2`.
+Rule of thumb: if you type to the agent, use the airbag. If you `import` the agent, use
+ACIDWorkspace.
 
-`commit()` does not require callers to create a final savepoint. Before it switches back to the
-base ref, Agent VCR stages and commits every Git-owned change still present on the isolated ACID
-branch. The merge therefore includes tracked edits, deletions, and generated non-ignored files made
-after the last savepoint; if any tracked change remains dirty, commit stops instead of reporting a
-false success.
+## What it can't do
+
+- **It can't undo the outside world.** API calls, sent emails, payments and remote databases
+  stay changed. Rollback covers files inside the workspace, nothing else.
+- **Escrow is not a vault.** Blobs are local plaintext protected by file permissions, not
+  encryption. Any process running as you can read them. A hard kill (power loss, `kill -9`) can
+  leave an orphaned `.git/vcr-escrow/<session>-*` folder; delete it by hand.
+- **Skipped files can't be rebuilt.** If an oversized, excluded or special file is changed by
+  the agent, its old content is gone. New oversized files created after a savepoint also survive
+  a rollback.
+- **No detached HEAD, no half-finished merge.** `begin()` refuses both. Check out a branch first
+  (`git switch -c agent-work`).
+- **One transaction at a time per repo.** While it runs, `HEAD` points at `acid/<id>`, which your
+  editor and other git tools will see. If the base branch moves meanwhile (say, from another
+  worktree), `commit()` falls back to a real `git merge --no-ff`, which can conflict.
+- **A leftover `acid/<id>` branch from a crash is left alone.** The next `begin()` with that id
+  uses `acid/<id>-2` instead. `abort()` also keeps the branch if it holds commits that
+  ACIDWorkspace didn't make.
+- **Recordings still hold what you put in them.** The states you pass to `savepoint()` are written
+  to `.vcr` as-is. Escrow keeps file *contents* out of recordings, not secrets you put in state.
+
+## Cheat sheet
+
+| Call | What it does |
+|---|---|
+| `ACIDWorkspace(dir, recorder=None, dirty_worktree_policy="fail", max_untracked_file_bytes=10 MiB, untracked_exclude_dirs=None, git_timeout=60.0)` | Set up (nothing changes on disk yet) |
+| `begin(session_id=None)` | Validate the id, check the repo, escrow local files, create `acid/<id>` |
+| `savepoint(state, node_name="openhands_action")` | Git commit + escrow + recorded frame; returns the `Frame` |
+| `rollback(to_frame_index)` | Restore files and escrow to that savepoint, fork the recording in place |
+| `commit()` | Save the recording, commit leftovers, merge into the base branch, delete `acid/<id>`, clean escrow |
+| `abort()` | Restore the `begin()` state exactly, drop the branch, clean escrow |
+| `status()` / `savepoints()` | Inspect the transaction |
+| `with ACIDWorkspace(dir) as ws:` | `begin()`, then `commit()` on success or `abort()` on exception |
+| `branch_name`, `base_ref`, `session` | The live branch, the branch you started on, the current recording session |
+
+Want the full loop with a golden run at the end? `python examples/acid_golden_run.py` (it works
+in `/tmp/acid_agent_workspace`). The tests live in `tests/unit/test_acid_golden.py` and
+`tests/unit/test_acid_workspace_safety.py`. The original rollback-boundary question is issue
+[#2](https://github.com/ixchio/agent-vcr/issues/2).
+
+**Next:** [Airbag](airbag.md) (the same idea for coding-agent CLIs) ·
+[Recording & time travel](recording-and-replay.md) (what's inside the `.vcr` file) ·
+[Agent CI](agent-ci.md) (turn the good run into a regression test)
