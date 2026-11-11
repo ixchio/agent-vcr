@@ -212,7 +212,12 @@ class ShadowStore:
     # ── setup / locking ──────────────────────────────────────────────────
 
     def ensure(self) -> None:
-        """Create the shadow git dir on first use (idempotent)."""
+        """Create the shadow git dir on first use (idempotent, safe under races).
+
+        Several hook processes can start at once (agents run tool calls in
+        parallel), so the repository is built in a temporary directory under
+        the store lock and moved into place atomically.
+        """
         if (self.git_dir / "HEAD").exists():
             self._ensure_attributes()
             return
@@ -221,22 +226,30 @@ class ShadowStore:
         self.dir.mkdir(parents=True, exist_ok=True)
         with contextlib.suppress(OSError):
             os.chmod(self.dir, 0o700)  # snapshots can contain .env files
-        for cmd in (
-            ["git", "init", "-q", "--bare", str(self.git_dir)],
-            # Not really bare: GIT_WORK_TREE always points at the project.
-            ["git", "--git-dir", str(self.git_dir), "config", "core.bare", "false"],
-        ):
-            subprocess.run(
-                cmd, check=True, capture_output=True, timeout=self.git_timeout,
-                env=_clean_env(), stdin=subprocess.DEVNULL,
+        with self.lock():
+            if (self.git_dir / "HEAD").exists():
+                self._ensure_attributes()
+                return
+            tmp = self.dir / f"git.init-{os.getpid()}"
+            shutil.rmtree(tmp, ignore_errors=True)
+            for cmd in (
+                ["git", "init", "-q", "--bare", str(tmp)],
+                # Not really bare: GIT_WORK_TREE always points at the project.
+                ["git", "--git-dir", str(tmp), "config", "core.bare", "false"],
+            ):
+                subprocess.run(
+                    cmd, check=True, capture_output=True, timeout=self.git_timeout,
+                    env=_clean_env(), stdin=subprocess.DEVNULL,
+                )
+            info = tmp / "info"
+            info.mkdir(exist_ok=True)
+            (info / "exclude").write_text(
+                "# agent-vcr airbag defaults\n" + "\n".join(self.excludes) + "\n"
             )
-        info = self.git_dir / "info"
-        info.mkdir(exist_ok=True)
-        (info / "exclude").write_text(
-            "# agent-vcr airbag defaults\n" + "\n".join(self.excludes) + "\n"
-        )
-        (self.dir / "root.txt").write_text(str(self.root) + "\n")
-        self._ensure_attributes()
+            (info / "attributes").write_text(
+                "* -text -eol -filter -ident -working-tree-encoding\n")
+            os.replace(tmp, self.git_dir)
+            (self.dir / "root.txt").write_text(str(self.root) + "\n")
 
     def _ensure_attributes(self) -> None:
         """Store bytes exactly: no eol conversion, no LFS/clean filters, no encoding.
