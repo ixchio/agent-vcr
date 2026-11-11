@@ -188,7 +188,10 @@ def _cmd_bundle_verify(args: argparse.Namespace) -> None:
 
     from agent_vcr.bundle import verify_bundle
 
-    print(_json.dumps(verify_bundle(args.bundle), indent=2))
+    report = verify_bundle(args.bundle)
+    print(_json.dumps(report, indent=2))
+    if not report.get("ok"):
+        raise SystemExit(1)  # tampered or unreadable bundle must fail scripts and CI
 
 
 def _cmd_reproduce(args: argparse.Namespace) -> None:

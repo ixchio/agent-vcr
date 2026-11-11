@@ -1,9 +1,10 @@
 """Produce candidate recordings for Agent CI from golden runs (demo helper).
 
-For each case in a dataset, Ghost-replays the golden run (FULL mode, zero
-LLM cost) into ``<candidates-dir>/<case-name>.vcr`` — i.e. "current code
-behaves exactly like the baseline". With ``--break-case NAME`` the named
-candidate drops its final frame, simulating a regression for demos.
+For each case in a dataset, re-records the golden run's frames into
+``<candidates-dir>/<case-name>.vcr`` — a stand-in for "the current code behaved
+exactly like the baseline" (no model calls). In a real pipeline your agent produces
+these candidates. With ``--break-case NAME`` the named candidate drops its final
+frame, simulating a regression for demos.
 
 Usage:
     python examples/agent_ci_candidates.py --dataset refunds

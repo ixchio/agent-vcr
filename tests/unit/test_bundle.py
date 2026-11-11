@@ -261,3 +261,30 @@ class TestBundleCLI:
 
         main(["bundle", "import", str(bundle), "-d", str(tmp_path / "cli-in")])
         assert (tmp_path / "cli-in" / f"{report['session_id']}.vcr").exists()
+
+
+def test_cli_bundle_verify_fails_on_tampered_bundle(tmp_path):
+    import io
+    import tarfile
+
+    import pytest
+
+    from agent_vcr.cli import main
+    from agent_vcr.recorder import VCRRecorder
+
+    rec = VCRRecorder(output_dir=str(tmp_path / "rec"))
+    rec.start_session("t")
+    rec.record_step("a", {}, {"x": 1})
+    bundle = tmp_path / "t.vcrb"
+    main(["bundle", "export", str(rec.save()), "-o", str(bundle)])
+    with tarfile.open(bundle, "r:gz") as tar:
+        members = {m.name: tar.extractfile(m).read() for m in tar.getmembers()}
+    members["execution.vcr"] += b'{"type":"frame","data":{}}\n'
+    with tarfile.open(bundle, "w:gz") as tar:
+        for name, data in members.items():
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+    with pytest.raises(SystemExit) as exc:
+        main(["bundle", "verify", str(bundle)])
+    assert exc.value.code == 1

@@ -158,7 +158,8 @@ def cmd_undo(args: argparse.Namespace) -> None:
         print(f"Would undo: {action.get('command') or action.get('tool')}  "
               f"({action.get('agent')}, {_ago(float(action.get('time', 0)))}) → snapshot {snap.short}")
         for status, rel in changes[:30]:
-            print(f"    {'-' if status == 'A' else '+' if status == 'D' else '~'} {rel}")
+            # diff(current -> snapshot): A = comes back, D = will be removed (matches `vcr undo`)
+            print(f"    {'+' if status == 'A' else '-' if status == 'D' else '~'} {rel}")
         if not changes:
             print("    (no file differences)")
         return

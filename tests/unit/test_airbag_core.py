@@ -85,6 +85,14 @@ def _call(proj: Path, command: str) -> ToolCall:
     ("curl -X DELETE https://api.example.com/v1/users/7", "irreversible"),
     ("npm publish", "irreversible"),
     ("echo $(rm -rf src)", "destructive"),
+    ("ssh prod 'systemctl restart api'", "irreversible"),
+    ("scp dump.sql prod:/tmp", "irreversible"),
+    ("sendmail bob@example.com", "irreversible"),
+    ("aws ses send-email --to bob@example.com", "irreversible"),
+    ("DATABASE_URL=postgres://u@db.prod.internal/app alembic upgrade head", "irreversible"),
+    ("DATABASE_URL=postgres://u@localhost/app python manage.py migrate", "write"),
+    ("python manage.py migrate", "write"),
+    ("ssh -V", "write"),
 ])
 def test_classifier_levels(command: str, level: str) -> None:
     assert classify(command, cwd=ROOT, root=ROOT).level == level

@@ -96,7 +96,8 @@ CLOUD_CLIS = frozenset({
 
 _DANGER_VERB = re.compile(
     r"^(?:-{0,2})(delete|destroy|terminate|remove|rm|rb|purge|prune|drop|reset|wipe|"
-    r"uninstall|deprovision|decommission|nuke|truncate|erase|evict|drain|scale-to-zero)"
+    r"uninstall|deprovision|decommission|nuke|truncate|erase|evict|drain|scale-to-zero|"
+    r"send|publish)"
     r"(?:[-_:].*)?$",
     re.IGNORECASE,
 )
@@ -120,6 +121,24 @@ _SQL_DANGER = [
      "MongoDB drop/deleteMany({})"),
     (re.compile(r"\bflush(all|db)\b", re.I), "Redis FLUSHALL/FLUSHDB"),
 ]
+
+#: Schema migrations. Undoable by a snapshot only when the database is a local file, so they are
+#: escalated when the configured database is on a server (see _migration_verdict).
+_MIGRATIONS = [
+    (("alembic", "upgrade"), "alembic upgrade"), (("alembic", "downgrade"), "alembic downgrade"),
+    (("manage.py", "migrate"), "django migrate"), (("django-admin", "migrate"), "django migrate"),
+    (("rails", "db:migrate"), "rails db:migrate"), (("rake", "db:migrate"), "rake db:migrate"),
+    (("prisma", "migrate", "deploy"), "prisma migrate deploy"),
+    (("prisma", "db", "push"), "prisma db push"), (("knex", "migrate:latest"), "knex migrate"),
+    (("sequelize", "db:migrate"), "sequelize db:migrate"), (("flyway", "migrate"), "flyway migrate"),
+    (("liquibase", "update"), "liquibase update"), (("drizzle-kit", "push"), "drizzle-kit push"),
+    (("php", "artisan", "migrate"), "artisan migrate"), (("goose", "up"), "goose up"),
+    (("migrate", "up"), "migrate up"), (("atlas", "migrate", "apply"), "atlas migrate apply"),
+]
+
+#: Programs that send messages to people or run commands on other machines.
+_REMOTE_EXEC = frozenset({"ssh", "scp", "sftp", "mosh", "pssh", "ansible-playbook"})
+_MAILERS = frozenset({"sendmail", "mail", "mailx", "mutt", "msmtp", "swaks"})
 
 _ORM_DESTRUCTIVE = [
     (("prisma", "migrate", "reset"), "prisma migrate reset"),
@@ -363,6 +382,22 @@ def _classify_segment(argv: list[str], redirects: list[tuple[str, str]], ctx: _C
         if _contains_sequence([os.path.basename(a) for a in argv], words):
             _database_verdict(label, argv, ctx, verdict)
             return
+    if prog in _REMOTE_EXEC and any(not a.startswith("-") for a in args):
+        verdict.raise_to("irreversible", f"{prog} acts on another machine — outside this "
+                         "project, so a snapshot cannot undo it", "remote")
+        return
+    if prog in _MAILERS:
+        verdict.raise_to("irreversible", f"{prog} sends email — it cannot be unsent", "network")
+        return
+    for words, label in _MIGRATIONS:
+        if _contains_sequence([os.path.basename(a) for a in argv], words):
+            host = _db_host(argv, ctx.env)
+            if host and host not in _LOCAL_HOSTS:
+                verdict.raise_to("irreversible", f"{label} changes the schema of a database on "
+                                 f"{host} — server data is not in your project files", "database")
+            else:
+                verdict.raise_to("write")
+            return
     if prog in _PUBLISH and any(a in _PUBLISH[prog] for a in args[:2]):
         verdict.raise_to("irreversible", f"{prog} {args[0]} publishes outside this machine",
                          "publish")
@@ -601,7 +636,7 @@ def _classify_cloud(prog: str, args: list[str], verdict: Verdict) -> None:
             verdict.raise_to("write")
         return
     if any(_DANGER_VERB.match(a) for a in args[:6]):
-        verdict.raise_to("irreversible", f"{prog} {' '.join(args[:3])} deletes cloud resources",
+        verdict.raise_to("irreversible", f"{prog} {' '.join(args[:3])} changes or deletes resources outside this project",
                          "cloud")
         return
     verdict.raise_to("write")

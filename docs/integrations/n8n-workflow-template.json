@@ -7,7 +7,10 @@
       "name": "Manual Trigger",
       "type": "n8n-nodes-base.manualTrigger",
       "typeVersion": 1,
-      "position": [250, 300]
+      "position": [
+        250,
+        300
+      ]
     },
     {
       "parameters": {
@@ -23,25 +26,19 @@
           ]
         },
         "sendBody": true,
-        "bodyParameters": {
-          "parameters": [
-            {
-              "name": "inputs",
-              "value": "{}"
-            },
-            {
-              "name": "callback_url",
-              "value": "={{$execution.resumeUrl}}"
-            }
-          ]
-        },
-        "options": {}
+        "options": {},
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ inputs: {}, secret: $node[\"Config\"].json.webhook_secret, callback_url: $execution.resumeUrl }) }}"
       },
       "id": "2",
       "name": "Trigger Agent VCR",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.1,
-      "position": [450, 300]
+      "position": [
+        450,
+        300
+      ]
     },
     {
       "parameters": {
@@ -51,7 +48,10 @@
       "name": "Wait (On Webhook Call)",
       "type": "n8n-nodes-base.wait",
       "typeVersion": 1,
-      "position": [650, 300]
+      "position": [
+        650,
+        300
+      ]
     },
     {
       "parameters": {
@@ -68,7 +68,10 @@
       "name": "IF",
       "type": "n8n-nodes-base.if",
       "typeVersion": 1,
-      "position": [850, 300]
+      "position": [
+        850,
+        300
+      ]
     },
     {
       "parameters": {
@@ -89,7 +92,10 @@
       "name": "Get Failure Intel",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.1,
-      "position": [1050, 400]
+      "position": [
+        1050,
+        400
+      ]
     },
     {
       "parameters": {
@@ -110,6 +116,10 @@
             {
               "name": "project_id",
               "value": "my_project"
+            },
+            {
+              "name": "webhook_secret",
+              "value": "my_webhook_secret"
             }
           ]
         },
@@ -119,7 +129,10 @@
       "name": "Config",
       "type": "n8n-nodes-base.set",
       "typeVersion": 2,
-      "position": [50, 300]
+      "position": [
+        50,
+        300
+      ]
     }
   ],
   "pinData": {},
