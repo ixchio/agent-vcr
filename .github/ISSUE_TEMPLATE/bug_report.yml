@@ -1,0 +1,58 @@
+name: Bug report
+description: Something does not work as documented
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! **Security issues** (secrets in recordings, unsafe rollback,
+        access-control bypasses) must be reported privately — see SECURITY.md.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Airbag (vcr airbag / undo / rewind)
+        - Recording & time travel (recorder / player)
+        - ACID workspace rollback
+        - Ghost Replay / Agent CI
+        - Framework integration (LangGraph, CrewAI, OpenHands, ...)
+        - Sentinel
+        - Dashboard / server
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: agent
+    attributes:
+      label: Agent or framework and version
+      placeholder: "e.g. Claude Code 2.1.270, Codex CLI 0.154.0, langgraph 1.2.9"
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened, and what did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: The smallest commands or script that reproduce the problem.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      value: |
+        - ai-agent-vcr version (`vcr --version`):
+        - Python version:
+        - OS:
+        - git version (for airbag / ACID issues):
+  - type: textarea
+    id: logs
+    attributes:
+      label: Output or traceback
+      description: Remove secrets, tokens and private paths before pasting.
+      render: text

@@ -13,6 +13,9 @@ is tested in CI.
 
 ## Start here
 
+- [Airbag: undo anything your coding agent did](airbag.md) — snapshot before every tool call for
+  Claude Code, Codex, Gemini CLI, Cursor, Copilot CLI, OpenHands, OpenCode, Cline and Devin;
+  `vcr undo` / `redo` / `rewind`; what it can and cannot undo.
 - [Record, inspect, resume, and Ghost Replay](recording-and-replay.md) — recorder/player APIs,
   identity-safe replay, bundles, and privacy boundaries.
 - [Roll back state and files together](acid-workspace.md) — Git savepoints, content-aware escrow
@@ -21,15 +24,16 @@ is tested in CI.
   expectations, exit thresholds, and the reusable GitHub Action.
 - [Connect a framework](integrations/README.md) — raw Python, LangGraph, CrewAI, OpenHands,
   Claude Code hooks, and the generic integration boundary.
+- [Architecture](architecture.md) — package map, stable vs experimental layers, data contracts.
 
-## Runtime guides
+## Experimental runtime guides
+
+These layers are experimental: their APIs may change between minor releases.
 
 - [Workflow engine](workflow.md) — durable run state, schedules, crash resume, approvals, and saga
   compensation.
 - [SuperAgent runtime](superagent.md) — validated plans, tool schemas, policy, budgets, approvals,
   verification, and recorded decisions.
-- [Architecture](architecture.md) — package layers, data contracts, persistence, and subsystem
-  boundaries.
 - [Development and release verification](development.md) — local setup, tests, benchmark gates,
   packaging, and `make verify`.
 
@@ -58,9 +62,10 @@ is tested in CI.
 
 ## Boundaries you should know
 
-Agent VCR can restore a Git workspace and eligible pre-existing untracked/ignored files. It cannot
-undo an email, payment, database write, or arbitrary third-party API call. Use approval gates before
-consequential tools and workflow compensation for reversible external operations.
+Agent VCR can restore a project directory — tracked and untracked files, `.env`, local SQLite files
+and the project's `.git` — but not an email, payment, server-side database write, cloud deletion or
+any other third-party side effect. The airbag classifies those commands as irreversible and stops
+them for a human; use approval gates and workflow compensation for consequential tools.
 
 Recordings can contain prompts, tool inputs, outputs, and state. Redact secrets before recording or
 keep `.vcr` storage private. The ACID local-file escrow is deliberately separate from Git and VCR
@@ -69,13 +74,19 @@ recordings, but it does not sanitize data your application explicitly records.
 ## Repository map
 
 ```text
-src/                 distributable Python packages
-tests/               unit, end-to-end, and benchmark suites
-docs/                current guides and deployment notes
-schemas/             versioned JSON contract artifacts
-examples/            runnable, credential-free examples where possible
-scripts/             repository maintenance and artifact-generation tools
-.github/             CI workflows and repository automation
+src/agent_vcr/          the package — layer map in architecture.md
+  airbag/               snapshot-before-every-tool-call, vcr undo / redo / rewind
+  integrations/         LangGraph, CrewAI, OpenHands (ACIDWorkspace, airbag)
+  hooks/                Claude Code recording hook
+src/openhands_sentinel/ Sentinel AST quality guard
+tests/                  unit, end-to-end and benchmark suites
+docs/                   guides (markdown) and the GitHub Pages site (html, css, demo media)
+schemas/                versioned JSON contract artifacts
+examples/               runnable, credential-free examples (see examples/README.md)
+deploy/                 optional hosted-deployment configuration (Railway, env template)
+scripts/                maintenance and artifact-generation tools
+.github/                CI, publishing, security workflows and issue/PR templates
+action.yml              reusable Agent CI GitHub Action
 ```
 
 Current behavior is defined by the package, tests, schemas, and the guides above.

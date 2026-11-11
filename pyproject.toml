@@ -15,6 +15,12 @@ authors = [
     {name = "ixchio", email = "amankumarpandeyin@gmail.com"},
 ]
 keywords = [
+    "ai-agent-undo",
+    "claude-code",
+    "codex",
+    "coding-agent-safety",
+    "agent-rollback",
+    "agent-airbag",
     "ai-agent-debugging",
     "ai-agent-testing",
     "agent-framework",
@@ -127,6 +133,7 @@ Homepage = "https://github.com/ixchio/agent-vcr"
 Documentation = "https://ixchio.github.io/agent-vcr/"
 Repository = "https://github.com/ixchio/agent-vcr"
 Issues = "https://github.com/ixchio/agent-vcr/issues"
+Changelog = "https://github.com/ixchio/agent-vcr/blob/main/CHANGELOG.md"
 
 [tool.hatch.build]
 exclude = [

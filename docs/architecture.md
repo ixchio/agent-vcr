@@ -1,105 +1,103 @@
-# Agent VCR & SuperAgent: System Architecture Specification
+# Agent VCR architecture
 
-> **Version:** `1.5.4`
-> **Distribution:** Open-source software under the MIT License
-> **Schema Contract:** `execution/v1` (frozen)
-> **Target Audience:** Principal Systems Engineers, Infrastructure Architects, Agent Developers
+> **Version:** `1.5.4` + Unreleased · **License:** MIT · **Recording schema:** `execution/v1` (frozen)
 
----
+Agent VCR is an *intervention* layer for AI agents: it records what an agent did, and lets you
+go back — files, state and history — instead of only reading logs about it.
 
-## 1. Architectural Philosophy: Time-Travel for Autonomous AI
-
-Most LLM orchestration platforms treat execution as ephemeral. When an autonomous agent operates in production, failures are typically handled by alerting, retrying the whole execution from scratch, or scraping unstructured logs.
-
-Agent VCR introduces **Time-Travel Infrastructure** for autonomous AI systems. The core paradigm maps version control concepts directly to agent execution:
-
-| Git Primitive | Agent VCR Architecture Equivalent | System Guarantee |
+| Git idea | Agent VCR | Module |
 |---|---|---|
-| **commit** | Checkpoint Frame (`FrameType.CHECKPOINT`) | State + Memory + FS Snapshot frozen |
-| **branch** | Fork Execution (`ResumeConfig(mode=FORK)`) | Parallel trial without clobbering baseline |
-| **diff** | RFC-6902 / Canonical `StateDiff` | Exact delta of inputs, outputs, and memory |
-| **revert** | ACID Rollback (`ACIDWorkspace.rollback()`) | Tracked Git restore + private local-file escrow |
-| **fixture** | Ghost Replay (`GoldenRunCache`) | Zero-token, zero-cost deterministic playback |
-| **CI gate** | Agent CI (`regression.py` + `action.yml`) | 9-dimension non-regression verification |
+| commit | snapshot before every tool call · checkpoint frame | `airbag.store` · `recorder` |
+| checkout / revert | `vcr undo` / `vcr rewind` · `ACIDWorkspace.rollback()` | `airbag.core` · `integrations.openhands` |
+| branch | fork / resume a recorded run | `recorder.fork` · `player.resume` |
+| diff | RFC-6902 patch / canonical state diff | `models.StateDiff` |
+| fixture | Ghost Replay: re-run without model calls | `golden_cache` |
+| CI gate | replay datasets + regression report | `datasets` · `regression` · `action.yml` |
 
-```
-Observability tells you WHAT happened.
-Agent VCR lets you GO BACK, CHANGE EXECUTION, and RESUME.
-```
+## 1. Package map and stability
 
-## 2. Layered Architecture Topology
-
-Agent VCR is structured into five distinct, loosely coupled architectural tiers:
-
-```
-┌────────────────────────────────────────────────────────────────────────────────────────┐
-│                      TIER 5: CONTROL PLANE & CLOUD SERVICES                           │
-│  - Multi-Tenant Project Registry (<root>/projects/<pid>/sessions/)                    │
-│  - Scoped HMAC API Tokens (Owner / Member roles, SHA-256 at rest)                      │
-│  - Streaming Ingestion Gate (1MB chunks, 100MB cap, verify_integrity on ingress)      │
-│  - Distributed Workflow Engine (InngestBackend / LocalWorkflowBackend)                 │
-└───────────────────────────────────────────┬────────────────────────────────────────────┘
-                                            │
-                                            ▼
-┌────────────────────────────────────────────────────────────────────────────────────────┐
-│                      TIER 4: RELIABILITY INTELLIGENCE                                 │
-│  - Failure Clustering (Volatile span normalization -> SHA-256 Cluster Key)            │
-│  - 0–100 Multi-Factor Risk Scoring Engine (Errors, Denials, Drift, Cost, Latency)      │
-│  - Root Cause Diagnosis (diagnose() timeline + fleet cluster linkage)                  │
-│  - Autonomous Recovery Planner (Ranked blast-radius mitigation actions)                │
-│  - Empirical Model Router (Telemetry-driven model selection & fallbacks)               │
-└───────────────────────────────────────────┬────────────────────────────────────────────┘
-                                            │
-                                            ▼
-┌────────────────────────────────────────────────────────────────────────────────────────┐
-│                      TIER 3: SUPERAGENT EXECUTION RUNTIME                              │
-│  - Plan DAG Builder & LiteLLM Planner (Strict schema repair loops)                      │
-│  - ToolGateway (Schema enforcement and per-call thread timeouts)                        │
-│  - Policy & Budget Enforcement (Static rules + dynamic token/USD/latency caps)         │
-│  - Verifier Engine (Pre/Post-condition assertion contracts)                           │
-│  - Human-in-the-Loop Approvals (Fail-closed Approver protocol)                        │
-│  - Memory Hierarchy (Redacted MemoryStore + Qdrant Vector Store)                       │
-└───────────────────────────────────────────┬────────────────────────────────────────────┘
-                                            │
-                                            ▼
-┌────────────────────────────────────────────────────────────────────────────────────────┐
-│                      TIER 2: SANDBOX EXECUTION & ISOLATION                             │
-│  - BaseSandbox Abstract Interface                                                      │
-│  - LocalSandbox (Symlink traversal prevention, POSIX process-group killpg termination) │
-│  - E2BSandbox (Firecracker microVMs, sub-second snapshot restore, FS diffing)          │
-└───────────────────────────────────────────┬────────────────────────────────────────────┘
-                                            │
-                                            ▼
-┌────────────────────────────────────────────────────────────────────────────────────────┐
-│                      TIER 1: VCR DURABILITY KERNEL                                     │
-│  - execution/v1 Frozen Schema (Forward-compatible JSONL format)                        │
-│  - Atomic Append Recorder (fsync on boundary, mkstemp manifest swap)                  │
-│  - Player & Random Access Navigation (O(1) frame lookup, integrity verification)       │
-│  - ACIDWorkspace (Git savepoints + content-aware local-file escrow)                    │
-│  - Sentinel AST Code Guardian (Static trajectory analyzer, cyclomatic guards)          │
-│  - Golden Run Cache (Task fingerprinting -> Zero-token Ghost Replay)                   │
-└────────────────────────────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+    subgraph agents["Coding agents & frameworks"]
+        CC[Claude Code / Codex / Gemini / Cursor / Copilot / OpenCode / Cline / Devin]
+        FW[LangGraph / CrewAI / OpenHands SDK / plain Python]
+    end
+    subgraph safety["Safety layer"]
+        AB["airbag/ — hook adapters, classifier,<br/>shadow-git store, undo/redo/rewind"]
+        ACID["integrations/openhands.py — ACIDWorkspace<br/>(git transaction + local-file escrow)"]
+        SEN["openhands_sentinel/ — AST quality guard"]
+    end
+    subgraph kernel["Recording kernel"]
+        REC["recorder / async_recorder"] --> FILE[(".vcr JSONL<br/>execution/v1")]
+        FILE --> PLAY["player / async_player"]
+    end
+    subgraph replay["Replay & CI"]
+        GOLD["golden_cache (Ghost Replay)"]
+        CI["datasets · regression · bundle"]
+    end
+    subgraph optional["Optional / experimental"]
+        SRV["server · cloud · hosted (dashboard, project store)"]
+        RT["superagent · workflows · sandbox · intelligence"]
+    end
+    CC -- "PreToolUse hooks / plugins" --> AB
+    FW -- "callbacks / wrappers" --> REC
+    FW --> ACID
+    ACID --> REC
+    PLAY --> GOLD --> CI
+    PLAY --> SRV
+    RT --> REC
 ```
 
-### 2.1 SuperAgent execution flow
+| Layer | Packages | Stability |
+|---|---|---|
+| Recording kernel | `models`, `recorder`, `async_recorder`, `player`, `async_player` | **Stable** — `execution/v1` is frozen; old files always load |
+| Safety | `airbag/`, `integrations/openhands.py` (ACIDWorkspace), `openhands_sentinel/` | **Stable API**, actively developed |
+| Replay & CI | `golden_cache`, `datasets`, `regression`, `bundle`, `action.yml` | **Stable** |
+| Integrations | `integrations/langgraph.py`, `crewai.py`, `openhands_airbag.py`, `hooks/claude_code.py` | **Stable**, tested against real LangGraph 1.2, CrewAI 0.203, OpenHands SDK 1.7 |
+| Dashboard & store | `server`, `cloud`, `cloud_store`, `tui` | Supported; self-hosted |
+| Hosted control plane | `hosted`, `deploy/` | Foundation only — not a finished multi-tenant SaaS |
+| Agent runtime | `superagent/`, `workflows/`, `sandbox/`, `intelligence/` | **Experimental** — APIs may change |
 
-SuperAgent is the Tier 3 control loop for an explicit tool-and-agent plan. It validates the
-plan DAG before any handler runs, then processes each step in dependency order:
+`import agent_vcr` is lazy (PEP 562): optional layers are imported only when one of their names is
+used, so hooks and the CLI start fast and the core never needs optional dependencies.
+
+## 2. The airbag
+
+The airbag protects a project directory against whatever an agent does through its tools:
 
 ```text
-PlanBuilder → resolve $step.output inputs → Policy → Budget → Approval
-            → ToolGateway or sub-agent (timeout) → Verifier → VCR checkpoint
+agent tool call ──► hook process (python -m agent_vcr.airbag.hook <agent>)
+                      │  agents.parse_payload()   normalize the agent's JSON → ToolCall
+                      │  classify()               read / write / destructive / irreversible
+                      │  ShadowStore.snapshot()   (skipped for read-only commands)
+                      ▼
+                    Decision ──► rendered in the agent's own format
+                                 continue (+ notice) · ask · deny/block
 ```
 
-The VCR session records the plan, gate decisions, redacted approval inputs, handler output,
-verification verdict, and checkpoints. On an aborting failure, the intelligence layer may
-propose a bounded safe retry; durable resume, schedules, branching, and compensating actions
-belong to the workflow engine. See [SuperAgent runtime](superagent.md) for the executable plan
-contract and local CLI/API flow.
+* **Store.** One private git directory per project under the user's state directory
+  (`~/.local/state/agent-vcr/airbag/<name>-<hash>/`), with its own index, `info/exclude`
+  (dependency and build trees) and `info/attributes` (no eol/filter conversion). Snapshots are
+  parentless commits under `refs/airbag/<seq>`; an unchanged tree reuses the previous snapshot.
+  The user's `.git` is never read or written by the store.
+* **What is captured.** Every file `git` would see (tracked and untracked, honoring
+  `.gitignore`), small ignored *precious* files (`.env*`, SQLite) — SQLite through the
+  online-backup API — and, for commands that delete it, a hardlink copy of the project's `.git`.
+  Files over the size limit are removed from the index so a restore can never write a stale copy
+  over them.
+* **Restore.** A restore first snapshots the current state (so it is undoable), then applies the
+  diff between the two trees: deletes paths that did not exist at the target, writes the others,
+  restores private permission bits, skips nested repositories and anything present on disk but
+  unprotected, and repairs a missing/broken/replaced `.git` (moving the damaged one aside).
+* **Decisions.** The airbag never grants permission. Irreversible commands are escalated with
+  the strongest mechanism the agent offers ("ask" for Claude Code, Gemini CLI ≥ 0.36, Copilot
+  CLI; deny/block elsewhere) and can be approved once with `vcr airbag allow`.
+* **Concurrency.** Store creation and every snapshot/restore run under an `flock`; one tool call
+  delivered through two agents' hooks within 5 s is handled once.
 
----
+User-facing details: [airbag.md](airbag.md).
 
-## 3. Tier 1: VCR Durability Kernel & Data Models
+## 3. Recording kernel and data models
 
 ### 3.1 The `execution/v1` Frozen Schema Contract
 
@@ -176,11 +174,10 @@ Files are stored as `.vcr` files (JSON Lines format). Line 1 is always the `Sess
 `ACIDWorkspace` (`agent_vcr.integrations.openhands`) combines in-memory frame recording with physical git repository transactions:
 
 ```python
-with ACIDWorkspace("/path/to/repo") as ws:
-    ws.savepoint("step_1")
-    # Agent executes tool modifying filesystem
-    # ...
-    # If an error occurs, __exit__ invokes ws.abort()
+with ACIDWorkspace("/path/to/repo") as ws:   # begin() on enter
+    ws.savepoint({"phase": "planned"}, node_name="planner")
+    # Agent executes tools that modify the filesystem...
+    # Clean exit -> commit(); an exception -> abort() (files rewound, branch dropped)
 ```
 
 - **Branch Isolation:** Each session runs on an isolated git branch: `acid/<session_id>`. This prevents multi-agent pipelines operating on the same repository from colliding.
@@ -200,13 +197,15 @@ with ACIDWorkspace("/path/to/repo") as ws:
 - Function length explosion ($>50$ lines)
 - Cyclomatic complexity spikes
 - Class bloat and wildcard import detection
-- Duplicate function definitions across distinct modules
+- Duplicate functions (same qualified name and same normalized body) across modules
+- Per-edit growth spikes rather than growth against the first version ever seen
 
 ---
 
-## 4. Tier 2: Execution Sandboxing & Isolation
+## 4. Sandboxes (experimental)
 
-Agent execution requires strong isolation to prevent host contamination, resource starvation, and path traversal vulnerabilities.
+`BaseSandbox` abstracts where an agent's commands run. Only `E2BSandbox` provides isolation;
+`LocalSandbox` is a convenience runner.
 
 ```
                   ┌─────────────────────────────────────────┐
@@ -227,8 +226,10 @@ Agent execution requires strong isolation to prevent host contamination, resourc
 
 ### 4.1 `LocalSandbox` Implementation
 
-Designed for fast, zero-dependency local isolation:
-1. **Path Traversal Protection:** Every file operation passes through `_resolve_safe_path()`:
+A scratch directory on the local machine — **not a security boundary**. Commands run as the
+current user through a shell and can reach any path the user can; network, memory and CPU limits
+are not enforced. What it does provide:
+1. **Path checks for its file API:** `read_file` / `write_file` pass through `_resolve_safe_path()`:
    ```python
    target = (self.root_path / rel_path).resolve()
    target.relative_to(self.root_path)  # Raises PermissionError on escape
@@ -239,13 +240,13 @@ Designed for fast, zero-dependency local isolation:
 ### 4.2 `E2BSandbox` Implementation
 
 Integrates with Firecracker microVMs via the E2B SDK (`e2b >= 2.46.0`):
-- Hardware-assisted virtualization with dedicated Linux kernels per agent run.
-- Snapshot resumption within 5–30ms.
-- Memory and network limits enforced at the hypervisor layer.
+- Each run executes in an E2B microVM with its own kernel.
+- `SandboxConfig.lifetime_seconds` bounds the VM lifetime; per-command timeouts are separate.
+- Non-zero exits keep stdout, stderr and the real exit code.
 
 ---
 
-## 5. Tier 3: SuperAgent Execution Runtime
+## 5. SuperAgent runtime (experimental)
 
 The SuperAgent runtime (`agent_vcr.superagent`) executes structured plans on top of the VCR kernel. It guarantees that **every transition** is recorded and constrained by strict safety bounds.
 
@@ -294,7 +295,7 @@ Cross-session retrieval is provided by `VectorMemoryStore`, integrating with Qdr
 
 ---
 
-## 6. Tier 4: Reliability Intelligence Loops
+## 6. Reliability intelligence (experimental)
 
 The intelligence tier (`agent_vcr.intelligence`) operates over accumulated VCR sessions, turning raw execution traces into actionable fleet reliability data without requiring external LLMs.
 
@@ -357,7 +358,7 @@ Classifies failure types and produces a ranked list of recovery actions sorted b
 
 ---
 
-## 7. Tier 5: Multi-Tenant Cloud Architecture
+## 7. Self-hosted store and hosted control plane
 
 The cloud subsystem (`agent_vcr.server`, `agent_vcr.cloud_store`, `agent_vcr.cloud`) provides an enterprise-ready control plane:
 

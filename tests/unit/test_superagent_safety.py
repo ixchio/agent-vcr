@@ -1,4 +1,4 @@
-"""Regression tests for superagent / sandbox / intelligence high+medium fixes."""
+"""SuperAgent, sandbox and intelligence safety: redaction, timeouts, budgets, routing."""
 
 from __future__ import annotations
 

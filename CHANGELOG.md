@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Repository
+- README rewritten around the airbag, with supported agents, an architecture overview and
+  stability levels; `docs/architecture.md` now has a package map (stable vs experimental
+  layers) and the airbag design; `examples/README.md` indexes every example, and
+  `examples/airbag_demo.sh` reproduces the undo demo without an agent.
+- Added `CODE_OF_CONDUCT.md`, issue templates and a pull-request template; `CONTRIBUTING.md`
+  covers the checks, project layout and how to add an agent to the airbag.
+- Test files are named after what they test.
+
 ### Added
 - **Airbag** (`vcr airbag`, `vcr undo`, `vcr redo`, `vcr rewind`): snapshots the project before
   every agent tool call — shell commands included — into a shadow git store outside the

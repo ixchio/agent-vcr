@@ -2,17 +2,27 @@
 
 ## Project Overview
 - **Name:** Agent VCR (`ai-agent-vcr` on PyPI)
-- **Purpose:** ACID transactions, time-travel debugging, and zero-cost Ghost Replay for AI agents
-- **Key differentiators:** Filesystem rollback via git (not just state), Ghost Replay (zero-token re-runs), Sentinel (real-time AST quality guard)
-- **Frameworks:** LangGraph, CrewAI, raw Python — framework-agnostic
-- **Version:** 1.5.2
+- **Purpose:** an undo button for AI agents — snapshot before every agent tool call (airbag),
+  time-travel recording, ACID filesystem + state rollback, zero-cost Ghost Replay, Agent CI
+- **Key differentiators:** undo that covers shell commands for 9 coding agents (airbag),
+  filesystem rollback via git (not just state), Ghost Replay, Sentinel AST guard
+- **Frameworks / agents:** Claude Code, Codex CLI, Gemini CLI, Cursor, Copilot CLI, OpenHands,
+  OpenCode, Cline, Devin Local; LangGraph, CrewAI, raw Python
+- **Version:** 1.5.4 (+ Unreleased)
 
-## Architecture
-- `src/agent_vcr/` — Core package: recorder, player, golden_cache, models, server, tui
-- `src/openhands_sentinel/` — Sentinel code quality guardian (analyzer, cli, sentinel orchestrator)
-- `src/agent_vcr/integrations/` — LangGraph, CrewAI, OpenHands (ACIDWorkspace) integrations
+## Architecture (full map: docs/architecture.md)
+- `src/agent_vcr/` — recording kernel: models, recorder, async_recorder, player, async_player
+- `src/agent_vcr/airbag/` — store (shadow git outside the project), classify, core (decisions,
+  undo/redo/rewind), agents (per-agent parse/render/install), hook (entry point), cli, runner
+- `src/agent_vcr/integrations/` — LangGraph, CrewAI, OpenHands (ACIDWorkspace, openhands_airbag)
+- `src/agent_vcr/` replay & CI — golden_cache, datasets, regression, bundle; `action.yml`
+- `src/agent_vcr/` server, cloud, cloud_store, hosted, tui — dashboard and self-hosted store
+- Experimental: `superagent/`, `workflows/`, `sandbox/`, `intelligence/`
+- `src/openhands_sentinel/` — Sentinel code quality guardian
 - Storage format: JSONL (one JSON object per line, append-only, streamable)
-- ACID workspace uses git branches for isolation, git commits for savepoints, git reset --hard for rollback
+- `agent_vcr/__init__.py` is lazy (PEP 562) — keep hook/CLI import paths free of heavy deps
+- Airbag invariants: never grant a permission; never delete/overwrite data that was not
+  snapshotted; the user's own `.git` is never written except restoring a missing/broken one
 
 ## Build & Test
 - Build system: hatchling
@@ -27,11 +37,14 @@
 - Dashboard generator: `scripts/generate_bench_dashboard.py` (extracts summary.json from data.js)
 
 ## Key Files
-- `pyproject.toml` — Package metadata, SEO keywords, dependencies
-- `docs/index.html` — Landing page (has OG tags, structured data, LangGraph FAQ)
-- `README.md` — Main README with honest comparison table, LangGraph FAQ section
-- `Makefile` — Local install, verify, build, benchmark, and cleanup commands
-- `tests/benchmarks/test_performance.py` — Performance regression tests with hard limits
+- `pyproject.toml` — package metadata, keywords, dependencies
+- `README.md` — main README; `docs/README.md` — documentation index
+- `docs/airbag.md` — airbag guide incl. per-agent hook contracts and limits
+- `docs/architecture.md` — package map, stability levels, airbag design
+- `docs/index.html` — GitHub Pages landing page
+- `Makefile` — install, verify, build, benchmark, cleanup
+- `tests/benchmarks/test_performance.py` — performance regression tests with hard limits
+- `tests/unit/test_airbag_core.py`, `test_airbag_agents.py` — airbag engine + per-agent hooks
 
 ## Competitive Positioning
 - NOT an observability tool — it's an intervention tool

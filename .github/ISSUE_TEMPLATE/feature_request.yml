@@ -1,0 +1,24 @@
+name: Feature request
+description: Suggest an improvement or a new agent / framework integration
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem would this solve?
+      description: Describe the situation, not only the solution.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you considered
+  - type: input
+    id: agent
+    attributes:
+      label: For a new agent integration — where is its hook or plugin documentation?
+      placeholder: "link to the official hook / plugin / callback docs"

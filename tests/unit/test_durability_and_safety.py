@@ -1,8 +1,8 @@
-"""Regression tests for the critical fixes from the 2026-11-11 review.
+"""Recorder durability and security boundaries.
 
-Each test pins a bug that was reproduced against 1.5.2: recorder data loss,
-Claude Code hook behaviour, bundle path traversal, sandbox secret leakage,
-fail-open approvals, and the Qdrant search API.
+Recorder data loss (diff mode, truncation on reused ids, unserializable state),
+lazy imports, the Claude Code recorder hook, bundle path traversal, sandbox
+secret leakage, fail-closed approvals, Qdrant search and Ghost Replay paths.
 """
 
 from __future__ import annotations

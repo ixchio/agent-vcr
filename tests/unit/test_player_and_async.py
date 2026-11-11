@@ -1,4 +1,4 @@
-"""Regression tests for medium-severity core fixes (recorder / player / async)."""
+"""Player ordering, replay fidelity, in-place forks, async header totals and manifest locking."""
 
 from __future__ import annotations
 
