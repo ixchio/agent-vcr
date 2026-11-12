@@ -208,12 +208,20 @@ class _Context:
     #: ``VAR=value`` assignments preceding the current simple command.
     env: dict[str, str] = field(default_factory=dict)
 
-    def resolve(self, raw: str) -> Path:
+    @staticmethod
+    def _expand(raw: str) -> Path:
         text = os.path.expandvars(raw.replace("${HOME}", "~").replace("$HOME", "~"))
-        path = Path(text).expanduser()
+        return Path(text).expanduser()
+
+    def resolve(self, raw: str) -> Path:
+        path = self._expand(raw)
         if not path.is_absolute():
             path = self.cwd / path
-        return Path(os.path.normpath(str(path)))
+        normal = os.path.normpath(str(path))
+        # Resolve symlinks in the parent (``root`` is a realpath, e.g. /tmp -> /private/tmp on
+        # macOS) but not in the last component: ``rm link`` removes the link, not its target.
+        parent, name = os.path.split(normal)
+        return Path(os.path.join(os.path.realpath(parent), name)) if name else Path(normal)
 
     def inside(self, raw: str) -> bool:
         if self.root is None:
@@ -221,11 +229,37 @@ class _Context:
         path = self.resolve(raw)
         return path == self.root or self.root in path.parents
 
+    def contains_root(self, raw: str) -> bool:
+        """True when ``raw`` is a parent directory of the project (e.g. ``..`` at the root)."""
+        return self.root is not None and self.resolve(raw) in self.root.parents
+
     def is_temp(self, raw: str) -> bool:
-        path = str(self.resolve(raw))
-        temps = {"/tmp", "/var/tmp", "/private/tmp", "/var/folders", "/dev/shm",
-                 os.environ.get("TMPDIR", "/tmp").rstrip("/")}
-        return any(path == t or path.startswith(t + "/") for t in temps if t)
+        """True when ``raw`` is scratch space outside the project (``/tmp/build-cache``).
+
+        Never the temp directory itself, and never a *relative* path that only lands in a
+        temp directory because the project lives there: in ``/tmp/demo``, ``cp a ../x``
+        writes next to the project, not to scratch space it asked for by name.
+        """
+        path = self.resolve(raw)
+        explicit = self._expand(raw).is_absolute()
+        for temp in self._temp_dirs():
+            if not str(path).startswith(str(temp).rstrip("/") + "/"):
+                continue
+            project_in_temp = self.root is not None and temp in self.root.parents
+            if explicit or not project_in_temp:
+                return True
+        return False
+
+    @staticmethod
+    def _temp_dirs() -> list[Path]:
+        names = {"/tmp", "/var/tmp", "/private/tmp", "/var/folders", "/dev/shm",
+                 os.environ.get("TMPDIR", "").rstrip("/")}
+        dirs: set[Path] = set()
+        for name in names:
+            if name and name != "/":
+                dirs.add(Path(name))
+                dirs.add(Path(os.path.realpath(name)))
+        return sorted(dirs)
 
 
 def _classify_into(command: str, ctx: _Context, verdict: Verdict, depth: int) -> None:
@@ -537,9 +571,48 @@ def _classify_file_tool(prog: str, args: list[str], ctx: _Context, verdict: Verd
         verdict.raise_to("destructive", f"recursive {prog}", "files")
     else:
         verdict.raise_to("write")
-    # Destination for cp/mv/rsync/install/ln is the last operand; others: all.
-    dests = operands[-1:] if prog in {"cp", "mv", "rsync", "install", "ln"} else operands
+    if prog == "rsync" and any(_REMOTE_PATH.match(a) for a in operands[-1:]):
+        verdict.raise_to("irreversible", f"rsync writes {operands[-1]} on another machine",
+                         "remote")
+        return
+    sources: list[str] = []
+    if prog in {"cp", "mv", "install", "ln"} and _target_directory(args) is not None:
+        # GNU ``-t DIR`` / ``--target-directory=DIR``: every operand is a source.
+        target_dir = _target_directory(args) or ""
+        sources = [a for a in operands if a != target_dir]
+        dests = [target_dir]
+    elif prog == "install" and any(a in {"-d", "--directory"} for a in args):
+        dests = operands  # install -d creates every operand
+    elif prog in {"cp", "mv", "rsync", "install", "ln"}:
+        # Destination is the last operand; the rest are sources.
+        sources, dests = operands[:-1], operands[-1:]
+    else:
+        dests = operands
     _check_targets(dests, ctx, verdict, "write")
+    if prog == "mv" or (prog == "rsync" and "--remove-source-files" in args):
+        # Moving removes the source: a source outside the project is an outside delete.
+        _check_targets([s for s in sources if not _REMOTE_PATH.match(s)], ctx, verdict,
+                       "delete")
+
+
+#: ``host:path`` / ``user@host:path`` operands of rsync (not ``./a:b`` or ``/x:y``).
+_REMOTE_PATH = re.compile(r"^(?:[^@/:\s]+@)?[A-Za-z0-9][\w.-]*:(?!//)")
+
+
+def _target_directory(args: list[str]) -> str | None:
+    """Value of GNU ``-t DIR`` / ``-tDIR`` / ``--target-directory[=]DIR``, or None."""
+    for i, arg in enumerate(args):
+        if arg in {"-t", "--target-directory"}:
+            return args[i + 1] if i + 1 < len(args) else ""
+        if arg.startswith("--target-directory="):
+            return arg.split("=", 1)[1]
+        if arg.startswith("-") and not arg.startswith("--") and "t" in arg[1:]:
+            # Short-option cluster: ``-t DIR``, ``-tDIR``, ``-rt DIR``, ``-rtDIR``.
+            rest = arg[arg.index("t", 1) + 1:]
+            if rest:
+                return rest
+            return args[i + 1] if i + 1 < len(args) else ""
+    return None
 
 
 def _check_targets(targets: list[str], ctx: _Context, verdict: Verdict, action: str) -> None:
@@ -547,6 +620,14 @@ def _check_targets(targets: list[str], ctx: _Context, verdict: Verdict, action: 
         if not target or target.startswith("-") or "://" in target:
             continue
         verdict.paths.append(target)
+        if ctx.contains_root(target):
+            verdict.raise_to(
+                "irreversible",
+                f"{action}s {target}, a directory that contains the project (snapshots only "
+                "cover the project)",
+                "outside-project",
+            )
+            continue
         if not ctx.inside(target) and ctx.is_temp(target):
             continue  # scratch files outside the project (e.g. /tmp/build-cache)
         if not ctx.inside(target):

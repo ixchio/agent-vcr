@@ -109,6 +109,105 @@ def test_deleting_the_project_marks_git_dir() -> None:
     assert "git-dir" in classify("rm -rf .git", cwd=ROOT, root=ROOT).categories
 
 
+# Writes/deletes outside the project are irreversible unless they target scratch space.
+# Every case runs with the project in a normal folder and in a temp folder (the docs-demo
+# case that used to pass `cp a.txt ../x.txt` as a plain write), from the root and a subdir.
+# {out} is a relative path to a file next to the project, {outdir} its folder.
+_OUTSIDE_WRITES = [
+    "cp a.txt {out}",
+    "cp -r src {out}",
+    "mv a.txt {out}",
+    "mv {out} a.txt",
+    "rsync -a a.txt {out}",
+    "rsync -a --remove-source-files {out} a.txt",
+    "echo hi | tee {out}",
+    "echo hi | tee -a notes.txt {out}",
+    "install -m 644 a.txt {out}",
+    "install -d {outdir}/bin",
+    "cp -t {outdir} a.txt b.txt",
+    "cp -rt {outdir} src",
+    "mv --target-directory={outdir} a.txt",
+    "ln -sf a.txt {out}",
+    "echo hi > {out}",
+    "rm {out}",
+    "rm -rf {outdir}",
+    "cp a.txt ~/x.txt",
+    "cp a.txt $HOME/x.txt",
+    "tee ~/.bashrc",
+    "cp a.txt /home/someone/elsewhere/x.txt",
+    "mv a.txt /etc/x.conf",
+    "rm -rf /tmp",
+    "rsync -a dist/ deploy@web1:/srv/app",
+]
+_INSIDE_OR_SCRATCH = [
+    ("cp a.txt b.txt", "write"),
+    ("cp a.txt {top}copy.txt", "write"),
+    ("cp -t {top}src a.txt", "write"),
+    ("echo hi | tee {top}log.txt", "write"),
+    ("cp a.txt /tmp/agent-vcr-scratch/x.txt", "write"),
+    ("mv build.log /var/tmp/agent-vcr/build.log", "destructive"),
+    ("rsync -a ./a:b c", "write"),
+]
+
+
+@pytest.fixture(params=["home", "tmp"])
+def any_root(request: pytest.FixtureRequest, tmp_path: Path,
+             monkeypatch: pytest.MonkeyPatch) -> Path:
+    monkeypatch.setenv("HOME", "/home/someone")
+    monkeypatch.delenv("TMPDIR", raising=False)
+    if request.param == "home":
+        return Path(ROOT)
+    root = tmp_path / "proj"  # tmp_path lives under the system temp dir
+    (root / "sub").mkdir(parents=True)
+    return root.resolve()
+
+
+@pytest.mark.parametrize("subdir", ["", "sub"])
+@pytest.mark.parametrize("template", _OUTSIDE_WRITES)
+def test_outside_project_writes_are_irreversible(any_root: Path, subdir: str,
+                                                 template: str) -> None:
+    up = "../" * (2 if subdir else 1)
+    command = template.format(out=f"{up}x.txt", outdir=up.rstrip("/"))
+    cwd = any_root / subdir if subdir else any_root
+    verdict = classify(command, cwd=cwd, root=any_root)
+    assert verdict.level == "irreversible", (command, str(cwd), verdict)
+    assert {"outside-project", "remote"} & set(verdict.categories)
+
+
+@pytest.mark.parametrize("subdir", ["", "sub"])
+@pytest.mark.parametrize("template,level", _INSIDE_OR_SCRATCH)
+def test_inside_project_and_scratch_writes_stay_undoable(any_root: Path, subdir: str,
+                                                         template: str, level: str) -> None:
+    command = template.format(top="../" if subdir else "")
+    cwd = any_root / subdir if subdir else any_root
+    assert classify(command, cwd=cwd, root=any_root).level == level, (command, str(cwd))
+
+
+def test_absolute_temp_path_outside_the_project_is_scratch(tmp_path: Path) -> None:
+    root = (tmp_path / "proj").resolve()
+    root.mkdir()
+    # Named explicitly, a temp path is scratch space even when the project is in /tmp too ...
+    assert classify(f"cp a.txt {tmp_path}/cache.txt", cwd=root, root=root).level == "write"
+    # ... but not a temp directory that contains the project.
+    assert classify(f"rm -rf {tmp_path}", cwd=root, root=root).level == "irreversible"
+
+
+def test_symlinked_parent_dirs_are_resolved(tmp_path: Path) -> None:
+    real = tmp_path / "real"
+    (real / "proj").mkdir(parents=True)
+    (tmp_path / "alias").symlink_to(real)
+    root = (real / "proj").resolve()
+    # The same file, named through a symlinked parent, is inside the project.
+    assert classify(f"cp a.txt {tmp_path}/alias/proj/b.txt", cwd=root, root=root).level == "write"
+    # A symlink inside the project that points outside it does not hide an outside write.
+    outside = Path("/home/someone/elsewhere")
+    root_home = tmp_path / "home-proj"
+    root_home.mkdir()
+    (root_home / "link").symlink_to(outside)
+    verdict = classify("cp a.txt link/x.txt", cwd=root_home, root=root_home)
+    assert verdict.level == "irreversible"
+
+
 # ── store ────────────────────────────────────────────────────────────────
 
 def test_store_lives_outside_the_project_and_never_touches_user_git(project: Path) -> None:
