@@ -20,6 +20,7 @@ from __future__ import annotations
 import contextlib
 import fnmatch
 import hashlib
+import itertools
 import json
 import os
 import re
@@ -57,6 +58,16 @@ DEFAULT_PRECIOUS = (
 DEFAULT_MAX_FILE_BYTES = 25 * 1024 * 1024
 #: Refuse to protect absurdly large trees by accident (e.g. a home directory).
 DEFAULT_MAX_FILES = 200_000
+
+#: For git commands that write many objects: glibc otherwise returns zlib's
+#: buffers to the OS after every blob and page-faults them back in for the
+#: next one (~20 faults per file, half of ``update-index``'s time on a fresh
+#: store). Other C libraries ignore these variables.
+_MALLOC_ENV = {"MALLOC_TRIM_THRESHOLD_": "268435456", "MALLOC_TOP_PAD_": "16777216"}
+
+#: Parallel blob writers for big batches (see ``ShadowStore._prewrite_blobs``).
+_PREWRITE_JOBS = 4
+_PREWRITE_MIN_FILES = 2000
 
 _SQLITE_MAGIC = b"SQLite format 3\x00"
 _SAFE_NAME = re.compile(r"[^A-Za-z0-9._-]+")
@@ -209,6 +220,22 @@ def _is_unsafe_root(root: Path) -> str | None:
     if root in {home / "Desktop", home / "Documents", home / "Downloads"}:
         return f"{root.name} (too broad to protect)"
     return None
+
+
+@dataclass
+class _Changes:
+    """What a snapshot has to stage (see ``ShadowStore._stage``)."""
+
+    #: Modified, deleted and new non-ignored paths (minus files over the size limit).
+    to_add: list[str] = field(default_factory=list)
+    #: Small ignored files that are force-included (``.env``, SQLite...).
+    precious: list[str] = field(default_factory=list)
+    #: Regular files in ``to_add`` that can be read.
+    regular: list[str] = field(default_factory=list)
+    #: Regular files ``git add --ignore-errors`` would skip: we cannot read them.
+    unreadable: set[str] = field(default_factory=set)
+    #: Indexed paths that are a directory now.
+    dirs: set[str] = field(default_factory=set)
 
 
 class ShadowStore:
@@ -546,29 +573,40 @@ class ShadowStore:
                 f"{len(changed)} files would be snapshotted (limit {self.max_files}); "
                 "add excludes or raise AGENT_VCR_AIRBAG_MAX_FILES"
             )
-        to_add: list[str] = []
+        changes = _Changes()
+        to_add = changes.to_add
+        private: dict[str, int] = {}
         # Untracked nested repositories are listed as "dir/": git cannot add their
         # contents (only a gitlink, and not even that before their first commit).
         untracked_nested = [rel.rstrip("/") for rel in changed if rel.endswith("/")]
+        # One lstat per path on plain strings: pathlib costs more than the syscall
+        # on the first snapshot of a big repository, where every file is "changed".
+        prefix = os.path.join(str(self.root), "")
+        uid = os.getuid() if hasattr(os, "getuid") else -1
         for rel in changed:
             if rel.endswith("/"):
                 continue
-            full = self.root / rel
             try:
-                too_big = (full.is_file() and not full.is_symlink()
-                           and full.stat().st_size > self.max_file_bytes)
+                st = os.lstat(prefix + rel)
             except OSError:
-                too_big = False
-            if too_big:
-                skipped.append(rel)
+                to_add.append(rel)  # deleted: staged as a removal
                 continue
+            if stat.S_ISREG(st.st_mode):
+                if st.st_size > self.max_file_bytes:
+                    skipped.append(rel)
+                    continue
+                if not st.st_mode & 0o077:
+                    private[rel] = stat.S_IMODE(st.st_mode)
+                if _maybe_unreadable(st, uid) and not os.access(prefix + rel, os.R_OK):
+                    changes.unreadable.add(rel)
+                else:
+                    changes.regular.append(rel)
+            elif stat.S_ISDIR(st.st_mode):
+                changes.dirs.add(rel)  # an indexed file (or gitlink) is a directory now
             to_add.append(rel)
         precious, too_big_precious = self._precious_ignored_files()
-        if to_add:
-            self._git(
-                "add", "-A", "--ignore-errors", "--pathspec-from-file=-", "--pathspec-file-nul",
-                input_bytes=b"\0".join(_literal(p) for p in to_add), check=False,
-            )
+        changes.precious = precious
+        self._stage(changes)
         skipped.extend(too_big_precious)
         if skipped:
             # Files over the limit must not stay in the index with an old, small
@@ -578,14 +616,10 @@ class ShadowStore:
                 input_bytes=b"".join(p.encode("utf-8", "surrogateescape") + b"\0"
                                      for p in skipped),
             )
-        if precious:
-            self._git(
-                "add", "-f", "--ignore-errors", "--pathspec-from-file=-", "--pathspec-file-nul",
-                input_bytes=b"\0".join(_literal(p) for p in precious), check=False,
-            )
         nested = self._stage_sqlite_consistently()
         nested.extend(n for n in untracked_nested if n not in nested)
-        self._remember_private_modes(to_add + precious)
+        private.update(_private_modes_of(prefix, precious))
+        self._remember_private_modes(private)
 
         tree = self._git("write-tree").stdout.decode().strip()
         last = self.latest()
@@ -621,18 +655,176 @@ class ShadowStore:
                 seen[raw.decode("utf-8", "surrogateescape")] = None
         return list(seen)
 
-    def _remember_private_modes(self, paths: list[str]) -> None:
+    def _stage(self, changes: _Changes) -> None:
+        """Bring the shadow index up to date for the changed and the precious files.
+
+        ``changes.to_add`` are modified, deleted and new (non-ignored) paths;
+        ``changes.precious`` are small ignored files that are force-included.
+        The result is what ``git add -A --ignore-errors`` / ``git add -f
+        --ignore-errors`` with those literal pathspecs produce, but ``git
+        update-index --stdin`` gets there without pathspec matching, which is
+        superlinear in the number of pathspecs (seconds for the first snapshot
+        of a 20k-file repository). Whenever the fast path cannot guarantee the
+        same index, or fails, the ``git add`` commands run instead.
+        """
+        to_add, precious = changes.to_add, changes.precious
+        if not to_add and not precious:
+            return
+        prefix = os.path.join(str(self.root), "")
+        links: dict[str, bool] = {}
+        behind = {p for p in to_add if "/" in p and _behind_symlink(prefix, p, links)}
+        if behind:
+            # Index entries under a directory that is now a symlink. `git add`
+            # refuses such a pathspec and then stages nothing at all (1.7.0 lost
+            # every other change of that snapshot); `git add -A` without
+            # pathspecs drops them, which is what happens here.
+            self._git(
+                "update-index", "-z", "--force-remove", "--stdin",
+                input_bytes=b"".join(p.encode("utf-8", "surrogateescape") + b"\0"
+                                     for p in sorted(behind)),
+            )
+            to_add = [p for p in to_add if p not in behind]
+            changes.regular = [p for p in changes.regular if p not in behind]
+        if self._stage_with_update_index(to_add, changes):
+            return
+        if to_add:
+            self._git(
+                "add", "-A", "--ignore-errors", "--pathspec-from-file=-", "--pathspec-file-nul",
+                input_bytes=b"\0".join(_literal(p) for p in to_add), check=False,
+                env_extra=_MALLOC_ENV,
+            )
+        if precious:
+            self._git(
+                "add", "-f", "--ignore-errors", "--pathspec-from-file=-", "--pathspec-file-nul",
+                input_bytes=b"\0".join(_literal(p) for p in precious), check=False,
+                env_extra=_MALLOC_ENV,
+            )
+
+    def _stage_with_update_index(self, to_add: list[str], changes: _Changes) -> bool:
+        """``git update-index --add --remove --replace``; False = nothing done.
+
+        Equivalent to ``git add`` for every listed path: new and modified files
+        (and symlinks) are hashed with the same mode rules, missing ones are
+        removed and file/directory swaps are replaced. ``git add
+        --ignore-errors`` skips files it cannot read, so those are left out.
+        Indexed paths that are directories now go through ``git add`` (only a
+        handful of pathspecs): it turns them into gitlinks when they hold a
+        repository, and adds what they contain. ``update-index`` never writes a
+        partial index: on any error it exits without touching the index and
+        the caller falls back to ``git add`` for everything.
+
+        ``git add`` also folds the case of new paths into existing entries when
+        ``core.ignorecase`` is set (macOS, Windows); ``update-index`` does not,
+        so when any listed path could alias another one by case, this declines.
+        """
+        everything = to_add + changes.precious
+        if self._ignorecase() and self._case_aliases(everything):
+            return False
+        skip = changes.unreadable | changes.dirs
+        batch = sorted(p.encode("utf-8", "surrogateescape") for p in everything
+                       if p not in skip)
+        if batch:
+            self._prewrite_blobs(changes.regular)
+            proc = self._git(
+                "update-index", "--add", "--remove", "--replace", "-z", "--stdin",
+                input_bytes=b"".join(p + b"\0" for p in batch),
+                check=False, env_extra=_MALLOC_ENV,
+            )
+            if proc.returncode != 0:
+                return False
+        dirs = [p for p in to_add if p in changes.dirs]
+        if dirs:
+            self._git(
+                "add", "-A", "--ignore-errors", "--pathspec-from-file=-", "--pathspec-file-nul",
+                input_bytes=b"\0".join(_literal(p) for p in dirs), check=False,
+                env_extra=_MALLOC_ENV,
+            )
+        return True
+
+    def _prewrite_blobs(self, regular: list[str]) -> None:
+        """Write the blobs of many files with parallel ``git hash-object`` processes.
+
+        Purely a speed-up for big batches (the first snapshot of a repository):
+        deflating and writing thousands of loose objects is what ``update-index``
+        spends its time on, and it does that on one core. ``update-index`` still
+        hashes every file itself and only finds the object already present, so
+        what gets staged never depends on this step; anything it misses or gets
+        wrong (a file changing meanwhile) is at worst an unreferenced object.
+        """
+        jobs = min(_PREWRITE_JOBS, os.cpu_count() or 1)
+        if jobs < 2 or len(regular) < _PREWRITE_MIN_FILES:
+            return
+        # --stdin-paths is line-based, strips a trailing CR and C-unquotes lines
+        # starting with '"'; a path it cannot open ends that worker (no harm).
+        names = [rel for rel in regular
+                 if "\n" not in rel and not rel.endswith("\r") and not rel.startswith('"')]
+        env = _clean_env()
+        env.update({"GIT_DIR": str(self.git_dir), "GIT_WORK_TREE": str(self.root),
+                    "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull,
+                    **_MALLOC_ENV})
+        procs: list[subprocess.Popen[bytes]] = []
+        tmp = Path(tempfile.mkdtemp(dir=str(self.dir), prefix="prewrite-"))
+        try:
+            for n in range(jobs):
+                listing = tmp / f"paths-{n}"
+                listing.write_bytes(b"".join(
+                    rel.encode("utf-8", "surrogateescape") + b"\n" for rel in names[n::jobs]))
+                with open(listing, "rb") as stdin:
+                    procs.append(subprocess.Popen(
+                        ["git", "-c", "core.autocrlf=false", "-c", "core.safecrlf=false",
+                         "hash-object", "-w", "--stdin-paths"],
+                        cwd=str(self.root), env=env, stdin=stdin,
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    ))
+            deadline = time.monotonic() + self.git_timeout
+            for proc in procs:
+                proc.wait(timeout=max(0.1, deadline - time.monotonic()))
+        except (OSError, subprocess.SubprocessError):
+            pass  # update-index writes whatever is missing
+        finally:
+            for proc in procs:
+                if proc.poll() is None:
+                    proc.kill()
+                    with contextlib.suppress(subprocess.SubprocessError):
+                        proc.wait(timeout=5)
+            _platform.rmtree(tmp, ignore_errors=True)
+
+    def _ignorecase(self) -> bool:
+        """``core.ignorecase`` of the shadow repository (set by ``git init``)."""
+        try:
+            text = (self.git_dir / "config").read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return False
+        return re.search(r"(?im)^\s*ignorecase\s*=\s*(true|yes|on|1)\s*$", text) is not None
+
+    def _case_aliases(self, batch: list[str]) -> bool:
+        """Could ``git add``'s case folding change any of these paths?
+
+        True when a path, or one of its directories, matches a different
+        spelling (ignoring case) in the shadow index or elsewhere in the batch.
+        """
+        out = self._git("ls-files", "-z").stdout if self.index_file.exists() else b""
+        indexed = [raw.decode("utf-8", "surrogateescape") for raw in out.split(b"\0") if raw]
+        seen: dict[str, str] = {}
+        dirs_done: set[str] = set()
+        for rel in itertools.chain(indexed, batch):
+            if seen.setdefault(rel.lower(), rel) != rel:
+                return True
+            parent = rel.rpartition("/")[0]
+            while parent and parent not in dirs_done:  # each directory spelling once
+                dirs_done.add(parent)
+                if seen.setdefault(parent.lower(), parent) != parent:
+                    return True
+                parent = parent.rpartition("/")[0]
+        return False
+
+    def _remember_private_modes(self, private: dict[str, int]) -> None:
         """Remember permission bits of private files (e.g. ``.env`` at 0600).
 
         Git only stores the executable bit, so a deleted-then-restored secret
-        would otherwise come back group/world-readable.
+        would otherwise come back group/world-readable. ``private`` maps each
+        snapshotted regular file without group/other bits to its mode.
         """
-        private: dict[str, int] = {}
-        for rel in paths:
-            with contextlib.suppress(OSError):
-                st = os.lstat(self.root / rel)
-                if stat.S_ISREG(st.st_mode) and not st.st_mode & 0o077:
-                    private[rel] = stat.S_IMODE(st.st_mode)
         if not private:
             return
         modes = self._private_modes()
@@ -1063,6 +1255,41 @@ class ShadowStore:
             "snapshots": len(snaps),
             "latest": asdict(snaps[-1]) if snaps else None,
         }
+
+
+def _maybe_unreadable(st: os.stat_result, uid: int) -> bool:
+    """Cheap pre-check before ``os.access``: could this regular file be unreadable?"""
+    if st.st_mode & stat.S_IROTH:
+        return False
+    return not (st.st_uid == uid and st.st_mode & stat.S_IRUSR)
+
+
+def _behind_symlink(prefix: str, rel: str, cache: dict[str, bool]) -> bool:
+    """Is one of ``rel``'s parent directories a symlink? (``lstat`` once per directory)"""
+    parts = rel.split("/")[:-1]
+    for i in range(1, len(parts) + 1):
+        parent = "/".join(parts[:i])
+        hit = cache.get(parent)
+        if hit is None:
+            try:
+                hit = stat.S_ISLNK(os.lstat(prefix + parent).st_mode)
+            except OSError:
+                hit = False
+            cache[parent] = hit
+        if hit:
+            return True
+    return False
+
+
+def _private_modes_of(prefix: str, paths: list[str]) -> dict[str, int]:
+    """Modes of the regular files among ``paths`` that have no group/other bits."""
+    private: dict[str, int] = {}
+    for rel in paths:
+        with contextlib.suppress(OSError):
+            st = os.lstat(prefix + rel)
+            if stat.S_ISREG(st.st_mode) and not st.st_mode & 0o077:
+                private[rel] = stat.S_IMODE(st.st_mode)
+    return private
 
 
 def _literal(rel: str) -> bytes:
