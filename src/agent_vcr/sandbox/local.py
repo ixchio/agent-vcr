@@ -6,12 +6,13 @@ import contextlib
 import hashlib
 import logging
 import os
-import signal
 import subprocess
+import sys
 import tempfile
 import time
 from pathlib import Path
 
+from agent_vcr._platform import kill_process_tree, new_process_group_kwargs
 from agent_vcr.sandbox.base import BaseSandbox
 from agent_vcr.sandbox.models import (
     ExecutionResult,
@@ -32,6 +33,12 @@ _SAFE_ENV_KEYS = ("PATH", "LANG", "LANGUAGE", "LC_ALL", "LC_CTYPE", "TERM", "TZ"
 
 class LocalSandbox(BaseSandbox):
     """Run commands in a scratch directory on the local machine.
+
+    Commands run through the platform shell, like ``subprocess`` with
+    ``shell=True``: ``/bin/sh`` on POSIX, ``cmd.exe`` (``%COMSPEC%``) on
+    Windows — so write ``$VAR`` on POSIX and ``%VAR%`` on Windows. The
+    command's home and temp directory are the sandbox root (``HOME`` and
+    ``TMPDIR``; on Windows also ``USERPROFILE``, ``TEMP`` and ``TMP``).
 
     .. warning::
         This is **not a security boundary**. Commands run as the current user
@@ -148,6 +155,9 @@ class LocalSandbox(BaseSandbox):
             cmd_env = {k: os.environ[k] for k in _SAFE_ENV_KEYS if k in os.environ}
             cmd_env["HOME"] = str(self.root_path)
             cmd_env["TMPDIR"] = str(self.root_path)
+            if sys.platform == "win32":  # where Windows programs look instead
+                for key in ("USERPROFILE", "TEMP", "TMP"):
+                    cmd_env[key] = str(self.root_path)
         cmd_env.update(self.config.env)
         if env:
             cmd_env.update(env)
@@ -168,7 +178,8 @@ class LocalSandbox(BaseSandbox):
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
-                start_new_session=True,
+                encoding="utf-8", errors="replace",
+                **new_process_group_kwargs(),
             )
             try:
                 stdout, stderr = proc.communicate(timeout=effective_timeout)
@@ -177,11 +188,8 @@ class LocalSandbox(BaseSandbox):
                 timed_out = True
                 exit_code = -1
                 error_msg = f"Command timed out after {effective_timeout:.2f}s"
-                try:
-                    # Kill process group to ensure child processes are terminated
-                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-                except (OSError, ProcessLookupError):
-                    proc.kill()
+                # The shell's children too (process group / Windows process tree).
+                kill_process_tree(proc)
                 try:
                     stdout, stderr = proc.communicate(timeout=1.0)
                 except (subprocess.TimeoutExpired, OSError):
@@ -240,8 +248,7 @@ class LocalSandbox(BaseSandbox):
                 try:
                     if p.is_symlink():
                         p.resolve().relative_to(self.root_path)
-                    rel = str(p.relative_to(self.root_path))
-                    paths.append(rel)
+                    paths.append(p.relative_to(self.root_path).as_posix())
                 except (ValueError, OSError):
                     continue
         return sorted(paths)
@@ -267,7 +274,7 @@ class LocalSandbox(BaseSandbox):
                     try:
                         if file_path.is_symlink():
                             file_path.resolve().relative_to(self.root_path)
-                        rel_path = str(file_path.relative_to(self.root_path))
+                        rel_path = file_path.relative_to(self.root_path).as_posix()
                         stat = file_path.stat()
                         # Compute sha256
                         h = hashlib.sha256()

@@ -9,11 +9,12 @@ import re
 import shutil
 import stat
 import subprocess
+import sys
 import tempfile
 import uuid
 from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Literal
 
 from agent_vcr.models import Frame, FrameMetadata, Session
@@ -696,14 +697,14 @@ class ACIDWorkspace:
         """Keep VCR audit files out of git commits without editing user .gitignore."""
         exclude_path = self._git_private_path("info/exclude")
         exclude_path.parent.mkdir(parents=True, exist_ok=True)
-        existing = exclude_path.read_text() if exclude_path.exists() else ""
+        existing = exclude_path.read_text(encoding="utf-8") if exclude_path.exists() else ""
         additions = [pattern for pattern in self._git_clean_excludes() if pattern not in existing]
         if not additions:
             return
         content = existing + "".join(f"\n{pattern}" for pattern in additions)
         temp_path = exclude_path.with_name(f".{exclude_path.name}.{uuid.uuid4().hex}.tmp")
         try:
-            temp_path.write_text(content)
+            temp_path.write_text(content, encoding="utf-8")
             os.replace(temp_path, exclude_path)
         finally:
             temp_path.unlink(missing_ok=True)
@@ -1118,7 +1119,8 @@ class ACIDWorkspace:
         if self._escrow_blobs_dir is None:
             raise RuntimeError("Local-file escrow has not been initialized.")
 
-        descriptor = os.open(source, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        descriptor = os.open(source, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+                             | getattr(os, "O_BINARY", 0))
         temp_descriptor, temp_name = tempfile.mkstemp(
             prefix=".vcr-blob-", dir=self._escrow_blobs_dir
         )
@@ -1341,6 +1343,11 @@ class ACIDWorkspace:
 
     @staticmethod
     def _normalize_relative_path(path: str) -> str:
+        if sys.platform == "win32":
+            # A backslash separates components there, and C:\x or \\server\x are absolute.
+            if PureWindowsPath(path).drive:
+                raise ValueError(f"Unsafe workspace-relative path: {path!r}")
+            path = path.replace("\\", "/")
         normalized = PurePosixPath(path.rstrip("/"))
         if normalized.is_absolute() or not normalized.parts or ".." in normalized.parts:
             raise ValueError(f"Unsafe workspace-relative path: {path!r}")

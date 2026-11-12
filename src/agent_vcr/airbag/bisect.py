@@ -22,8 +22,6 @@ from __future__ import annotations
 
 import contextlib
 import os
-import shutil
-import signal
 import subprocess
 import tempfile
 import time
@@ -32,6 +30,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+from agent_vcr import _platform
 from agent_vcr.airbag.core import Airbag, describe_action
 from agent_vcr.airbag.store import AirbagError, Snapshot, _clean_env
 
@@ -126,11 +125,8 @@ def timeline(bag: Airbag) -> list[Step]:
 
 
 def _kill(proc: subprocess.Popen[bytes]) -> None:
-    with contextlib.suppress(OSError):
-        if os.name != "nt":
-            os.killpg(proc.pid, signal.SIGKILL)
-        else:  # pragma: no cover - Windows
-            proc.kill()
+    """The test command and everything it started (process group / Windows process tree)."""
+    _platform.kill_process_tree(proc)
 
 
 def run_test(argv: list[str], cwd: Path, timeout: float, *, shell: bool = False,
@@ -146,7 +142,7 @@ def run_test(argv: list[str], cwd: Path, timeout: float, *, shell: bool = False,
             proc = subprocess.Popen(
                 argv[0] if shell else argv, shell=shell, cwd=str(cwd), env=env,
                 stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT,
-                start_new_session=os.name != "nt",
+                **_platform.new_process_group_kwargs(),
             )
         except OSError as err:
             return "error", None, time.monotonic() - start, f"could not start {argv[0]!r}: {err}"
@@ -160,9 +156,9 @@ def run_test(argv: list[str], cwd: Path, timeout: float, *, shell: bool = False,
             _kill(proc)
             with contextlib.suppress(subprocess.TimeoutExpired):
                 proc.wait(timeout=10)
-            if os.name != "nt":
-                with contextlib.suppress(OSError):
-                    os.killpg(proc.pid, signal.SIGKILL)
+            # On Windows the process tree is unreachable once its root has exited.
+            if not _platform.WINDOWS:
+                _platform.kill_process_tree(proc)
         out.seek(0, os.SEEK_END)
         out.seek(max(0, out.tell() - 65536))
         text = out.read().decode("utf-8", "replace")
@@ -205,7 +201,7 @@ class _Checkouts:
 def _remove_tree(path: Path) -> None:
     """rmtree that never follows the dependency symlinks into the real project."""
     if path.exists():
-        shutil.rmtree(path, ignore_errors=True)
+        _platform.rmtree(path, ignore_errors=True)
 
 
 def bisect(

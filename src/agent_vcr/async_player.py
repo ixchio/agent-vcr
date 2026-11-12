@@ -50,7 +50,7 @@ class AsyncVCRPlayer:
         frames: list[Frame] = []
         skipped = 0
 
-        async with aiofiles.open(filepath) as f:
+        async with aiofiles.open(filepath, encoding="utf-8") as f:
             line_num = 0
             async for line in f:
                 line_num += 1

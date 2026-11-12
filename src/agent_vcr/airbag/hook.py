@@ -5,6 +5,10 @@ agent's own format. Contract with every agent: this process must never
 crash the agent and never grant a permission — any internal error results
 in "no opinion" (exit 0, no decision), except that an irreversible command
 is still escalated.
+
+Hook JSON is UTF-8 both ways (every agent is a Node or Rust program that
+speaks UTF-8), whatever the platform's default encoding: on Windows that is
+a legacy code page that cannot even encode the emoji in the airbag's notices.
 """
 
 from __future__ import annotations
@@ -14,13 +18,17 @@ import sys
 import traceback
 from typing import Any
 
+from agent_vcr._platform import utf8_stdio
+
 
 def main(argv: list[str] | None = None) -> int:
     args = list(argv if argv is not None else sys.argv[1:])
     agent = args[0] if args else "claude"
     event = args[1] if len(args) > 1 else "pre"
     options = args[2] if len(args) > 2 else ""  # per-agent mode chosen by the installer
-    raw = sys.stdin.read()
+    utf8_stdio()  # stderr notices; stdout is written as UTF-8 bytes below
+    stdin = getattr(sys.stdin, "buffer", None)
+    raw = stdin.read().decode("utf-8", "replace") if stdin is not None else sys.stdin.read()
     try:
         payload: Any = json.loads(raw) if raw.strip() else {}
     except json.JSONDecodeError:
@@ -49,8 +57,15 @@ def main(argv: list[str] | None = None) -> int:
         traceback.print_exc(limit=3, file=sys.stderr)
         return 0
     if out:
-        sys.stdout.write(out if out.endswith("\n") else out + "\n")
+        text = out if out.endswith("\n") else out + "\n"
+        stdout = getattr(sys.stdout, "buffer", None)
         sys.stdout.flush()
+        if stdout is not None:
+            stdout.write(text.encode("utf-8"))
+            stdout.flush()
+        else:
+            sys.stdout.write(text)
+            sys.stdout.flush()
     return code
 
 

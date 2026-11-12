@@ -27,6 +27,9 @@ from typing import Any
 
 from agent_vcr.models import Frame, FrameMetadata, FrameType, Session, json_dumps_safe
 
+#: Never text mode on Windows (no CRLF translation of the JSONL file).
+_O_BINARY = getattr(os, "O_BINARY", 0)
+
 #: Strings longer than this (characters) are truncated in recorded payloads.
 MAX_FIELD_CHARS = int(os.environ.get("AGENT_VCR_HOOK_MAX_FIELD_CHARS", "8192"))
 
@@ -89,7 +92,7 @@ def _summary(event: str, payload: dict[str, Any]) -> dict[str, Any]:
 def _write_header_once(path: Path, session_id: str, payload: dict[str, Any]) -> None:
     """Create the file with its session header exactly once, even under races."""
     try:
-        fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_EXCL | _O_BINARY, 0o600)
     except FileExistsError:
         return
     session = Session(
@@ -136,7 +139,7 @@ def record_hook_event(event: str, payload: dict[str, Any]) -> Path:
         ),
     )
     line = json_dumps_safe({"type": "frame", "data": frame.model_dump()}) + "\n"
-    fd = os.open(str(path), os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+    fd = os.open(str(path), os.O_WRONLY | os.O_APPEND | os.O_CREAT | _O_BINARY, 0o600)
     try:
         os.write(fd, line.encode("utf-8"))  # single O_APPEND write: no interleaving
     finally:
@@ -145,7 +148,9 @@ def record_hook_event(event: str, payload: dict[str, Any]) -> Path:
 
 
 def _read_payload(stream: Any) -> dict[str, Any]:
-    raw = stream.read()
+    # Claude Code sends UTF-8 on every platform (not the Windows code page).
+    binary = getattr(stream, "buffer", None)
+    raw = binary.read().decode("utf-8", "replace") if binary is not None else stream.read()
     try:
         payload = json.loads(raw) if raw.strip() else {}
     except json.JSONDecodeError:

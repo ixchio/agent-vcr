@@ -267,15 +267,37 @@ def render_codex(decision: Decision, call: ToolCall, options: str) -> tuple[str,
 
 # ── installing ───────────────────────────────────────────────────────────
 
-def hook_command(agent: str, option: str = "") -> str:
+#: Interpreter paths that need no quoting in sh, bash, cmd.exe or PowerShell.
+_PLAIN_PATH = re.compile(r"[A-Za-z0-9_@%+=:,./-]+")
+
+
+def _interpreter(shell: str) -> str:
+    """This interpreter, spelled so the agent's hook shell runs it.
+
+    POSIX: ``shlex.quote``. Windows: agents run hooks through Git Bash
+    (Claude Code), cmd.exe or PowerShell, and ``shlex.quote``'s single quotes
+    mean nothing to cmd and turn the path into a string literal in PowerShell.
+    Forward slashes work in all three, double quotes (only when needed) in
+    bash and cmd; a PowerShell-only command uses its call operator.
+    """
     python = sys.executable or "python3"
-    return f"{shlex.quote(python)} {MARKER}{agent} pre{(' ' + option) if option else ''}"
+    if sys.platform != "win32":
+        return shlex.quote(python)
+    if shell == "powershell":
+        return "& '" + python.replace("'", "''") + "'"
+    path = python.replace(os.sep, "/")
+    return path if _PLAIN_PATH.fullmatch(path) else f'"{path}"'
+
+
+def hook_command(agent: str, option: str = "", shell: str = "default") -> str:
+    """The hook command line for ``agent`` (``shell="powershell"`` for PowerShell-only hooks)."""
+    return f"{_interpreter(shell)} {MARKER}{agent} pre{(' ' + option) if option else ''}"
 
 
 def _read_json(path: Path) -> dict[str, Any]:
     if not path.exists() or path.stat().st_size == 0:
         return {}
-    data = json.loads(path.read_text())
+    data = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(data, dict):
         raise ValueError(f"{path} must contain a JSON object")
     return data
@@ -285,7 +307,7 @@ def _write_json(path: Path, data: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=path.name + ".", suffix=".tmp")
     try:
-        with os.fdopen(fd, "w") as fh:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
             json.dump(data, fh, indent=2)
             fh.write("\n")
         os.replace(tmp, path)
@@ -382,7 +404,7 @@ def _install_copilot(path: Path) -> None:
     _write_json(path, {"version": 1, "hooks": {"preToolUse": [{
         "type": "command",
         "bash": hook_command("copilot"),
-        "powershell": hook_command("copilot"),
+        "powershell": hook_command("copilot", shell="powershell"),
         "matcher": "bash|powershell|create|edit|str_replace_editor|apply_patch",
         "timeoutSec": 30,
     }]}})
@@ -448,11 +470,12 @@ export const AgentVcrAirbag = async ({{ directory }}) => ({{
 
 
 def _install_opencode(path: Path) -> None:
-    if path.exists() and MARKER.strip() not in path.read_text(errors="replace"):
+    if path.exists() and MARKER.strip() not in path.read_text(errors="replace", encoding="utf-8"):
         raise ValueError(f"{path} already exists and is not an Agent VCR plugin")
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(_OPENCODE_PLUGIN.format(marker=MARKER.strip(), module=HOOK_MODULE,
-                                            python=json.dumps(sys.executable or "python3")))
+                                            python=json.dumps(sys.executable or "python3")),
+                    encoding="utf-8")
 
 
 _CLINE_SCRIPT = """#!/bin/sh
@@ -464,10 +487,11 @@ exec {command}
 def _install_cline(path: Path) -> None:
     if sys.platform == "win32":
         raise ValueError("Cline hooks are not supported on Windows")
-    if path.exists() and MARKER.strip() not in path.read_text(errors="replace"):
+    if path.exists() and MARKER.strip() not in path.read_text(errors="replace", encoding="utf-8"):
         raise ValueError(f"{path} already exists and is not an Agent VCR hook; merge manually")
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(_CLINE_SCRIPT.format(marker=MARKER.strip(), command=hook_command("cline")))
+    path.write_text(_CLINE_SCRIPT.format(marker=MARKER.strip(), command=hook_command("cline")),
+                    encoding="utf-8")
     path.chmod(0o755)
 
 
@@ -477,7 +501,7 @@ def _gemini_supports_ask() -> bool:
         return False
     try:
         out = subprocess.run([exe, "--version"], capture_output=True, text=True, timeout=20,
-                             stdin=subprocess.DEVNULL).stdout
+                             stdin=subprocess.DEVNULL, encoding="utf-8", errors="replace").stdout
     except (OSError, subprocess.SubprocessError):
         return False
     match = re.search(r"(\d+)\.(\d+)\.(\d+)", out)
@@ -547,7 +571,7 @@ def uninstall(name: str, root: str | Path, user: bool = False) -> Path | None:
     if not path.exists():
         return None
     if name in {"copilot", "cline", "opencode"}:
-        if MARKER.strip() not in path.read_text(errors="replace"):
+        if MARKER.strip() not in path.read_text(errors="replace", encoding="utf-8"):
             return None
         path.unlink()
         return path
@@ -588,7 +612,7 @@ def detect_installed(root: str | Path) -> dict[str, str]:
             except ValueError:
                 continue
             with contextlib.suppress(OSError):
-                if path.exists() and MARKER.strip() in path.read_text():
+                if path.exists() and MARKER.strip() in path.read_text(encoding="utf-8"):
                     found[name] = str(path)
                     break
     return found

@@ -38,7 +38,7 @@ def _atomic_write_text(path: Path, text: str) -> None:
     """Write ``text`` to ``path`` via a sibling temp file + ``os.replace``."""
     fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=path.name + ".", suffix=".tmp")
     try:
-        with os.fdopen(fd, "w") as f:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(text)
             f.flush()
             os.fsync(f.fileno())
@@ -535,7 +535,7 @@ class GoldenRunCache:
         index_path = self.cache_dir / "index.json"
         if index_path.exists():
             try:
-                with open(index_path) as f:
+                with open(index_path, encoding="utf-8") as f:
                     self._index = json.load(f)
             except (json.JSONDecodeError, OSError):
                 self._index = {}
@@ -549,7 +549,7 @@ class GoldenRunCache:
             dir=str(self.cache_dir), suffix=".tmp"
         )
         try:
-            with os.fdopen(fd, "w") as f:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
                 json.dump(self._index, f, indent=2)
             os.replace(tmp_path, str(index_path))
         except BaseException:

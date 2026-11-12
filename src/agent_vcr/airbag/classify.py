@@ -21,9 +21,12 @@ from __future__ import annotations
 import os
 import re
 import shlex
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+_WINDOWS = sys.platform == "win32"
 
 LEVELS = ("read", "write", "destructive", "irreversible")
 _RANK = {name: i for i, name in enumerate(LEVELS)}
@@ -276,9 +279,11 @@ class _Context:
         writes next to the project, not to scratch space it asked for by name.
         """
         path = self.resolve(raw)
-        explicit = self._expand(raw).is_absolute()
+        # Rooted counts as named explicitly: on Windows ``/tmp/x`` has no drive, so it is
+        # not "absolute", but it is no more relative to the project than on POSIX.
+        explicit = bool(self._expand(raw).root)
         for temp in self._temp_dirs():
-            if not str(path).startswith(str(temp).rstrip("/") + "/"):
+            if temp not in path.parents:
                 continue
             project_in_temp = any(temp in root.parents for root in self.roots)
             if explicit or not project_in_temp:
@@ -289,9 +294,11 @@ class _Context:
     def _temp_dirs() -> list[Path]:
         names = {"/tmp", "/var/tmp", "/private/tmp", "/var/folders", "/dev/shm",
                  os.environ.get("TMPDIR", "").rstrip("/")}
+        if _WINDOWS:
+            names |= {os.environ.get("TEMP", ""), os.environ.get("TMP", "")}
         dirs: set[Path] = set()
         for name in names:
-            if name and name != "/":
+            if name and Path(name).parent != Path(name):  # never a filesystem root
                 dirs.add(Path(name))
                 dirs.add(Path(os.path.realpath(name)))
         return sorted(dirs)
@@ -308,6 +315,11 @@ def _classify_into(command: str, ctx: _Context, verdict: Verdict, depth: int) ->
         lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
         lexer.whitespace_split = True
         lexer.commenters = ""
+        if _WINDOWS:
+            # C:\Users\me\proj: on Windows a backslash is a path separator (cmd,
+            # PowerShell), never an escape; reading it as one would turn the project's
+            # own path into a relative name somewhere else.
+            lexer.escape = ""
         tokens = list(lexer)
     except ValueError:
         verdict.raise_to("write", "could not parse command; snapshot taken to be safe")
