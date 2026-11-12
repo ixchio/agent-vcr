@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from agent_vcr.airbag.classify import Verdict, classify, classify_file_write
+from agent_vcr.airbag.scope import GuardStore, Scope, resolve_first
 from agent_vcr.airbag.store import (
     AirbagError,
     DatabaseDump,
@@ -95,16 +96,31 @@ class Decision:
 
 
 class Airbag:
-    """Protect one project directory."""
+    """Protect one project directory.
+
+    Built directly (``Airbag(path)``), it protects that path: the user named
+    it. Built for a hook call (:meth:`for_call`), it follows the protection
+    rule in :mod:`agent_vcr.airbag.scope`: outside a protected directory
+    nothing is snapshotted and anything destructive is stopped instead.
+    """
 
     def __init__(self, project_dir: str | Path, policy: Policy | None = None,
-                 store: ShadowStore | None = None) -> None:
+                 store: ShadowStore | None = None, *, scope: Scope | None = None) -> None:
         self.policy = policy or Policy.from_env()
-        self.store = store or ShadowStore(find_project_root(project_dir))
+        self.scope = scope
+        #: False: unprotected directory — classify and stop, never snapshot.
+        self.protected = scope is None or scope.protected
+        if store is None:
+            store = ShadowStore(find_project_root(project_dir)) if self.protected \
+                else GuardStore(project_dir)
+        self.store = store
 
     @classmethod
     def for_call(cls, call: ToolCall, policy: Policy | None = None) -> Airbag:
-        return cls(call.project_dir or call.cwd, policy=policy)
+        scope = resolve_first(call.project_dir, call.cwd)
+        if scope.protected:
+            return cls(scope.root, policy=policy, store=ShadowStore(scope.root), scope=scope)
+        return cls(scope.root, policy=policy, store=GuardStore(scope.root), scope=scope)
 
     @property
     def root(self) -> Path:
@@ -136,12 +152,21 @@ class Airbag:
             decision.agent_message = duplicate.get("agent_message")
             return decision
         self._decide(call, verdict, decision)
-        self._record_action(call, verdict, decision)
+        if self.protected or verdict.level == "irreversible":
+            self._record_action(call, verdict, decision)
         return decision
 
     def _decide(self, call: ToolCall, verdict: Verdict, decision: Decision) -> None:
-
         label = _short(call.command or ", ".join(call.paths) or call.tool_name, 120)
+        if self.protected:
+            self._snapshot_for(call, verdict, decision, label)
+        elif verdict.level == "destructive" and self.scope is not None:
+            # No snapshot here, so "undoable with `vcr undo`" would be a lie: a human decides.
+            verdict.raise_to("irreversible", self.scope.unprotected_reason, "unprotected")
+        self._escalate_or_notify(call, verdict, decision, label)
+
+    def _snapshot_for(self, call: ToolCall, verdict: Verdict, decision: Decision,
+                      label: str) -> None:
         dumps, covers_all, db_problem = self._dump_databases(verdict, call.command)
         try:
             decision.snapshot = self.store.snapshot(
@@ -175,6 +200,10 @@ class Airbag:
                 "nested-repo",
             )
 
+    def _escalate_or_notify(self, call: ToolCall, verdict: Verdict, decision: Decision,
+                            label: str) -> None:
+        snap = decision.snapshot
+        dumped = decision.databases
         if verdict.level == "irreversible":
             reasons = "; ".join(verdict.reasons) or "this command cannot be undone"
             if self._consume_approval(call):
