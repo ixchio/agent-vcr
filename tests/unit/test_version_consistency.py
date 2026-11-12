@@ -36,3 +36,21 @@ def test_docs_pin_the_current_release() -> None:
     assert f"# vcr {version}" in (ROOT / "docs/quickstart.md").read_text(encoding="utf-8")
     assert f"**Version:** `{version}`" in (ROOT / "docs/architecture.md").read_text(
         encoding="utf-8")
+
+
+def test_website_shows_only_the_current_release() -> None:
+    version = agent_vcr.__version__
+    pages = ["index.html", "guides.html", "demo.html", "sentinel/index.html"]
+    shown: list[str] = []
+    for page in pages:
+        html = (ROOT / "docs" / page).read_text(encoding="utf-8")
+        # x.y.z not inside a longer dotted run (so 127.0.0.1 is ignored)
+        shown += re.findall(r"(?<![\d.])v?(\d+\.\d+\.\d+)(?![\d.])", html)
+        assert "NEW IN" not in html.upper(), f"docs/{page} has a 'new in' badge"
+    assert shown, "the website should show the release somewhere"
+    assert set(shown) == {version}, f"stale versions on the website: {set(shown) - {version}}"
+    index = (ROOT / "docs/index.html").read_text(encoding="utf-8")
+    assert f'"softwareVersion": "{version}"' in index
+    guides = (ROOT / "docs/guides.html").read_text(encoding="utf-8")
+    assert f"ixchio/agent-vcr@v{version}" in guides
+    assert f"ai-agent-vcr=={version}" in guides

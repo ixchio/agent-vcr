@@ -1,258 +1,598 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Agent VCR Documentation — Build, Roll Back, Replay, and Gate AI Agents</title>
-    <meta name="description" content="Developer documentation for Agent VCR: recording, ACID workspace rollback, Ghost Replay, Agent CI, integrations, workflows, and deployment.">
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Agent VCR documentation</title>
+    <meta name="description" content="Agent VCR documentation: install, the airbag for coding agents (undo, redo, rewind, bisect, local Postgres, MCP), recording and Ghost Replay, the pytest plugin, Agent CI, ACID workspace, Sentinel, the dashboard and integrations.">
+    <meta name="theme-color" content="#fbfaf7" media="(prefers-color-scheme: light)">
+    <meta name="theme-color" content="#0b1017" media="(prefers-color-scheme: dark)">
     <link rel="canonical" href="https://ixchio.github.io/agent-vcr/guides.html">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="styles.css">
-    <style>
-        .docs-hero { padding: 9rem 1.5rem 4rem; text-align: center; }
-        .docs-hero h1 { max-width: 850px; margin: 1rem auto; font-size: clamp(2.6rem, 7vw, 5rem); line-height: 1.02; letter-spacing: -0.05em; }
-        .docs-hero p { max-width: 720px; margin: 0 auto 2rem; color: var(--text-muted); font-size: 1.05rem; line-height: 1.8; }
-        .docs-shell { max-width: 1100px; margin: 0 auto; padding: 0 1.5rem 6rem; }
-        .docs-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; margin: 2rem 0 5rem; }
-        .doc-card { display: block; padding: 1.5rem; border: 1px solid var(--border); border-radius: 14px; background: var(--bg-card); text-decoration: none; transition: transform .2s ease, border-color .2s ease; }
-        .doc-card:hover { transform: translateY(-3px); border-color: var(--green); }
-        .doc-card .eyebrow { color: var(--green); font: 500 .75rem/1.4 "JetBrains Mono", monospace; text-transform: uppercase; letter-spacing: .08em; }
-        .doc-card h2 { color: var(--white); font-size: 1.2rem; margin: .55rem 0; }
-        .doc-card p { color: var(--text-muted); line-height: 1.65; margin: 0; }
-        .docs-section { padding: 3rem 0; border-top: 1px solid var(--border); scroll-margin-top: 5rem; }
-        .docs-section h2 { font-size: clamp(1.7rem, 4vw, 2.5rem); margin-bottom: .75rem; }
-        .docs-section > p { max-width: 780px; color: var(--text-muted); line-height: 1.75; }
-        .callout { margin: 1.5rem 0; padding: 1.1rem 1.25rem; border: 1px solid rgba(0, 212, 170, .35); border-radius: 10px; background: rgba(0, 212, 170, .06); color: var(--text-muted); line-height: 1.65; }
-        .callout strong { color: var(--white); }
-        .docs-list { color: var(--text-muted); line-height: 1.8; padding-left: 1.2rem; }
-        .docs-list code { color: var(--green); }
-        .doc-link { color: var(--green); text-decoration: none; font-weight: 600; }
-        .doc-link:hover { text-decoration: underline; }
-        .mini-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .8rem; margin-top: 1.5rem; }
-        .mini { border: 1px solid var(--border); border-radius: 10px; padding: 1rem; background: var(--bg-card); }
-        .mini strong { color: var(--white); display: block; margin-bottom: .35rem; }
-        .mini span { color: var(--text-muted); font-size: .9rem; line-height: 1.55; }
-        @media (max-width: 760px) { .docs-grid, .mini-grid { grid-template-columns: 1fr; } .docs-hero { padding-top: 7rem; } }
-    </style>
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="assets/site.css">
 </head>
-
 <body>
-    <header class="nav">
-        <div class="nav-inner">
-            <a href="index.html" class="nav-logo">📼 Agent VCR</a>
-            <nav class="nav-links">
-                <a href="#quickstart">Quick start</a>
-                <a href="#acid">ACID rollback</a>
-                <a href="#replay">Replay</a>
-                <a href="#ci">Agent CI</a>
-                <a href="#integrations">Integrations</a>
+    <a class="skip-link" href="#main">Skip to content</a>
+
+    <header class="site-header">
+        <div class="wrap">
+            <a class="brand" href="index.html" aria-label="Agent VCR home"><span class="brand-mark" aria-hidden="true">VCR</span>Agent VCR</a>
+            <nav class="site-nav" aria-label="Primary">
+                <a class="nav-home" href="index.html">Home</a>
+                <a href="guides.html" aria-current="page">Docs</a>
+                <a href="https://github.com/ixchio/agent-vcr">GitHub</a>
             </nav>
-            <div class="nav-actions">
-                <a href="index.html" class="btn-ghost">← Overview</a>
-                <a href="https://github.com/ixchio/agent-vcr" class="btn-solid" target="_blank">GitHub ↗</a>
-            </div>
+            <a class="button button-small" href="#install">Install</a>
         </div>
     </header>
 
-    <main>
-        <section class="docs-hero">
-            <div class="hero-pill">Documentation · v1.7.0 · Python 3.9–3.13</div>
-            <h1>The undo button for AI agents.</h1>
-            <p>Arm the airbag for your coding agent, record and rewind your own agents, replay verified runs without model calls, and gate the next change in CI.</p>
-            <div class="hero-cta">
-                <a href="#quickstart" class="btn-solid large">Start building</a>
-                <a href="https://pypi.org/project/ai-agent-vcr/" class="btn-ghost large" target="_blank">View on PyPI ↗</a>
-            </div>
-        </section>
+    <div class="wrap docs">
+        <details class="docs-nav" open>
+            <summary>Contents</summary>
+            <nav class="docs-nav-body" aria-label="Documentation">
+                <span class="version">Agent VCR 1.7.0</span>
+                <div class="nav-group">
+                    <h2>Get started</h2>
+                    <ul>
+                        <li><a href="#install">Install</a></li>
+                        <li><a href="#quickstart">Quickstart</a></li>
+                    </ul>
+                </div>
+                <div class="nav-group">
+                    <h2>Coding agents</h2>
+                    <ul>
+                        <li><a href="#airbag">Airbag: undo and rewind</a></li>
+                        <li><a href="#bisect">Find the breaking action</a></li>
+                        <li><a href="#postgres">Local Postgres</a></li>
+                        <li><a href="#mcp">MCP server</a></li>
+                    </ul>
+                </div>
+                <div class="nav-group">
+                    <h2>Agents you build</h2>
+                    <ul>
+                        <li><a href="#recording">Recording and replay</a></li>
+                        <li><a href="#pytest">pytest plugin</a></li>
+                        <li><a href="#agent-ci">Agent CI</a></li>
+                        <li><a href="#acid">ACID workspace</a></li>
+                        <li><a href="#sentinel">Sentinel</a></li>
+                        <li><a href="#dashboard">Dashboard</a></li>
+                        <li><a href="#integrations">Integrations</a></li>
+                    </ul>
+                </div>
+                <div class="nav-group">
+                    <h2>Reference</h2>
+                    <ul>
+                        <li><a href="#faq">FAQ and more</a></li>
+                        <li><a href="#cli">CLI cheat sheet</a></li>
+                    </ul>
+                </div>
+            </nav>
+        </details>
 
-        <div class="docs-shell">
-            <div class="docs-grid">
-                <a class="doc-card" href="#airbag">
-                    <span class="eyebrow">New in 1.6</span>
-                    <h2>Airbag: undo your coding agent</h2>
-                    <p>Snapshot before every tool call — shell commands included — for Claude Code, Codex, Gemini CLI, Cursor, Copilot CLI, OpenHands, OpenCode, Cline and Devin. <code>vcr undo</code> brings it back.</p>
-                </a>
-                <a class="doc-card" href="#recording">
-                    <span class="eyebrow">Core</span>
-                    <h2>Record and time-travel</h2>
-                    <p>Capture typed execution frames, inspect state, compare boundaries, resume, and export portable bundles.</p>
-                </a>
-                <a class="doc-card" href="#acid">
-                    <span class="eyebrow">Filesystem</span>
-                    <h2>ACID workspace rollback</h2>
-                    <p>Restore tracked Git content and eligible pre-existing local files such as ignored <code>.env</code> files.</p>
-                </a>
-                <a class="doc-card" href="#replay">
-                    <span class="eyebrow">Reuse</span>
-                    <h2>Identity-aware Ghost Replay</h2>
-                    <p>Reuse reviewed outputs on a full identity match and rerun changed work through explicit partial modes.</p>
-                </a>
-                <a class="doc-card" href="#ci">
-                    <span class="eyebrow">Reliability</span>
-                    <h2>Agent CI</h2>
-                    <p>Compare real candidate recordings with reviewed baselines and enforce state, tool, cost, token, and latency expectations.</p>
-                </a>
-                <a class="doc-card" href="#integrations">
-                    <span class="eyebrow">Connect</span>
-                    <h2>Framework integrations</h2>
-                    <p>Use raw Python, LangGraph, CrewAI, OpenHands, Claude Code hooks, n8n, or your own lifecycle adapter.</p>
-                </a>
-                <a class="doc-card" href="#operations">
-                    <span class="eyebrow">Operate</span>
-                    <h2>Workflows and self-hosting</h2>
-                    <p>Add durable workflow state, approvals, compensation, reliability intelligence, and a local dashboard/server.</p>
-                </a>
-            </div>
+        <main class="doc" id="main">
+            <header class="doc-intro">
+                <h1>Agent VCR documentation</h1>
+                <p>Each section is a short summary with a working snippet. The full guide for every topic lives on GitHub, linked at the end of each section.</p>
+            </header>
 
-            <section class="docs-section" id="quickstart">
-                <h2>Quick start</h2>
-                <p>The base install is local-first and needs no model key, hosted account, or framework.</p>
-                <div class="code-block">
-                    <div class="code-bar"><span class="dots"><span></span><span></span><span></span></span><span class="code-label">terminal</span></div>
-                    <pre><code>pip install ai-agent-vcr
+            <!-- ============================== Install -->
+            <section id="install" aria-labelledby="install-h">
+                <span class="kicker">Get started</span>
+                <h2 id="install-h">Install</h2>
+                <p>Python 3.9–3.13 on Linux, macOS and Windows, all tested in CI. The airbag and the ACID workspace need <code>git</code> on your PATH. The core package needs no API key and no account.</p>
+                <div class="code">
+                    <div class="code-bar"><span>terminal</span></div>
+<pre><code>pip install ai-agent-vcr
+vcr --version          <span class="c"># vcr 1.7.0</span></code></pre>
+                </div>
+                <p>The core install gives you the <code>vcr</code> and <code>sentinel</code> commands, the Python API and the pytest plugin. Add extras for the rest:</p>
+                <div class="table-wrap">
+                    <table>
+                        <thead><tr><th>Extra</th><th>Adds</th></tr></thead>
+                        <tbody>
+                            <tr><td><code>ai-agent-vcr[tui]</code></td><td>Terminal debugger (<code>vcr run.vcr</code>)</td></tr>
+                            <tr><td><code>ai-agent-vcr[dashboard]</code></td><td>Local web dashboard and server (<code>vcr serve</code>)</td></tr>
+                            <tr><td><code>ai-agent-vcr[langgraph]</code></td><td>LangGraph integration</td></tr>
+                            <tr><td><code>ai-agent-vcr[crewai]</code></td><td>CrewAI integration</td></tr>
+                            <tr><td><code>ai-agent-vcr[openhands]</code></td><td>OpenHands SDK 1.x (Python 3.12+)</td></tr>
+                            <tr><td><code>ai-agent-vcr[all]</code></td><td>Everything optional</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+                <p class="callout"><strong>Package name:</strong> install <code>ai-agent-vcr</code>. The <code>agent-vcr</code> package on PyPI is a different project.</p>
+                <p class="full-guide"><a href="https://github.com/ixchio/agent-vcr/blob/main/docs/quickstart.md#install">Full guide →</a></p>
+            </section>
 
+            <!-- ============================== Quickstart -->
+            <section id="quickstart" aria-labelledby="quickstart-h">
+                <span class="kicker">Get started</span>
+                <h2 id="quickstart-h">Quickstart</h2>
+                <p>The five-minute tour: one snippet per feature, all offline. If you use a coding agent, the first two steps are all you need.</p>
+                <div class="code">
+                    <div class="code-bar"><span>terminal</span></div>
+<pre><code><span class="c"># 1. See what the airbag would do, without running anything</span>
+vcr airbag check "rm -rf src"
+<span class="c"># 🛟 DESTRUCTIVE: destroys project data — snapshot first, undo with `vcr undo`</span>
+
+<span class="c"># 2. Arm your project: every agent tool call now gets a snapshot first</span>
+cd your-project
 vcr airbag install
-python examples/basic_usage.py
-vcr tui .vcr/&lt;session-id&gt;.vcr</code></pre>
+vcr airbag status</code></pre>
                 </div>
-                <p><a class="doc-link" href="https://github.com/ixchio/agent-vcr/blob/main/docs/quickstart.md">Five-minute quickstart →</a> · <a class="doc-link" href="https://github.com/ixchio/agent-vcr/blob/main/docs/README.md">All docs →</a></p>
-                <div class="callout"><strong>Package name:</strong> install <code>ai-agent-vcr</code>. The similarly named <code>agent-vcr</code> package on PyPI is a different project.</div>
+                <p>Building your own agent? Record a run and jump around in it:</p>
+                <div class="code">
+                    <div class="code-bar"><span>hello.py</span></div>
+<pre><code><span class="k">from</span> agent_vcr <span class="k">import</span> VCRPlayer, VCRRecorder
+
+<span class="k">with</span> VCRRecorder() <span class="k">as</span> rec:
+    rec.start_session(session_id=<span class="s">"hello"</span>)
+    rec.record_step(<span class="s">"plan"</span>, {<span class="s">"task"</span>: <span class="s">"refund"</span>}, {<span class="s">"plan"</span>: [<span class="s">"look up"</span>, <span class="s">"refund"</span>]})
+    rec.record_step(<span class="s">"act"</span>, {<span class="s">"plan"</span>: [<span class="s">"look up"</span>, <span class="s">"refund"</span>]}, {<span class="s">"status"</span>: <span class="s">"refunded"</span>})
+
+player = VCRPlayer.load(<span class="s">".vcr/hello.vcr"</span>)
+print(player.list_nodes())        <span class="c"># ['plan', 'act']</span>
+print(player.goto_frame(<span class="o">0</span>))       <span class="c"># {'plan': ['look up', 'refund']}</span></code></pre>
+                </div>
+                <p>From there: roll back files with the <a href="#acid">ACID workspace</a>, replay a verified run with <a href="#recording">Ghost Replay</a>, gate it with <a href="#agent-ci">Agent CI</a>, and scan agent-written code with <a href="#sentinel">Sentinel</a>.</p>
+                <p class="full-guide"><a href="https://github.com/ixchio/agent-vcr/blob/main/docs/quickstart.md">Full guide →</a></p>
             </section>
 
-            <section class="docs-section" id="airbag">
-                <h2>Undo anything your coding agent did</h2>
-                <p>Agents' built-in rewind only tracks their own edit tools. The airbag snapshots your project into a private store outside it before <em>every</em> tool call, so <code>rm -rf</code>, <code>git reset --hard</code> or a bad migration on a local SQLite file can be undone. Commands a snapshot cannot undo — server databases, cloud deletions, force-pushes — are stopped for a human.</p>
-                <div class="code-block">
-                    <div class="code-bar"><span class="dots"><span></span><span></span><span></span></span><span class="code-label">terminal</span></div>
-                    <pre><code>pip install ai-agent-vcr
-vcr airbag install          <span class="cm"># hooks for every agent on your PATH</span>
-
-<span class="cm"># ...the agent runs `rm -rf .`...</span>
-vcr undo                    <span class="cm"># files, .env and .git are back</span>
-vcr redo                    <span class="cm"># changed your mind</span>
-vcr airbag check <span class="str">"psql -h prod -c 'DROP TABLE users'"</span>   <span class="cm"># ⚠ irreversible</span></code></pre>
-                </div>
-                <p><a class="doc-link" href="https://github.com/ixchio/agent-vcr/blob/main/docs/airbag.md">Airbag guide: every agent, every command, every limit →</a></p>
-            </section>
-
-            <section class="docs-section" id="recording">
-                <h2>Record a state transition</h2>
-                <p>The recorder is the framework-neutral boundary. A session contains ordered JSONL frames for nodes, model calls, tools, errors, and checkpoints.</p>
-                <div class="code-block">
-                    <div class="code-bar"><span class="dots"><span></span><span></span><span></span></span><span class="code-label">agent.py</span></div>
-                    <pre><code><span class="kw">from</span> agent_vcr <span class="kw">import</span> VCRPlayer, VCRRecorder
-
-recorder = VCRRecorder(output_dir=<span class="str">".vcr"</span>)
-recorder.start_session(<span class="str">"support-triage"</span>)
-recorder.record_step(
-    <span class="str">"classify"</span>,
-    {<span class="str">"status"</span>: <span class="str">"new"</span>},
-    {<span class="str">"status"</span>: <span class="str">"classified"</span>, <span class="str">"priority"</span>: <span class="str">"high"</span>},
-)
-recording = recorder.save()
-
-player = VCRPlayer.load(recording, strict=<span class="kw">True</span>)
-<span class="kw">print</span>(player.goto_frame(<span class="num">0</span>))
-<span class="kw">print</span>(player.verify_integrity())</code></pre>
-                </div>
-                <p><a class="doc-link" href="https://github.com/ixchio/agent-vcr/blob/main/docs/recording-and-replay.md">Full recording, resume, bundle, and privacy guide →</a></p>
-            </section>
-
-            <section class="docs-section" id="acid">
-                <h2>Rollback state and files together</h2>
-                <p><code>ACIDWorkspace</code> combines isolated Git savepoints with private, per-savepoint local-file escrow.</p>
-                <div class="mini-grid">
-                    <div class="mini"><strong>Tracked content</strong><span>Restored from the selected Git savepoint commit.</span></div>
-                    <div class="mini"><strong>Local content</strong><span>Eligible untracked/ignored files restored byte-for-byte with modes and symlink targets.</span></div>
-                    <div class="mini"><strong>Secret boundary</strong><span>Escrow bytes stay under <code>.git/vcr-escrow</code>, outside Git objects and VCR recordings.</span></div>
-                </div>
-                <div class="callout"><strong>Issue #2 guarantee:</strong> a modified or deleted pre-existing <code>.env</code> is restored at rollback, while later hallucinated local files are removed. Oversized, excluded, and special files are preserved but cannot be reconstructed.</div>
-                <ul class="docs-list">
-                    <li>Blobs are immutable and content-addressed as <code>blobs/&lt;sha256&gt;</code>.</li>
-                    <li>Escrow directories use <code>0700</code>; regular blobs use <code>0600</code>.</li>
-                    <li>Paths containing <code>..</code>, absolute paths, and resolved-parent symlink escapes are rejected.</li>
-                    <li>Rollback can run repeatedly before commit; shared blob references stay valid.</li>
+            <!-- ============================== Airbag -->
+            <section id="airbag" aria-labelledby="airbag-h">
+                <span class="kicker">Coding agents</span>
+                <h2 id="airbag-h">Airbag: undo, redo, rewind</h2>
+                <p>Built-in checkpoints in coding agents only track their own file-edit tools; a shell command like <code>rm -rf</code>, <code>git reset --hard</code> or <code>sed -i</code> slips past them. The airbag hooks in before <em>every</em> tool call and snapshots your project into a private git store outside it, so deleting the project can't delete its snapshots.</p>
+                <ul>
+                    <li><strong>Protected:</strong> tracked and untracked files (honoring <code>.gitignore</code>), small ignored files such as <code>.env*</code> and SQLite databases (copied consistently even while open), and your <code>.git</code> when a command would delete or damage it.</li>
+                    <li><strong>Never touched:</strong> your own <code>.git</code> (HEAD, branches, index, stash), unless it's missing or broken and needs restoring.</li>
+                    <li><strong>Cost:</strong> about 0.1 s per tool call, mostly Python start-up.</li>
                 </ul>
-                <p><a class="doc-link" href="https://github.com/ixchio/agent-vcr/blob/main/docs/acid-workspace.md">Full transaction lifecycle, limits, and threat boundary →</a></p>
+
+                <h3 id="airbag-agents">Install for your agent</h3>
+                <p>With no names, <code>vcr airbag install</code> installs for every supported agent on your PATH. Name one or several (<code>vcr airbag install claude codex</code>), or use <code>--all</code>; <code>--user</code> writes the user-level config instead of the project's.</p>
+                <div class="table-wrap">
+                    <table>
+                        <thead><tr><th>Agent</th><th>Install</th><th>Irreversible commands</th></tr></thead>
+                        <tbody>
+                            <tr><td>Claude Code</td><td><code>vcr airbag install claude</code></td><td>asks you</td></tr>
+                            <tr><td>OpenAI Codex CLI</td><td><code>vcr airbag install codex</code></td><td>blocked until <code>vcr airbag allow</code></td></tr>
+                            <tr><td>Gemini CLI</td><td><code>vcr airbag install gemini</code></td><td>asks you (0.36+), otherwise blocked</td></tr>
+                            <tr><td>Cursor (IDE + CLI)</td><td><code>vcr airbag install cursor</code></td><td>blocked until <code>vcr airbag allow</code></td></tr>
+                            <tr><td>GitHub Copilot CLI</td><td><code>vcr airbag install copilot</code></td><td>asks you</td></tr>
+                            <tr><td>OpenHands</td><td><code>vcr airbag install openhands</code></td><td>blocked, or asks with <code>confirm=True</code></td></tr>
+                            <tr><td>OpenCode 1.x</td><td><code>vcr airbag install opencode</code></td><td>blocked until <code>vcr airbag allow</code></td></tr>
+                            <tr><td>Cline</td><td><code>vcr airbag install cline</code></td><td>task cancelled</td></tr>
+                            <tr><td>Devin Local</td><td><code>vcr airbag install devin</code></td><td>blocked until <code>vcr airbag allow</code></td></tr>
+                            <tr><td>Anything else</td><td><code>vcr airbag run -- aider</code></td><td>no interception; a snapshot every 2 s</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+                <p class="callout"><strong>Per-agent gotchas:</strong> review new hooks once with <code>/hooks</code> in Codex; Gemini CLI runs hooks only in trusted folders; restart running Copilot CLI sessions; Cline hooks don't install on Windows. The hook calls the Python that ran <code>vcr airbag install</code>, so reinstall if you move that virtualenv.</p>
+
+                <h3 id="airbag-undo">Undo, redo, rewind</h3>
+                <div class="code">
+                    <div class="code-bar"><span>terminal</span></div>
+<pre><code>vcr undo                 <span class="c"># back to just before the last agent action that changed something</span>
+vcr undo 3               <span class="c"># three actions back</span>
+vcr undo 2 --dry-run     <span class="c"># preview: + comes back, - is removed, ~ gets its old content</span>
+vcr redo                 <span class="c"># undo the last undo or rewind</span>
+vcr rewind               <span class="c"># timeline of snapshots (same as `vcr airbag log`)</span>
+vcr rewind 12            <span class="c"># restore snapshot #12</span></code></pre>
+                </div>
+                <p>Every command takes <code>--project-dir PATH</code> when you're not inside the project, and most take <code>--json</code>.</p>
+
+                <h3 id="airbag-levels">Four levels, and who decides</h3>
+                <p>Every shell command is classified before it runs. Ask about any command with <code>vcr airbag check</code>.</p>
+                <div class="table-wrap">
+                    <table>
+                        <thead><tr><th>Level</th><th>What happens</th><th>Example</th></tr></thead>
+                        <tbody>
+                            <tr><td><span class="tag tag-ok">read</span></td><td>Runs; no snapshot needed</td><td><code>git status</code></td></tr>
+                            <tr><td><span class="tag tag-ok">write</span></td><td>Snapshot, then run</td><td><code>echo x &gt; out.txt</code></td></tr>
+                            <tr><td><span class="tag tag-warn">destructive</span></td><td>Snapshot, then run; undoable</td><td><code>rm -rf src</code></td></tr>
+                            <tr><td><span class="tag tag-stop">irreversible</span></td><td>Snapshot, then a human decides</td><td><code>git push --force</code></td></tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div class="code">
+                    <div class="code-bar"><span>terminal</span></div>
+<pre><code>vcr airbag check "psql -h prod.db -c 'DROP TABLE users'"
+<span class="c"># ⚠ IRREVERSIBLE: cannot be undone by a snapshot — the airbag asks a human first</span>
+<span class="c">#    • SQL DROP on a remote database (prod.db) — server data is not in your project files, …</span>
+
+vcr airbag allow         <span class="c"># let one stopped command through, once, within 10 minutes</span></code></pre>
+                </div>
+
+                <h3 id="airbag-limits">What it can't undo</h3>
+                <ul>
+                    <li><strong>Anything outside the project directory.</strong> Deletes and writes that land outside it are classified irreversible and stopped.</li>
+                    <li><strong>Remote state:</strong> server databases, cloud resources, pushed commits, published packages, sent requests. Stopped for confirmation, not undone. The one exception is a <a href="#postgres">local Postgres database you configure</a>.</li>
+                    <li><strong>Ignored dependency and build directories</strong> (<code>node_modules/</code>, <code>.venv/</code>, <code>dist/</code>), files over 25 MB, nested git repositories and empty directories.</li>
+                    <li><strong>Commands run without a hook.</strong> <code>vcr airbag run --</code> snapshots every 2 seconds but can't stop anything.</li>
+                    <li><strong>It's a guard, not a sandbox.</strong> The classifier is a parser; a command hidden in a script can get past it. The snapshot still happens, so project files stay undoable.</li>
+                </ul>
+                <p class="full-guide"><a href="https://github.com/ixchio/agent-vcr/blob/main/docs/airbag.md">Full guide →</a></p>
             </section>
 
-            <section class="docs-section" id="replay">
-                <h2>Ghost Replay without silent drift</h2>
-                <p>A golden run is selected by the normalized task plus an optional identity covering model, prompt, code, tools, dependencies, environment, and caller-defined fields.</p>
-                <div class="code-block">
-                    <div class="code-bar"><span class="dots"><span></span><span></span><span></span></span><span class="code-label">replay.py</span></div>
-                    <pre><code><span class="kw">from</span> agent_vcr.golden_cache <span class="kw">import</span> GoldenRunCache
+            <!-- ============================== Bisect -->
+            <section id="bisect" aria-labelledby="bisect-h">
+                <span class="kicker">Coding agents</span>
+                <h2 id="bisect-h">Find the breaking action: <code>vcr bisect</code></h2>
+                <p>Tests were green before the agent started, it has made 40 tool calls since, and nothing is committed. Because every tool call has a snapshot, <code>vcr bisect</code> binary-searches them the way <code>git bisect</code> would and names the action that broke the tests. No model tokens.</p>
+                <div class="code">
+                    <div class="code-bar"><span>terminal</span></div>
+<pre><code>vcr bisect -- pytest -q
+<span class="c">#   #6 (current)   ✗ fail   (0.4s)</span>
+<span class="c">#   #1             ✓ pass   (0.4s)</span>
+<span class="c">#   #3             ✓ pass   (0.4s)</span>
+<span class="c">#   #4             ✗ fail   (0.4s)</span>
+<span class="c">#</span>
+<span class="c"># 🎯 First bad action: sed -i 's/round(sum(prices), 2)/int(sum(prices))/' billing.py</span>
+<span class="c">#    snapshot #3 passes → #4 fails   (4 test runs)</span>
+<span class="c">#    Go back to just before it:  vcr rewind 3</span></code></pre>
+                </div>
+                <p>Each run happens in a temporary checkout of a snapshot. Your project, its <code>.git</code> and the snapshots are never modified. About log<sub>2</sub>(actions) + 2 runs: 100 actions take about nine.</p>
+                <div class="code">
+                    <div class="code-bar"><span>terminal</span></div>
+<pre><code>vcr bisect --good 2 --bad 5 -- pytest -q      <span class="c"># only search between snapshots #2 and #5</span>
+vcr bisect --timeout 60 -- pytest -q          <span class="c"># per run; a timeout counts as a failure</span>
+vcr bisect --copy-ignored -- pytest -q        <span class="c"># link node_modules/.venv into each checkout</span>
+vcr bisect -- "pytest -q &amp;&amp; ruff check ."     <span class="c"># one quoted string runs through the shell</span>
+vcr bisect --json -- pytest -q</code></pre>
+                </div>
+                <p class="callout"><strong>Watch out for:</strong> ignored dependencies aren't in snapshots (use <code>--copy-ignored</code>), editable installs can import the project's copy instead of the checkout's (set <code>pythonpath = ["src"]</code> in pytest's config), and flaky tests confuse any bisect.</p>
+                <p class="full-guide"><a href="https://github.com/ixchio/agent-vcr/blob/main/docs/airbag.md#find-the-action-that-broke-it-vcr-bisect">Full guide →</a></p>
+            </section>
+
+            <!-- ============================== Postgres -->
+            <section id="postgres" aria-labelledby="postgres-h">
+                <span class="kicker">Coding agents</span>
+                <h2 id="postgres-h">Rewind your local Postgres</h2>
+                <p>A file snapshot can't undo <code>DROP TABLE</code> on a database server. For a local development database you name explicitly, the airbag runs <code>pg_dump</code> right before destructive SQL, and <code>vcr undo</code> or <code>vcr rewind</code> restores the database together with the files.</p>
+                <div class="code">
+                    <div class="code-bar"><span>terminal</span></div>
+<pre><code>export AGENT_VCR_AIRBAG_DATABASES=postgresql://localhost:5433/app_dev   <span class="c"># comma-separated</span>
+
+vcr airbag db list
+<span class="c">#   ✓ app_dev (localhost:5433)</span>
+vcr airbag check "psql -h localhost -p 5433 -d app_dev -c 'DROP TABLE users'"
+<span class="c"># 🛟 DESTRUCTIVE: … SQL DROP on local database app_dev (dumped with pg_dump before it runs)</span>
+
+vcr undo                                           <span class="c"># files and the database back</span>
+vcr airbag db snapshot -m "before the migration"   <span class="c"># a manual database save point</span>
+vcr airbag db restore 11                           <span class="c"># only the database back to #11</span></code></pre>
+                </div>
+                <p>Per project, the same list can live in <code>.vcr/airbag-databases.json</code> as <code>{"databases": [...]}</code>. Keep passwords out of that file: use the environment variable, <code>~/.pgpass</code> or a local socket.</p>
+                <ul>
+                    <li><strong>Local only.</strong> URLs must point at <code>localhost</code>, <code>127.0.0.1</code>, <code>::1</code> or a unix socket. Anything else is refused, never dumped.</li>
+                    <li><strong>The prompt is skipped only when the target is certain:</strong> a <code>psql -c</code> command that names a configured local database. ORM and framework commands (<code>prisma migrate reset</code>, <code>rails db:reset</code>) still ask, with a dump taken.</li>
+                    <li><strong>A restore puts the whole database back</strong>, and dumps the current state first, so the restore is undoable too. Postgres only, through <code>pg_dump</code>, <code>pg_restore</code> and <code>psql</code> on your PATH.</li>
+                </ul>
+                <p class="full-guide"><a href="https://github.com/ixchio/agent-vcr/blob/main/docs/airbag.md#rewind-your-local-postgres-too">Full guide →</a></p>
+            </section>
+
+            <!-- ============================== MCP -->
+            <section id="mcp" aria-labelledby="mcp-h">
+                <span class="kicker">Coding agents</span>
+                <h2 id="mcp-h">MCP server: <code>vcr mcp</code></h2>
+                <p>A stdio <a href="https://modelcontextprotocol.io">Model Context Protocol</a> server that gives any MCP-capable agent the airbag as tools: it can ask whether a command would be stopped before running it, take a save point before a risky change, read its own timeline, and preview an undo. Standard library only; nothing leaves your machine.</p>
+                <div class="code">
+                    <div class="code-bar"><span>terminal</span></div>
+<pre><code>claude mcp add agent-vcr -- vcr mcp       <span class="c"># Claude Code</span>
+codex mcp add agent-vcr -- vcr mcp        <span class="c"># Codex CLI</span>
+gemini mcp add agent-vcr vcr mcp          <span class="c"># Gemini CLI</span></code></pre>
+                </div>
+                <p>Cursor and other clients that use the common <code>mcpServers</code> format:</p>
+                <div class="code">
+                    <div class="code-bar"><span>.cursor/mcp.json</span></div>
+<pre><code>{
+  <span class="s">"mcpServers"</span>: {
+    <span class="s">"agent-vcr"</span>: { <span class="s">"command"</span>: <span class="s">"vcr"</span>, <span class="s">"args"</span>: [<span class="s">"mcp"</span>] }
+  }
+}</code></pre>
+                </div>
+                <div class="table-wrap">
+                    <table>
+                        <thead><tr><th>Tool</th><th>Changes anything?</th></tr></thead>
+                        <tbody>
+                            <tr><td><code>airbag_status</code> · <code>airbag_timeline</code> · <code>airbag_check</code></td><td>No</td></tr>
+                            <tr><td><code>airbag_snapshot</code></td><td>Only the snapshot store, never project files</td></tr>
+                            <tr><td><code>airbag_undo</code> · <code>airbag_rewind</code></td><td>Preview only, unless called with <code>dry_run: false</code> and <code>confirm: true</code></td></tr>
+                            <tr><td><code>recordings_list</code> · <code>recording_summary</code></td><td>No</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+                <p>Snapshot, undo and rewind only act on the project the server was started for, so an agent can't be talked into rewinding a different one. <code>vcr</code> must be on the PATH the agent sees; otherwise register its full path.</p>
+                <p class="full-guide"><a href="https://github.com/ixchio/agent-vcr/blob/main/docs/mcp.md">Full guide →</a></p>
+            </section>
+
+            <!-- ============================== Recording -->
+            <section id="recording" aria-labelledby="recording-h">
+                <span class="kicker">Agents you build</span>
+                <h2 id="recording-h">Recording and replay</h2>
+                <p><code>VCRRecorder</code> writes every step, LLM call, tool call, error and checkpoint of your agent to an append-only <code>.vcr</code> file, one JSON object per line. <code>VCRPlayer</code> jumps to any frame or checkpoint, diffs frames, forks a run and resumes it.</p>
+                <div class="code">
+                    <div class="code-bar"><span>record.py</span></div>
+<pre><code><span class="k">from</span> agent_vcr <span class="k">import</span> VCRPlayer, VCRRecorder
+
+recorder = VCRRecorder(output_dir=<span class="s">".vcr"</span>)
+recorder.start_session(<span class="s">"billing-fix"</span>)
+recorder.record_step(<span class="s">"planner"</span>, {<span class="s">"task"</span>: <span class="s">"add invoice status"</span>}, {<span class="s">"plan"</span>: <span class="s">"migration first"</span>})
+recorder.record_checkpoint({<span class="s">"plan"</span>: <span class="s">"migration first"</span>}, label=<span class="s">"plan-approved"</span>)
+path = recorder.save()
+
+player = VCRPlayer.load(path)
+player.goto_checkpoint(<span class="s">"plan-approved"</span>)   <span class="c"># jump to any frame or checkpoint</span>
+player.verify_integrity()                 <span class="c"># durability checks</span></code></pre>
+                </div>
+                <p>Open a recording in the terminal debugger with <code>vcr .vcr/billing-fix.vcr</code> (needs the <code>[tui]</code> extra), or turn it into a checksummed bundle for a bug report with <code>vcr bundle export</code>. For long runs, <code>VCRRecorder(max_cached_frames=N)</code> keeps memory bounded.</p>
+
+                <h3 id="replay">Ghost Replay</h3>
+                <p>Promote a run you've reviewed to a golden run, keyed by the task and, optionally, an identity (model, prompt hash, code commit, tool schema). Replaying it returns the recorded outputs with no model calls and no tokens.</p>
+                <div class="code">
+                    <div class="code-bar"><span>replay.py</span></div>
+<pre><code><span class="k">from</span> agent_vcr <span class="k">import</span> GoldenRunCache, VCRRecorder
+
+rec = VCRRecorder()
+rec.start_session(session_id=<span class="s">"good-run"</span>)
+rec.record_llm_call(<span class="s">"gpt-4o"</span>, [{<span class="s">"role"</span>: <span class="s">"user"</span>, <span class="s">"content"</span>: <span class="s">"refund #42"</span>}],
+                    {<span class="s">"content"</span>: <span class="s">"Refunded."</span>}, tokens_input=<span class="o">900</span>, tokens_output=<span class="o">100</span>,
+                    latency_ms=<span class="o">1800</span>, cost_usd=<span class="o">0.012</span>)
+rec.save()
 
 cache = GoldenRunCache()
-identity = cache.build_identity(
-    model=<span class="str">"provider/model@revision"</span>,
-    prompt_hash=<span class="str">"sha256:prompt"</span>,
-    code_commit=<span class="str">"0123456789abcdef"</span>,
-    tool_schema_hash=<span class="str">"sha256:tools"</span>,
-)
-cache.save_golden_run(<span class="str">"triage ticket"</span>, recorder, identity=identity)
-outputs, ledger = cache.replay(<span class="str">"triage ticket"</span>, identity=identity)</code></pre>
+cache.save_golden_run(<span class="s">"refund order 42"</span>, rec)          <span class="c"># pin the verified run</span>
+outputs, ledger = cache.replay(<span class="s">"refund order 42"</span>)      <span class="c"># zero model calls</span>
+print(ledger.tokens_saved, ledger.cost_saved_usd)      <span class="c"># 1000 0.012</span></code></pre>
                 </div>
-                <p>Nested identity JSON uses canonical sorted-key serialization. Key-order changes do not cause false misses; actual identity changes do.</p>
+                <p>Ghost Replay returns what was recorded; change the task or its identity and you need a fresh run. Partial modes re-run only the steps you changed.</p>
+                <p class="full-guide"><a href="https://github.com/ixchio/agent-vcr/blob/main/docs/recording-and-replay.md">Full guide →</a></p>
             </section>
 
-            <section class="docs-section" id="ci">
-                <h2>Gate changes with recorded evidence</h2>
-                <p>Generate candidates with the code under review, then compare them with versioned baseline cases. The gate itself makes no model calls.</p>
-                <div class="code-block">
-                    <div class="code-bar"><span class="dots"><span></span><span></span><span></span></span><span class="code-label">terminal</span></div>
-                    <pre><code>vcr dataset create refunds
-vcr dataset add refunds \
-  --task "refund a duplicate payment" \
-  --case-name duplicate-payment \
-  --vcr .vcr/reviewed/refund.vcr
+            <!-- ============================== pytest -->
+            <section id="pytest" aria-labelledby="pytest-h">
+                <span class="kicker">Agents you build</span>
+                <h2 id="pytest-h">pytest plugin</h2>
+                <p>Installed with the package and picked up by pytest 6.2+ automatically. The <code>agent_vcr</code> fixture runs your agent live on the first test run and saves it as a golden; every run after that replays it without calling your agent. <code>assert_matches_golden()</code> fails the test on behavior, cost, token or latency regressions, with a readable diff.</p>
+                <div class="code">
+                    <div class="code-bar"><span>test_triage.py</span></div>
+<pre><code><span class="k">import</span> pytest
 
-vcr ci run \
-  --dataset refunds \
-  --candidates .vcr/candidates \
-  --fail-on degraded \
-  --report agent-ci-report.json \
-  --markdown agent-ci-report.md</code></pre>
+
+<span class="o">@pytest.mark.agent_vcr</span>(task=<span class="s">"triage ticket t_123"</span>, identity={<span class="s">"model"</span>: <span class="s">"gpt-5"</span>})
+<span class="k">def</span> test_triage(agent_vcr):
+    run = agent_vcr.run(triage)            <span class="c"># 1st run: calls the agent; after: replays it</span>
+    <span class="k">assert</span> run.output[<span class="s">"queue"</span>] == <span class="s">"billing"</span>
+    agent_vcr.assert_matches_golden(max_cost_usd=<span class="o">0.05</span>)</code></pre>
                 </div>
-                <p><a class="doc-link" href="https://github.com/ixchio/agent-vcr/blob/main/docs/agent-ci.md">Full dataset, candidate, and GitHub Action guide →</a></p>
+                <p>Here <code>triage(recorder)</code> is your agent: it records what it did on the recorder it's given and returns its result.</p>
+                <div class="code">
+                    <div class="code-bar"><span>terminal</span></div>
+<pre><code>pytest -q                                   <span class="c"># first run records; later runs replay</span>
+AGENT_VCR_RECORD=none pytest -q             <span class="c"># CI: a missing golden fails, the model is never called</span>
+pytest --vcr-record=all --vcr-fail-on=never 'test_triage.py::test_triage'   <span class="c"># accept new behavior</span></code></pre>
+                </div>
+                <p>Commit <code>.vcr/pytest/golden/</code>. A failed run never replaces the golden. Also: <code>--vcr-dir</code>, <code>--vcr-fail-on=degraded|failed|never</code>, the <code>vcr_recorder</code> fixture for plain recording, and it's xdist-safe.</p>
+                <p class="full-guide"><a href="https://github.com/ixchio/agent-vcr/blob/main/docs/pytest-plugin.md">Full guide →</a></p>
             </section>
 
-            <section class="docs-section" id="integrations">
-                <h2>Connect your agent runtime</h2>
-                <div class="mini-grid">
-                    <div class="mini"><strong>Native adapters</strong><span>LangGraph nodes, CrewAI callbacks, OpenHands Sentinel, and ACIDWorkspace.</span></div>
-                    <div class="mini"><strong>Claude Code</strong><span>Install lifecycle hooks with <code>vcr init --claude-code</code>.</span></div>
-                    <div class="mini"><strong>Custom runtimes</strong><span>Map lifecycle events to record_step, record_llm_call, record_tool_call, and record_error.</span></div>
+            <!-- ============================== Agent CI -->
+            <section id="agent-ci" aria-labelledby="ci-h">
+                <span id="ci" aria-hidden="true"></span>
+                <span class="kicker">Agents you build</span>
+                <h2 id="ci-h">Agent CI</h2>
+                <p>Unit tests for agent behavior. Pin a reviewed run as a dataset case with expectations, let your test harness record a fresh candidate for each case on every pull request, and <code>vcr ci run</code> returns pass, degraded or fail with an exit code. The gate compares recordings; it never calls a model.</p>
+                <div class="code">
+                    <div class="code-bar"><span>terminal</span></div>
+<pre><code>vcr dataset create refunds
+vcr dataset add refunds --task "refund order 42" --case-name refund-42 \
+  --vcr .vcr/hello.vcr --expect-state '{"status":"refunded"}'
+
+<span class="c"># your harness writes a fresh recording per case: .vcr/candidates/refund-42.vcr</span>
+vcr ci run --dataset refunds --candidates .vcr/candidates --fail-on degraded</code></pre>
                 </div>
-                <p><a class="doc-link" href="https://github.com/ixchio/agent-vcr/blob/main/docs/integrations/README.md">Full framework integration guide →</a></p>
+                <p>Cases can also cap cost, latency and tokens, forbid tools and require checkpoints. In GitHub Actions it's one step:</p>
+                <div class="code">
+                    <div class="code-bar"><span>.github/workflows/agent-ci.yml</span></div>
+<pre><code>- <span class="k">name</span>: Compare with reviewed baselines
+  <span class="k">uses</span>: ixchio/agent-vcr@v1.7.0
+  <span class="k">with</span>:
+    <span class="k">dataset</span>: refunds
+    <span class="k">candidates-dir</span>: .vcr/candidates
+    <span class="k">fail-on</span>: degraded
+    <span class="k">package</span>: ai-agent-vcr==1.7.0</code></pre>
+                </div>
+                <p>The action writes the Markdown report to the job summary, annotates failed cases and uploads the JSON and Markdown reports as an artifact.</p>
+                <p class="full-guide"><a href="https://github.com/ixchio/agent-vcr/blob/main/docs/agent-ci.md">Full guide →</a></p>
             </section>
 
-            <section class="docs-section" id="operations">
-                <h2>Production building blocks</h2>
-                <ul class="docs-list">
-                    <li><a class="doc-link" href="https://github.com/ixchio/agent-vcr/blob/main/docs/experimental/workflow.md">Workflow engine</a> — durable runs, resume, schedules, approvals, retries, and saga compensation.</li>
-                    <li><a class="doc-link" href="https://github.com/ixchio/agent-vcr/blob/main/docs/experimental/superagent.md">SuperAgent</a> — validated plans, policy, budgets, tool schemas, and output verification.</li>
-                    <li><a class="doc-link" href="https://github.com/ixchio/agent-vcr/blob/main/docs/dashboard.md">Dashboard and self-hosted store</a> — terminal debugger, local web UI, scoped project tokens.</li>
-                    <li><a class="doc-link" href="https://github.com/ixchio/agent-vcr/blob/main/docs/faq.md">FAQ</a> — what it is, what it isn't, and how it compares.</li>
-                    <li><a class="doc-link" href="sentinel/">Sentinel</a> — local AST quality analysis and optional OpenHands feedback.</li>
-                    <li><a class="doc-link" href="https://github.com/ixchio/agent-vcr/blob/main/docs/deployment/railway.md">Railway foundation</a> — optional auth/billing control plane with an explicit multitenancy boundary.</li>
-                    <li><a class="doc-link" href="dev/bench/">Benchmark dashboard</a> — measured history and local regression ceilings.</li>
+            <!-- ============================== ACID -->
+            <section id="acid" aria-labelledby="acid-h">
+                <span class="kicker">Agents you build</span>
+                <h2 id="acid-h">ACID workspace</h2>
+                <p>Transactions for the agent you write. <code>ACIDWorkspace</code> works on a git branch of its own: each savepoint is a git commit plus a recorded state frame, rollback rewinds files and agent state together, and only the good attempt is merged. Ships in the core package; OpenHands isn't required.</p>
+                <div class="code">
+                    <div class="code-bar"><span>workspace.py</span></div>
+<pre><code><span class="k">from</span> agent_vcr.integrations.openhands <span class="k">import</span> ACIDWorkspace
+
+<span class="k">with</span> ACIDWorkspace(<span class="s">"/path/to/repo"</span>) <span class="k">as</span> ws:          <span class="c"># begin() on enter</span>
+    ws.savepoint({<span class="s">"phase"</span>: <span class="s">"planned"</span>}, node_name=<span class="s">"planner"</span>)
+    ...                                             <span class="c"># the agent works on an isolated branch</span>
+    ws.rollback(to_frame_index=<span class="o">0</span>)                   <span class="c"># rewind files + state to a savepoint</span>
+<span class="c"># clean exit → commit (merge); exception → abort (everything restored)</span></code></pre>
+                </div>
+                <ul>
+                    <li>Files git doesn't own, like an ignored <code>.env</code> or a local SQLite file, are copied into a private escrow under <code>.git/vcr-escrow</code>, so rollback restores them byte for byte and their contents never land in a commit or a recording.</li>
+                    <li>Files the agent created after a savepoint are removed on rollback.</li>
+                    <li>Absolute paths, <code>..</code> and symlink escapes are rejected.</li>
                 </ul>
-                <div class="callout"><strong>External effects are outside Git.</strong> Agent VCR cannot undo email, payments, database writes, or arbitrary APIs. Use approvals before consequential tools and explicit compensation where reversal is possible.</div>
+                <p>See it in the <a href="demo.html">18-second demo</a>, rendered from a real run.</p>
+                <p class="full-guide"><a href="https://github.com/ixchio/agent-vcr/blob/main/docs/acid-workspace.md">Full guide →</a></p>
             </section>
-        </div>
-    </main>
 
-    <footer class="footer">
-        <div class="footer-inner">
-            <div class="footer-left"><span class="footer-logo">📼 Agent VCR</span><span class="footer-tagline">Intervention infrastructure for AI agents</span></div>
-            <div class="footer-links"><a href="index.html">Overview</a><a href="https://github.com/ixchio/agent-vcr">GitHub</a><a href="https://pypi.org/project/ai-agent-vcr/">PyPI</a><a href="https://github.com/ixchio/agent-vcr/blob/main/LICENSE">MIT License</a></div>
+            <!-- ============================== Sentinel -->
+            <section id="sentinel" aria-labelledby="sentinel-h">
+                <span class="kicker">Agents you build</span>
+                <h2 id="sentinel-h">Sentinel</h2>
+                <p>A code-quality guard for agent-written Python, built on the standard library's <code>ast</code>: no extra dependencies, no network, no LLM. It catches syntax errors, oversized or overly complex functions, bloated files, and the same function pasted into a second file, which a one-file linter never sees.</p>
+                <div class="code">
+                    <div class="code-bar"><span>terminal</span></div>
+<pre><code>sentinel scan ./src                  <span class="c"># exit 0 passed · 1 critical · 2 blocked · 3 no Python files · 4 no folder</span>
+sentinel scan . --max-lines 80 --max-complexity 5 --max-file-lines 300 --max-params 4
+sentinel watch ./src                 <span class="c"># rescan changed files every second</span></code></pre>
+                </div>
+                <p>Every scan leaves an audit trail in <code>.vcr/sentinel-scan.vcr</code> inside the scanned folder. Attached to an OpenHands SDK 1.x conversation, it rejects the agent's next action after a blocker until the file is fixed:</p>
+                <div class="code">
+                    <div class="code-bar"><span>openhands_sentinel.py</span></div>
+<pre><code><span class="k">from</span> openhands.sdk <span class="k">import</span> Conversation
+<span class="k">from</span> openhands_sentinel <span class="k">import</span> Sentinel, SentinelConfig
+
+sentinel = Sentinel(SentinelConfig(block_on_blocker=<span class="k">True</span>))
+conversation = Conversation(agent=agent, workspace=ws, callbacks=[sentinel])
+sentinel.bind(conversation)          <span class="c"># lets Sentinel reject actions</span></code></pre>
+                </div>
+                <p class="full-guide"><a href="https://github.com/ixchio/agent-vcr/blob/main/docs/sentinel.md">Full guide →</a></p>
+            </section>
+
+            <!-- ============================== Dashboard -->
+            <section id="dashboard" aria-labelledby="dashboard-h">
+                <span class="kicker">Agents you build</span>
+                <h2 id="dashboard-h">Dashboard</h2>
+                <p>Three ways to look at recordings: a keyboard-driven terminal debugger, a local web dashboard with a live feed, and a self-hosted project store you can push recordings to from CI.</p>
+                <div class="code">
+                    <div class="code-bar"><span>terminal</span></div>
+<pre><code>pip install "ai-agent-vcr[tui,dashboard]"
+
+vcr .vcr/demo.vcr        <span class="c"># terminal debugger: j/k to move, 3 for diff, q to quit</span>
+vcr serve                <span class="c"># API and web UI on http://127.0.0.1:8000</span></code></pre>
+                </div>
+                <ul>
+                    <li><strong>Safe by default.</strong> <code>vcr serve</code> refuses to listen on anything but <code>127.0.0.1</code> without a token (<code>AGENT_VCR_ADMIN_TOKEN</code> or <code>AGENT_VCR_AUTH_TOKEN</code>).</li>
+                    <li><strong>Browser sign-in.</strong> On a token-protected server, sign in once at <code>/dashboard/login</code> (or open <code>/dashboard?token=…</code>) and get a short-lived HttpOnly, SameSite=Strict session cookie, Secure on HTTPS. Sign out at <code>/dashboard/logout</code>.</li>
+                    <li><strong>Team store.</strong> Add <code>--data-dir</code> and an admin token for projects, scoped tokens and <code>vcr cloud push</code> / <code>pull</code> / <code>replay</code>. It's files on one disk with no built-in TLS: put a reverse proxy in front for anything non-local.</li>
+                </ul>
+                <p class="full-guide"><a href="https://github.com/ixchio/agent-vcr/blob/main/docs/dashboard.md">Full guide →</a></p>
+            </section>
+
+            <!-- ============================== Integrations -->
+            <section id="integrations" aria-labelledby="integrations-h">
+                <span class="kicker">Agents you build</span>
+                <h2 id="integrations-h">Integrations</h2>
+                <p>Every integration writes the same thing: one frame per step in a <code>.vcr</code> file. Recording never breaks your agent: integration errors are logged, and your exceptions and return values pass through untouched.</p>
+                <div class="code">
+                    <div class="code-bar"><span>integrations.py</span></div>
+<pre><code><span class="c"># LangGraph: no graph changes, pass the callback per run</span>
+<span class="k">from</span> agent_vcr.integrations.langgraph <span class="k">import</span> LangGraphCallback
+app.invoke(inputs, config={<span class="s">"callbacks"</span>: [LangGraphCallback(recorder)]})
+
+<span class="c"># CrewAI: wrap the kickoff</span>
+<span class="k">from</span> agent_vcr.integrations.crewai <span class="k">import</span> VCRCrewAI
+result = VCRCrewAI(recorder).kickoff(crew)
+
+<span class="c"># OpenHands SDK: snapshot before every action, block irreversible ones</span>
+<span class="k">from</span> agent_vcr.integrations.openhands_airbag <span class="k">import</span> AirbagCallback, protect
+airbag = AirbagCallback()
+conversation = Conversation(agent=agent, workspace=ws, callbacks=[airbag])
+protect(conversation, airbag)</code></pre>
+                </div>
+                <div class="table-wrap">
+                    <table>
+                        <thead><tr><th>You use</th><th>Do this</th><th>Needs</th></tr></thead>
+                        <tbody>
+                            <tr><td>Plain Python</td><td><code>record_step</code>, <code>record_llm_call</code>, <code>record_tool_call</code>, <code>record_error</code>, <code>record_checkpoint</code></td><td>core</td></tr>
+                            <tr><td>LangGraph</td><td><code>LangGraphCallback(rec)</code> or <code>VCRLangGraph(rec).wrap_graph(builder)</code></td><td><code>[langgraph]</code></td></tr>
+                            <tr><td>CrewAI</td><td><code>VCRCrewAI(rec).kickoff(crew)</code> or <code>with VCRCrewCallback(rec):</code></td><td><code>[crewai]</code></td></tr>
+                            <tr><td>OpenHands SDK 1.x</td><td><code>VCRRuntime()</code>, <code>AirbagCallback()</code>, <code>Sentinel()</code> as callbacks</td><td><code>[openhands]</code></td></tr>
+                            <tr><td>Claude Code</td><td><code>vcr init --claude-code</code> records every session (records only; the airbag is what undoes)</td><td>core</td></tr>
+                            <tr><td>n8n / HTTP</td><td><code>POST /api/workflows/{name}/trigger</code></td><td><code>[dashboard]</code></td></tr>
+                        </tbody>
+                    </table>
+                </div>
+                <p class="full-guide"><a href="https://github.com/ixchio/agent-vcr/blob/main/docs/integrations/README.md">Full guide →</a></p>
+            </section>
+
+            <!-- ============================== FAQ -->
+            <section id="faq" aria-labelledby="faq-h">
+                <span class="kicker">Reference</span>
+                <h2 id="faq-h">FAQ and more</h2>
+                <p>Short answers to the questions people ask most:</p>
+                <ul>
+                    <li><a href="https://github.com/ixchio/agent-vcr/blob/main/docs/faq.md#claude-code-has-rewind-cursor-has-checkpoints-gemini-cli-has-restore-why-do-i-need-this">Claude Code, Cursor and Gemini CLI have checkpoints. Why do I need this?</a></li>
+                    <li><a href="https://github.com/ixchio/agent-vcr/blob/main/docs/faq.md#how-is-it-different-from-langsmith-langfuse-phoenix-or-agentops">How is it different from LangSmith, Langfuse, Phoenix or AgentOps?</a></li>
+                    <li><a href="https://github.com/ixchio/agent-vcr/blob/main/docs/faq.md#does-it-send-my-code-or-data-anywhere">Does it send my code or data anywhere?</a></li>
+                    <li><a href="https://github.com/ixchio/agent-vcr/blob/main/docs/faq.md#where-are-the-snapshots-how-big-do-they-get-how-do-i-clean-up">Where are the snapshots, how big do they get, how do I clean up?</a></li>
+                    <li><a href="https://github.com/ixchio/agent-vcr/blob/main/docs/faq.md#does-it-work-on-windows-macos">Does it work on Windows and macOS?</a></li>
+                    <li><a href="https://github.com/ixchio/agent-vcr/blob/main/docs/faq.md#is-it-production-ready">Is it production-ready?</a></li>
+                </ul>
+                <h3 id="more">More documentation</h3>
+                <ul>
+                    <li><a href="https://github.com/ixchio/agent-vcr/blob/main/docs/architecture.md">Architecture</a>: the package map and stability levels.</li>
+                    <li><a href="https://github.com/ixchio/agent-vcr/blob/main/docs/deployment/railway.md">Railway deployment</a>: host the server with TLS and tokens.</li>
+                    <li>Experimental, tested but the API may change: <a href="https://github.com/ixchio/agent-vcr/blob/main/docs/experimental/superagent.md">SuperAgent</a>, <a href="https://github.com/ixchio/agent-vcr/blob/main/docs/experimental/workflow.md">workflow engine</a>, <a href="https://github.com/ixchio/agent-vcr/blob/main/docs/experimental/intelligence.md">reliability intelligence</a>.</li>
+                    <li><a href="dev/bench/">Benchmark dashboard</a>: measured performance history.</li>
+                </ul>
+                <p class="full-guide"><a href="https://github.com/ixchio/agent-vcr/blob/main/docs/faq.md">Full FAQ →</a></p>
+            </section>
+
+            <!-- ============================== CLI -->
+            <section id="cli" aria-labelledby="cli-h">
+                <span class="kicker">Reference</span>
+                <h2 id="cli-h">CLI cheat sheet</h2>
+                <p><code>vcr &lt;command&gt; --help</code> shows every option.</p>
+                <div class="table-wrap">
+                    <table>
+                        <thead><tr><th>Command</th><th>What it does</th></tr></thead>
+                        <tbody>
+                            <tr><td><code>vcr airbag install [agent…]</code></td><td>Arm the hooks (default: every agent on your PATH; <code>--all</code>, <code>--user</code>)</td></tr>
+                            <tr><td><code>vcr undo [N] [--dry-run]</code></td><td>Restore files to just before the last (N-th) agent action</td></tr>
+                            <tr><td><code>vcr redo</code></td><td>Undo the last undo or rewind</td></tr>
+                            <tr><td><code>vcr rewind [N]</code></td><td>Timeline of snapshots, or restore snapshot #N</td></tr>
+                            <tr><td><code>vcr bisect -- &lt;test cmd&gt;</code></td><td>Find the agent action that broke the tests</td></tr>
+                            <tr><td><code>vcr airbag check "&lt;cmd&gt;"</code></td><td>Classify a command without running it</td></tr>
+                            <tr><td><code>vcr airbag allow</code></td><td>Approve the last stopped command for one retry</td></tr>
+                            <tr><td><code>vcr airbag snapshot -m "msg"</code></td><td>Take a manual snapshot</td></tr>
+                            <tr><td><code>vcr airbag status</code> · <code>vcr airbag log</code></td><td>Installed hooks and store · timeline</td></tr>
+                            <tr><td><code>vcr airbag db list|snapshot|restore</code></td><td>Local Postgres dumps</td></tr>
+                            <tr><td><code>vcr airbag gc --keep-days 7</code></td><td>Delete old snapshots and their dumps</td></tr>
+                            <tr><td><code>vcr airbag run -- &lt;cmd&gt;</code></td><td>Periodic snapshots for agents without hooks</td></tr>
+                            <tr><td><code>vcr airbag uninstall [agent…]</code></td><td>Remove only the airbag's hook entries</td></tr>
+                            <tr><td><code>vcr mcp</code></td><td>MCP server on stdio</td></tr>
+                            <tr><td><code>vcr &lt;file.vcr&gt;</code> · <code>vcr tui &lt;file.vcr&gt;</code></td><td>Terminal debugger</td></tr>
+                            <tr><td><code>vcr serve</code></td><td>Dashboard and API server (same as <code>vcr-server</code>)</td></tr>
+                            <tr><td><code>vcr dataset create|add|list|show|remove</code></td><td>Agent CI datasets</td></tr>
+                            <tr><td><code>vcr ci run --dataset NAME --candidates DIR</code></td><td>Run the regression gate</td></tr>
+                            <tr><td><code>vcr bundle export|import|verify</code> · <code>vcr reproduce</code></td><td>Portable <code>.vcrb</code> bundles</td></tr>
+                            <tr><td><code>vcr cloud login|push|pull|replay</code></td><td>Self-hosted project store</td></tr>
+                            <tr><td><code>vcr init --claude-code</code></td><td>Record Claude Code sessions</td></tr>
+                            <tr><td><code>sentinel scan|watch [DIR]</code></td><td>AST quality checks</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <footer class="site-footer">
+        <div class="wrap">
+            <div>
+                <a class="brand" href="index.html"><span class="brand-mark" aria-hidden="true">VCR</span>Agent VCR</a>
+                <p class="footer-tagline">The undo button for AI agents.</p>
+            </div>
+            <nav class="footer-nav" aria-label="Footer">
+                <a href="guides.html">Docs</a>
+                <a href="demo.html">Demo</a>
+                <a href="dev/bench/">Benchmarks</a>
+                <a href="https://github.com/ixchio/agent-vcr/blob/main/CHANGELOG.md">Changelog</a>
+                <a href="https://pypi.org/project/ai-agent-vcr/">PyPI</a>
+                <a href="https://github.com/ixchio/agent-vcr">GitHub</a>
+                <a href="https://github.com/ixchio/agent-vcr/blob/main/LICENSE">MIT License</a>
+            </nav>
+            <p class="copyright">Copyright © 2026 QueryXLabs and ixchio.</p>
         </div>
-        <p style="text-align:center; color:var(--text-muted); font-size:.8rem; padding:0 1rem 1.5rem;">Copyright © 2026 QueryXLabs and ixchio.</p>
     </footer>
-</body>
 
+    <script src="assets/site.js" defer></script>
+</body>
 </html>
