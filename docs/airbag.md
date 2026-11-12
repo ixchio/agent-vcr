@@ -300,20 +300,26 @@ vcr bisect --good 2 --bad 5 -- pytest -q        # only search between snapshots 
 vcr bisect --timeout 60 -- pytest -q            # per run; a timeout counts as a failure
 vcr bisect -- "pytest -q && ruff check ."       # one quoted string runs through the shell
 vcr bisect --copy-ignored -- pytest -q          # bring node_modules/.venv into each checkout
+vcr bisect --copy-ignored --copy-ignored dist -- pytest -q  # …and also link dist/
 vcr bisect --json -- pytest -q                  # status, culprit, snapshots, runs, changes, rewind
 ```
 
 Without `--good`, the search starts at the oldest recorded action; without `--bad`, it ends at
 the current state. If the test already fails at the good end, or still passes at the bad end,
 it tells you so and stops instead of guessing. A run that hits `--timeout` (default 300 s) is
-killed with its whole process group, counted as a failure, and the report says so.
+killed with its whole process group, counted as a failure, and the report says so. Background
+processes a test leaves behind (`server & pytest`) don't count against it: the run is over when
+the command exits, and the leftovers are killed.
 
 **Limits.**
 
 - **Ignored dependencies aren't in snapshots** (`node_modules/`, `.venv/`, build output), so a
   bare checkout may not be able to run your tests. `--copy-ignored` symlinks the project's
-  *top-level* ignored directories into each checkout. They are shared, not copied: a test that
-  writes into them writes into the real ones, and nested ones (`web/node_modules`) aren't linked.
+  ignored *top-level dependency* directories into each checkout: `node_modules`, `.venv`,
+  `venv`, `env`, `vendor`, `.tox`, `bower_components`. Build output (`dist/`, `build/`) is not
+  linked unless you name it (`--copy-ignored dist`). Links are shared, not copied: a test that
+  writes into them writes into the real ones, which aren't in any snapshot. Nested ones
+  (`web/node_modules`) aren't linked.
 - **Editable installs point back at your project.** If your package is installed with
   `pip install -e`, a test in the checkout may import the project's copy instead. Configure the
   import path in the test (`pythonpath = ["src"]` in pytest's config does this) or prefix
@@ -375,20 +381,34 @@ AGENT_VCR_AIRBAG_DATABASES=postgresql://admin:pw@db.prod.internal/app vcr airbag
 #   ✗ refused: postgresql://admin:***@db.prod.internal/app: db.prod.internal is not a local database. …
 ```
 
-A command against a remote database is still stopped for a human, even when a local one is
-configured. So is a command that is irreversible for another reason too
-(`… && git push --force`), and one that reaches past the dumped database: `DROP DATABASE`,
-`DROP ROLE`, `dropdb`, `rails db:drop`. Those still get a dump, but you're asked first.
+**You're only spared the prompt when the airbag is sure.** That means a `psql` command whose SQL
+is in `-c` and which states its host (`-h`, a conninfo/URL argument, or an inline `PGHOST=`),
+database and port (or the default 5432), all pointing at a configured local database. When in
+doubt it still dumps whatever configured database it can match, but it asks you anyway:
 
-**How it works.** A command's target (`-h`, `-p`, `-d`, a URL or conninfo argument, `PGHOST`/
-`PGPORT`/`PGDATABASE`) must match a configured database: same database name and port, same
-machine. ORM commands (`prisma migrate reset`, `rails db:drop`, …) use `DATABASE_URL` from the
-environment or the project's `.env`, or the only configured database. `pg_dump --format=custom`
-writes into the airbag store (`<store>/db/<snapshot>-<db>.dump`, mode `0600`) and the dump is
+- a remote host named anywhere in the command, even if libpq would let a later one win;
+- anything that can redirect the connection: `PGHOSTADDR`, `PGSERVICE`/`service=`, an
+  `export PGHOST=…` earlier in the command, or no host at all (the default socket);
+- SQL it can't see or that reaches further: `-f file.sql`, stdin/heredocs, `\connect`, `\i`,
+  `\!`, `dblink`, foreign servers, `COPY … PROGRAM`, `DROP DATABASE`, `DROP ROLE`;
+- ORM and framework commands (`prisma migrate reset`, `rails db:reset`,
+  `manage.py flush`, …), which read their own config (`.env` files, `database.yml`, `--env`,
+  linked projects); also `pgcli`, `dropdb`, `rails db:drop`;
+- anything irreversible for another reason too (`… && git push --force`).
+
+**How it works.** A `psql` target is resolved the way libpq does it (a conninfo or URL argument
+overrides `-h`/`-p`/`-U`, which override `PG*` variables) and must match a configured database:
+same database name and port, and both loopback TCP or the same socket directory. ORM commands
+are matched through `DATABASE_URL` (environment or the project's `.env`) or the only configured
+database, which is good enough for a dump but never for skipping the prompt.
+`pg_dump --format=custom` writes into the airbag store (`<store>/db/<snapshot>-<db>.dump`, mode `0600`) and the dump is
 recorded in that snapshot. The password goes to `pg_dump` through `PGPASSWORD`, never the
 command line, and is never stored. Undo first dumps the database's *current* state (so the undo
-is undoable), then, in one transaction, drops the user tables, views and sequences and replays
-the dump with `psql`. If `psql` is missing or that fails, it falls back to
+is undoable), then, in one transaction, drops the user tables and views (their serial and
+identity sequences go with them) and any other sequences, and replays the dump with `psql`.
+`vcr undo` only restores a database when the action it reverts dumped it: undoing a later file
+edit leaves the database alone. `vcr rewind <#>` puts every dumped database back to how it was
+at that snapshot. If `psql` is missing or that fails, it falls back to
 `pg_restore --clean --if-exists --no-owner`, which keeps tables created after the dump, and says
 so.
 
@@ -409,6 +429,11 @@ vcr airbag gc --keep-days 7   # also deletes the dumps of deleted snapshots
 - **Dumps happen only before SQL the classifier flags as destructive** (`DROP`, `TRUNCATE`,
   `DELETE`/`UPDATE` without `WHERE`, `ALTER TABLE … DROP`, ORM resets). `psql -f migrate.sql`
   isn't inspected. Take a save point first with `vcr airbag db snapshot`.
+- **The hook sees its own environment, not your agent's shell.** A `PGHOSTADDR` exported in an
+  earlier tool call is invisible to it. Agents normally start each command from the same
+  environment, but if yours keeps shell state between calls, keep `PGHOSTADDR`/`PGSERVICE` out of it.
+- Types, functions and extensions created after the dump survive a restore; tables, views and
+  sequences don't.
 - **A restore puts the whole database back**, including rows your app wrote since the dump. The
   pre-restore dump means you can go forward again.
 - **A dropped database isn't recreated.** After an approved `dropdb app_dev`, run
@@ -498,7 +523,7 @@ finding has a regression test in `tests/unit/test_airbag_core.py`.
 | `vcr redo` | Undo the last undo/rewind. |
 | `vcr rewind` / `vcr airbag log` | Timeline of protected actions with snapshot numbers (`-n` to limit). |
 | `vcr rewind 12` | Restore snapshot #12 (undoable with `vcr redo`). |
-| `vcr bisect -- <test cmd>` | Find the agent action that broke the tests (`--good N`, `--bad N`, `--timeout S`, `--copy-ignored`, `--json`). |
+| `vcr bisect -- <test cmd>` | Find the agent action that broke the tests (`--good N`, `--bad N`, `--timeout S`, `--copy-ignored [DIR]`, `--json`). |
 | `vcr airbag db list` | Configured local Postgres databases and their dumps. |
 | `vcr airbag db snapshot [--db NAME]` | Dump the configured database(s) now. |
 | `vcr airbag db restore 12 [--db NAME]` | Put only the database(s) back to snapshot #12. |
