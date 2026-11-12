@@ -7,9 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [1.7.0] - 2026-11-12
+## [1.7.1] - 2026-11-12
+
+Everything since 1.6.0. (1.7.0 was published for a few hours and yanked; all of it is here.)
+
+**Upgrading from 1.6.0 or 1.7.0:** run `vcr airbag install` once. It moves your project-level
+hooks to your agents' user-level configs and leaves other hooks alone. `vcr doctor` confirms.
 
 ### Added
+- **Safe, one-time install.** `vcr airbag install` now writes each agent's **user-level** config
+  (`~/.claude/settings.json`, `~/.codex/hooks.json`, `~/.gemini/settings.json`, …): one install
+  protects every project, and nothing is written into your repositories, so a committed hook can
+  no longer break a teammate's agent. `--project` keeps the per-project install (Claude Code:
+  `.claude/settings.local.json`). Snapshots are taken in git repositories and folders with a
+  `.vcr/` folder; never in your home folder, `/`, Desktop, Documents or Downloads. There,
+  destructive commands are confirmed like irreversible ones, since nothing could undo them.
+- **`vcr doctor`** checks the install, stale `vcr` launchers, git, every agent's hooks (and the
+  interpreter they call), Codex/Gemini trust steps and whether the current folder is protected,
+  and prints the exact fix. `vcr doctor --fix` repairs stale hook paths and migrates old hooks.
+- **`vcr airbag statusline`** for Claude Code's status line (`🛟 airbag · 12 snapshots · …`);
+  `vcr airbag install claude --statusline` adds it only if you have no status line yet.
+- A clearer first run: `vcr --help` leads with "Undo anything your coding agent did", a
+  quickstart and grouped commands; `vcr airbag install` says which agents are protected, where,
+  and which one-time steps are left.
 - **`vcr bisect -- <test command>`**: finds the agent action that broke your tests by
   binary-searching the airbag's snapshots in temporary checkouts. No model tokens, and the
   project, its `.git` and the snapshots are never modified. Reports the culprit command, the
@@ -49,6 +69,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   retried while another process holds the file; binary-mode JSONL appends.
 
 ### Changed
+- **The first snapshot is 5–7x faster**: about 1 s instead of 5–7 s for a 20,000-file repository
+  (files are staged with `git update-index` instead of pathspec-limited `git add`). Later
+  snapshots stay around 0.1 s. Latency budgets in CI keep it that way.
+- Hook commands survive a reinstall: on Linux and macOS a hook whose Python is gone does nothing
+  instead of failing every tool call, and `vcr doctor --fix` points it at the new one.
+- The docs install the `vcr` command with `pipx` or `uv tool` (plain `pip` is blocked on most
+  current Linux distros and Homebrew Python).
 - The `openhands` extra installs `openhands-sdk` and `openhands-tools` (Python 3.12+); the old
   `openhands-ai` dependency moved to `openhands-legacy`. The unused `inngest` extra was removed.
 - `create_workflow_backend("inngest")` raises `InngestBackendUnavailable` instead of returning
@@ -58,6 +85,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   which action it redid.
 
 ### Fixed
+- Airbag: `.env` and SQLite files inside a wholly ignored folder (`data/` in `.gitignore`) were
+  never snapshotted. They are now, without looking inside dependency or build folders.
+- Airbag: a directory replaced by a symlink made the snapshot silently reuse the previous tree.
+- Installer paths for Devin Local (`~/.config/devin/config.json`), Copilot CLI
+  (`$COPILOT_HOME`) and Cline (XDG Documents folder).
 - Airbag: writes and moves to a path outside the project (`cp a.txt ../x.txt`, `-t` targets,
   `mv` out of the project, `rsync` to `host:path`, through a symlink inside the project) are
   irreversible, not plain writes. Projects under symlinked directories (`/var`, `/tmp`,

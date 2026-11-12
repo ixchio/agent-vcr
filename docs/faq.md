@@ -57,9 +57,10 @@ model key for features that call a model on purpose, like the optional
 
 ### Does the airbag slow my agent down?
 
-About 0.1 s per tool call, mostly Python start-up. On a 180-file repo it measured about 12 ms of
-real work when nothing changed, and about 190 ms for the very first snapshot. Numbers are in
-[Airbag → How it works](airbag.md#how-it-works).
+About 0.05–0.1 s per tool call, mostly Python start-up; read-only commands skip the snapshot
+entirely. The first snapshot of a project costs the most: about 1 s for a 20,000-file repository
+(it was 5–7 s before 1.7.1); after that, a snapshot after a small change takes about 0.1 s. CI
+fails if these regress. Numbers: [Airbag → How it works](airbag.md#how-it-works).
 
 ## Snapshots
 

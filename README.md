@@ -13,7 +13,7 @@ database. **`vcr undo` brings it all back**: files, `.env`, git history, even th
 
 ```bash
 pipx install ai-agent-vcr     # or: uv tool install ai-agent-vcr
-vcr airbag install            # arms every coding agent on your PATH
+vcr airbag install            # arms every coding agent on your PATH, in every project
 vcr undo                      # oops? un-oops.
 ```
 
@@ -43,15 +43,15 @@ until a human says yes.
 
 ```text
 $ vcr airbag install claude
-  ✓ Claude Code: .claude/settings.json
+🛟 Airbag armed for 1 agent, user level: every project, nothing written into your repository.
+  ✓ Claude Code       ~/.claude/settings.json
 
 # ... the agent decides to "clean up" and runs `rm -rf ~/code/myapp` ...
 🛟 Agent VCR airbag: snapshot #1 saved before `rm -rf ~/code/myapp`. Undo with `vcr undo`.
 
 $ vcr undo --project-dir ~/code/myapp
 ↩ Undid: rm -rf ~/code/myapp  (claude, 12s ago)
-  restored 5 files — back to snapshot #1.
-    + .claude/settings.json
+  restored 4 files — back to snapshot #1.
     + .env
     + .gitignore
     + src/billing.py

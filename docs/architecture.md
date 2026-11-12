@@ -94,6 +94,17 @@ agent tool call ──► hook process (python -m agent_vcr.airbag.hook <agent>)
 * **Decisions.** The airbag never grants permission. Irreversible commands are escalated with
   the strongest mechanism the agent offers ("ask" for Claude Code, Gemini CLI ≥ 0.36, Copilot
   CLI; deny/block elsewhere) and can be approved once with `vcr airbag allow`.
+* **Install and scope.** Hooks go into each agent's user-level config by default
+  (`airbag/agents.py`), so one install covers every project and nothing lands in a repository; on
+  POSIX the hook command is wrapped so a missing interpreter is a silent no-op. `airbag/scope.py`
+  decides where snapshots are taken (git repositories, folders with `.vcr/`, existing stores;
+  never the home folder or `/`); elsewhere destructive commands are escalated like irreversible
+  ones. `airbag/doctor.py` (`vcr doctor`) checks all of this and repairs stale hook paths;
+  `airbag/statusline.py` feeds Claude Code's status line.
+* **Fast first snapshot.** Files are staged with `git update-index --stdin` (linear) instead of
+  pathspec-limited `git add`, with parallel blob writing for big batches; a 20k-file repository's
+  first snapshot takes about a second. Precious files are also found inside wholly ignored
+  directories (`data/app.db`), never inside dependency trees.
 * **Databases (opt-in).** Local Postgres URLs listed in `AGENT_VCR_AIRBAG_DATABASES` (or
   `.vcr/airbag-databases.json`) are dumped with `pg_dump` into the store before a destructive
   SQL command; the dump is attached to that snapshot and restored by undo/rewind. Non-local

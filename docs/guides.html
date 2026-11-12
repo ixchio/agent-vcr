@@ -116,10 +116,9 @@ vcr --version          <span class="c"># vcr 1.7.0</span></code></pre>
 vcr airbag check "rm -rf src"
 <span class="c"># 🛟 DESTRUCTIVE: destroys project data — snapshot first, undo with `vcr undo`</span>
 
-<span class="c"># 2. Arm your project: every agent tool call now gets a snapshot first</span>
-cd your-project
+<span class="c"># 2. Arm your agents once: every tool call in a git project now gets a snapshot first</span>
 vcr airbag install
-vcr airbag status</code></pre>
+vcr doctor                  <span class="c"># ✓ everything protected? prints the exact fix if not</span></code></pre>
                 </div>
                 <p>Building your own agent? Record a run and jump around in it:</p>
                 <div class="code">
@@ -151,7 +150,7 @@ print(player.goto_frame(<span class="o">0</span>))       <span class="c"># {'pla
                 </ul>
 
                 <h3 id="airbag-agents">Install for your agent</h3>
-                <p>With no names, <code>vcr airbag install</code> installs for every supported agent on your PATH. Name one or several (<code>vcr airbag install claude codex</code>), or use <code>--all</code>; <code>--user</code> writes the user-level config instead of the project's.</p>
+                <p>With no names, <code>vcr airbag install</code> installs for every supported agent on your PATH, in each agent's <strong>user-level</strong> config: one install protects every project and nothing is written into your repositories. Name one or several (<code>vcr airbag install claude codex</code>), use <code>--all</code>, or <code>--project</code> for a per-project, per-developer install. Snapshots are taken in git repositories and in folders with a <code>.vcr/</code> folder; never in your home folder. Upgrading from 1.7.0? Run <code>vcr airbag install</code> once: it moves old project-level hooks to user level.</p>
                 <div class="table-wrap">
                     <table>
                         <thead><tr><th>Agent</th><th>Install</th><th>Irreversible commands</th></tr></thead>
@@ -169,7 +168,7 @@ print(player.goto_frame(<span class="o">0</span>))       <span class="c"># {'pla
                         </tbody>
                     </table>
                 </div>
-                <p class="callout"><strong>Per-agent gotchas:</strong> review new hooks once with <code>/hooks</code> in Codex; Gemini CLI runs hooks only in trusted folders; restart running Copilot CLI sessions; Cline hooks don't install on Windows. The hook calls the Python that ran <code>vcr airbag install</code>, so reinstall if you move that virtualenv.</p>
+                <p class="callout"><strong>Per-agent gotchas:</strong> review new hooks once with <code>/hooks</code> in Codex; Gemini CLI runs hooks only in trusted folders; restart running Copilot CLI sessions; Cline hooks don't install on Windows. If you move or reinstall the Python that ran <code>vcr airbag install</code>, the hook goes quiet instead of failing; <code>vcr doctor --fix</code> points it at the new one.</p>
 
                 <h3 id="airbag-undo">Undo, redo, rewind</h3>
                 <div class="code">
@@ -545,7 +544,8 @@ protect(conversation, airbag)</code></pre>
                     <table>
                         <thead><tr><th>Command</th><th>What it does</th></tr></thead>
                         <tbody>
-                            <tr><td><code>vcr airbag install [agent…]</code></td><td>Arm the hooks (default: every agent on your PATH; <code>--all</code>, <code>--user</code>)</td></tr>
+                            <tr><td><code>vcr airbag install [agent…]</code></td><td>Arm the hooks, user-level (default: every agent on your PATH; <code>--all</code>, <code>--project</code>)</td></tr>
+                            <tr><td><code>vcr doctor [--fix]</code></td><td>Check the install, hooks and protection; print or apply the exact fix</td></tr>
                             <tr><td><code>vcr undo [N] [--dry-run]</code></td><td>Restore files to just before the last (N-th) agent action</td></tr>
                             <tr><td><code>vcr redo</code></td><td>Undo the last undo or rewind</td></tr>
                             <tr><td><code>vcr rewind [N]</code></td><td>Timeline of snapshots, or restore snapshot #N</td></tr>

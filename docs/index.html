@@ -76,7 +76,7 @@
             <figure class="code terminal" data-nocopy aria-label="Terminal: an agent deletes a project and vcr undo restores it">
                 <div class="code-bar"><span aria-hidden="true"><i></i><i></i><i></i></span><span>~/code</span></div>
 <pre><code><span class="c">$</span> vcr airbag install claude
-  <span class="o">✓</span> Claude Code: .claude/settings.json
+  <span class="o">✓</span> Claude Code  ~/.claude/settings.json
 
 <span class="c"># the agent "cleans up" and runs rm -rf ~/code/myapp</span>
 <span class="s">🛟 Agent VCR airbag: snapshot #1 saved before
@@ -84,8 +84,7 @@
 
 <span class="c">$</span> vcr undo --project-dir ~/code/myapp
 ↩ Undid: rm -rf ~/code/myapp  (claude, 12s ago)
-  restored 5 files — back to snapshot #1.
-    <span class="o">+ .claude/settings.json</span>
+  restored 4 files — back to snapshot #1.
     <span class="o">+ .env</span>
     <span class="o">+ .gitignore</span>
     <span class="o">+ src/billing.py</span>
@@ -105,11 +104,11 @@
                     <li>
                         <strong>Install</strong>
                         <p>The package is <code>ai-agent-vcr</code>. The similarly named <code>agent-vcr</code> is a different project.</p>
-                        <code class="cmd">pip install ai-agent-vcr</code>
+                        <code class="cmd">pipx install ai-agent-vcr</code>
                     </li>
                     <li>
-                        <strong>Arm your project</strong>
-                        <p>Run it in your project. It hooks every supported agent on your PATH.</p>
+                        <strong>Arm your agents</strong>
+                        <p>Once, anywhere. It hooks every supported agent on your PATH, for every git project, and writes nothing into your repositories.</p>
                         <code class="cmd">vcr airbag install</code>
                     </li>
                     <li>

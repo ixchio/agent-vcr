@@ -14,7 +14,8 @@
 - `src/agent_vcr/` — recording kernel: models, recorder, async_recorder, player, async_player
 - `src/agent_vcr/airbag/` — store (shadow git outside the project), classify, core (decisions,
   undo/redo/rewind), agents (per-agent parse/render/install), hook (entry point), cli, runner,
-  bisect (`vcr bisect`), databases (opt-in local Postgres dumps)
+  bisect (`vcr bisect`), databases (opt-in local Postgres dumps), scope (where snapshots are
+  taken), doctor (`vcr doctor`), statusline
 - `src/agent_vcr/mcp_server.py` — `vcr mcp` stdio MCP server (stdlib only)
 - `src/agent_vcr/pytest_plugin.py` — pytest11 plugin (`agent_vcr` fixture); keep it import-light
 - `src/agent_vcr/integrations/` — LangGraph, CrewAI, OpenHands (ACIDWorkspace, openhands_airbag)
