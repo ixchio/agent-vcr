@@ -11,7 +11,8 @@ Six superpowers, one snippet each. Everything below runs offline: no API key, no
 ## Install
 
 ```bash
-pip install ai-agent-vcr      # Python 3.9–3.13
+pipx install ai-agent-vcr     # the `vcr` command, isolated (Python 3.9–3.13)
+pip install ai-agent-vcr      # …or into your environment, for the Python API below
 vcr --version                 # vcr 1.7.0
 ```
 
@@ -21,6 +22,7 @@ where you run them.
 ## 1. 🛟 Undo your coding agent
 
 ```bash
+cd your-project                # any git repository
 vcr airbag check "rm -rf src"
 # 🛟 DESTRUCTIVE: destroys project data — snapshot first, undo with `vcr undo`
 #    • rm deletes files
@@ -28,9 +30,18 @@ vcr airbag check "rm -rf src"
 bash examples/airbag_demo.sh   # from a clone of the repo: an agent wipes a project, `vcr undo` brings it back
 ```
 
-Run `vcr airbag install` in your project and every tool call your agent makes (shell commands
+Then arm it once for your user, not per project:
+
+```bash
+vcr airbag install   # every coding agent on your PATH, user level: nothing lands in your repos
+vcr doctor           # everything armed? prints the exact fix if not
+```
+
+From then on, in every git repository, every tool call your agent makes (shell commands
 included) gets a snapshot first, so `vcr undo` can bring files, `.env` and even `.git` back.
-→ [Airbag](airbag.md)
+Outside a repository nothing is snapshotted, so destructive commands are stopped for you to
+confirm (`mkdir .vcr` opts a plain folder in). Do the "Required once" steps it prints (Codex:
+`/hooks`; Gemini: `/trust`). → [Airbag](airbag.md)
 
 ## 2. ⏪ Record and time-travel a run
 
@@ -127,8 +138,9 @@ an audit trail to `src/.vcr/sentinel-scan.vcr`. → [Sentinel](sentinel.md)
 
 ## What it can't do (in 5 minutes)
 
-- The airbag only protects your project folder; remote databases, cloud resources and pushes
-  are stopped for a human, not undone. Details in [Airbag](airbag.md#what-it-cant-do).
+- The airbag only protects project folders (git repositories, or folders with `.vcr/`);
+  remote databases, cloud resources and pushes are stopped for a human, not undone. Details in
+  [Airbag](airbag.md#what-it-cant-do).
 - Ghost Replay replays what was recorded. It doesn't make a new task free; change the task or
   its identity and you need a fresh run.
 - `vcr ci` compares recordings. It doesn't run your agent; your harness produces candidates.

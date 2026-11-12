@@ -22,8 +22,10 @@ vcr undo
 
 **TL;DR**
 
-- `vcr airbag install` hooks every coding agent on your PATH. From then on, every tool call
-  (Bash, file edits, patches, subagents) is snapshotted first, into a store outside your project.
+- `vcr airbag install`, once, hooks every coding agent on your PATH at the user level. From
+  then on, in every git repository you work in, every tool call (Bash, file edits, patches,
+  subagents) is snapshotted first, into a store outside your project. Nothing is written into
+  your repositories, so nothing can break a teammate.
 - `vcr undo`, `vcr redo` and `vcr rewind` bring files, `.env`, local SQLite databases and even
   `.git` back exactly as they were.
 - Commands a snapshot *can't* undo (a remote `DROP TABLE`, `terraform destroy`, force-push,
@@ -41,13 +43,23 @@ bash examples/airbag_demo.sh      # from a clone of the repo
 ```
 
 You'll see the code, the `.env` and the git history come back, and then a remote `DROP TABLE`
-getting stopped. To arm your real project:
+getting stopped. To arm it for real (once per machine, not per project):
 
 ```bash
-cd your-project
+pipx install ai-agent-vcr   # or: pip install ai-agent-vcr
 vcr airbag install          # hooks for every supported agent found on your PATH
-vcr airbag status           # what's armed, where snapshots live
+# 🛟 Airbag armed for 2 agents, user level: every project, nothing written into your repository.
+#   ✓ Claude Code       ~/.claude/settings.json
+#   ✓ OpenAI Codex CLI  ~/.codex/hooks.json
+# …
+# Required once:
+#   • Codex: run /hooks in Codex once and trust the airbag hook (Codex skips new or changed hooks until you do).
+# Try it: vcr airbag check "rm -rf ."   ·   undo anything: vcr undo   ·   health check: vcr doctor
+vcr doctor                  # is everything really armed? prints the exact fix if not
 ```
+
+Do the "Required once" steps it prints: Codex runs a new hook only after you trust it with
+`/hooks`, and Gemini CLI runs hooks only in folders you trusted with `/trust`.
 
 Ask "would this be stopped?" without running anything:
 
@@ -62,33 +74,59 @@ vcr airbag check "psql -h prod.db -c 'DROP TABLE users'"
 Install for one agent by name, several at once (`vcr airbag install claude codex`), or all of
 them (`--all`). With no names, it installs for every supported agent it finds on your PATH.
 
-| Agent | Install | Snapshot before | Irreversible commands |
+Every agent below reads hooks from a **user-level** file, and that's where the airbag goes by
+default: one install covers every project, and nothing appears in `git status`.
+
+| Agent | Installs into (user level) | Snapshot before | Irreversible commands |
 |---|---|---|---|
-| Claude Code | `vcr airbag install claude` → `.claude/settings.json` | Bash, Write, Edit, MultiEdit, NotebookEdit | **asks** (permission prompt); headless `-p` runs see a denial |
-| OpenAI Codex CLI | `vcr airbag install codex` → `.codex/hooks.json` | Bash, apply_patch | **blocked** (Codex has no "ask"); approve with `vcr airbag allow` |
-| Gemini CLI | `vcr airbag install gemini` → `.gemini/settings.json` | run_shell_command, write_file, replace | **asks** on ≥ 0.36, otherwise blocked |
-| Cursor (IDE + CLI) | `vcr airbag install cursor` → `.cursor/hooks.json` | shell commands, Write/Delete | **blocked** (Cursor's "ask" is not reliably enforced) |
-| GitHub Copilot CLI | `vcr airbag install copilot` → `.github/hooks/agent-vcr-airbag.json` | bash, create, edit, apply_patch | **asks**; autopilot / cloud agent turn it into a denial |
-| OpenHands (SDK) | `vcr airbag install openhands` → `.openhands/hooks.json`, or in-process (below) | terminal, file_editor, apply_patch | **blocked**, or **asks** with `protect(conversation, airbag, confirm=True)` |
-| OpenCode 1.x | `vcr airbag install opencode` → `.opencode/plugin/agent-vcr-airbag.js` | bash, edit, write, apply_patch | **blocked** (plugins cannot ask); approve with `vcr airbag allow`. OpenCode 2.x plugin API not supported yet |
-| Cline | `vcr airbag install cline` → `.clinerules/hooks/PreToolUse` | run_commands, editor, apply_patch | **task cancelled** (Cline has no "ask") |
-| Devin Local / Devin Desktop (ex-Windsurf) | `vcr airbag install devin` → `.devin/hooks.v1.json` | exec, write, edit, apply_patch | **blocked** |
+| Claude Code | `~/.claude/settings.json` | Bash, Write, Edit, MultiEdit, NotebookEdit | **asks** (permission prompt); headless `-p` runs see a denial |
+| OpenAI Codex CLI | `~/.codex/hooks.json` | Bash, apply_patch | **blocked** (Codex has no "ask"); approve with `vcr airbag allow` |
+| Gemini CLI | `~/.gemini/settings.json` | run_shell_command, write_file, replace | **asks** on ≥ 0.36, otherwise blocked |
+| Cursor (IDE + CLI) | `~/.cursor/hooks.json` | shell commands, Write/Delete | **blocked** (Cursor's "ask" is not reliably enforced) |
+| GitHub Copilot CLI | `~/.copilot/hooks/agent-vcr-airbag.json` (`$COPILOT_HOME`) | bash, create, edit, apply_patch | **asks**; autopilot / cloud agent turn it into a denial |
+| OpenHands (SDK) | `~/.openhands/hooks.json`, or in-process (below) | terminal, file_editor, apply_patch | **blocked**, or **asks** with `protect(conversation, airbag, confirm=True)` |
+| OpenCode 1.x | `~/.config/opencode/plugin/agent-vcr-airbag.js` | bash, edit, write, apply_patch | **blocked** (plugins cannot ask); approve with `vcr airbag allow`. OpenCode 2.x plugin API not supported yet |
+| Cline | `~/Documents/Cline/Hooks/PreToolUse` (your XDG Documents folder) | run_commands, editor, apply_patch | **task cancelled** (Cline has no "ask") |
+| Devin Local / Devin Desktop (ex-Windsurf) | `~/.config/devin/config.json` (`%APPDATA%\devin\config.json` on Windows) | exec, write, edit, apply_patch | **blocked** |
 | Anything else (Aider, scripts, …) | `vcr airbag run -- aider` | periodic snapshot every 2 s | — (no interception) |
 
-`--user` installs into your user-level config instead of the project.
-`vcr airbag uninstall [agent]` removes only the airbag's entries; your own hooks stay.
+`vcr airbag uninstall [agent]` removes only the airbag's entries, at both levels; your own
+hooks and settings stay. `--user` or `--project` limits it to one level.
+
+**Only this project, only for you: `--project`.** It writes the agent's project file instead
+(`.codex/hooks.json`, `.cursor/hooks.json`, …; for Claude Code, its personal
+`.claude/settings.local.json`, never the shared `.claude/settings.json`):
+
+```bash
+vcr airbag install --project claude
+# 🛟 Airbag armed for 1 agent in this project only.
+#   ✓ Claude Code  ~/myapp/.claude/settings.local.json
+#   ⚠ These files are per-developer (they hold this machine's Python path): don't commit them; add them to your .gitignore.
+```
+
+The airbag never edits your `.gitignore` or `.git/info/exclude`; ignoring the file is your call.
 
 ### ⚠️ Agent gotchas
 
-- **Codex** wants you to review new hooks once: run `/hooks` inside Codex after installing.
-- **Gemini CLI** only runs hooks in trusted folders (`/trust`).
+- **Codex** runs a new or changed hook only after you trust it: run `/hooks` inside Codex after
+  installing (and again after `vcr doctor --fix` rewrote it).
+- **Gemini CLI** only runs hooks in trusted folders (`/trust`), user-level hooks included.
+- **Claude Code** holds back all hooks, user-level ones too, until you've accepted a folder's
+  trust prompt (the one it shows the first time you open a folder).
 - **Copilot CLI** loads hooks at startup, so restart sessions that are already running.
 - **Cline** cancels the whole task on an irreversible command. Cline CLI reads
-  `.cline/hooks/PreToolUse.sh` instead of `.clinerules/hooks/PreToolUse`.
+  `.cline/hooks/PreToolUse.sh` instead of the global hooks folder. Cline on Windows wants
+  PowerShell `.ps1` hooks, which the airbag doesn't install; use `vcr airbag run --` there.
+- **OpenHands** reads `~/.openhands/hooks.json` only when the project has no
+  `.openhands/hooks.json` of its own. `vcr doctor` tells you when a project file hides yours.
 - **Cursor, Copilot CLI and Devin also run `.claude/settings.json` hooks.** Installing several
   is fine: when one tool call reaches the airbag twice within 5 seconds, it's handled once.
-- **The hook calls the Python that ran `vcr airbag install`** (its full path is written into the
-  config). If you move or delete that virtualenv, run `vcr airbag install` again.
+- **The hook calls the Python that ran `vcr airbag install`** (its full path is in the config).
+  On Linux and macOS the command is guarded (`test -x <python> && exec <python> … || true`): if
+  that Python disappears (pipx reinstall, upgrade, a deleted virtualenv), the hook quietly does
+  nothing instead of failing every tool call. `vcr doctor` notices, and `vcr doctor --fix` (or
+  `vcr airbag install` again) rewrites the path. On Windows the command isn't guarded, because
+  agents there run it through Git Bash, cmd or PowerShell; run `vcr doctor` after moving Python.
 - **OpenHands SDK 1.7.x** does not load `.openhands/hooks.json` by itself. Pass
   `hook_config=HookConfig.load(working_dir=ws)` to `Conversation`, or use the in-process
   integration:
@@ -169,8 +207,12 @@ vcr airbag check "rm -rf ~/Documents"
 #    • deletes ~/Documents outside the project (snapshots only cover the project)
 
 vcr airbag check --json "git reset --hard"
-# {"level": "destructive", "reasons": [...], "categories": ["files"], "undoable": true}
+# {"level": "destructive", "reasons": [...], "categories": ["files"], "undoable": true, "protected": true}
 ```
+
+Run these inside a git repository. In a folder the airbag doesn't protect, `destructive`
+becomes `irreversible`, because there's no snapshot to undo it with
+([which folders](#which-folders-are-protected)).
 
 The classifier understands pipelines, `&&`, `sudo`, `bash -c "..."` and redirects, and leans
 towards `write` (snapshot) when it isn't sure.
@@ -184,6 +226,43 @@ towards `write` (snapshot) when it isn't sure.
 
 Skipped on purpose: dependency trees and build output (`node_modules/`, `.venv/`, `dist/`,
 `target/`, …) because they're regenerable, and files over 25 MB because they're too large.
+
+### Which folders are protected
+
+User-level hooks fire wherever your agent runs: in a repository, but also in `~`, in `/` or in
+a downloads folder. Snapshotting those would be slow and pointless, so the rule is:
+
+| Where the agent works | Snapshots | Destructive command (`rm -rf old`) | Irreversible command |
+|---|---|---|---|
+| A git repository (any subfolder) | ✓ before every change | runs, undo with `vcr undo` | stopped for a human |
+| A folder with a `.vcr/` folder in it or above it (`mkdir .vcr`) | ✓ | runs, undo with `vcr undo` | stopped for a human |
+| A folder that already has snapshots (say, the agent deleted `.git`) | ✓ | runs, undo with `vcr undo` | stopped for a human |
+| Anything else: a plain folder, `~`, `/`, `~/Desktop`, `~/Documents`, `~/Downloads` | never | **stopped for a human**: there's no snapshot, so it can't be undone | stopped for a human |
+
+Your home directory, the filesystem root and Desktop/Documents/Downloads are never snapshotted,
+even when they're a git repository (a dotfiles repo) or contain a `.vcr/`. An agent started in
+`~` that works inside a repository is protected: the hook looks at the command's own folder too.
+Elsewhere, the airbag stays quiet for reads and plain writes, so nothing gets in your way.
+
+`vcr airbag check` and `vcr airbag status` follow the same rule:
+
+```bash
+cd ~/notes                     # not a git repository
+vcr airbag check "rm -rf build"
+# ⚠ IRREVERSIBLE: cannot be undone by a snapshot — the airbag asks a human first
+#    • rm deletes files
+#    • this folder is not protected by the airbag (no git repository, no .vcr/), so nothing was snapshotted and this cannot be undone (`git init` or `mkdir .vcr` protects it)
+vcr airbag status
+# Airbag for /home/you/notes
+#   ✗ not protected: /home/you/notes (not a git repository and no .vcr/ folder). Nothing is snapshotted here; commands that would destroy data are stopped for a human. To protect it, run `git init` or `mkdir .vcr` in /home/you/notes.
+#   …
+mkdir .vcr && vcr airbag status
+# Airbag for /home/you/notes
+#   ✓ protected: /home/you/notes (opted in with a .vcr/ folder)
+```
+
+`vcr airbag allow` works in unprotected folders too: approvals there are kept in one shared
+place in the airbag store.
 
 ## Everyday recipes
 
@@ -230,10 +309,74 @@ vcr airbag allow
 #    The agent may retry this exact command in the next 10 minutes.
 ```
 
+### Is it really armed? `vcr doctor`
+
+```bash
+vcr doctor
+#   ✓ Agent VCR 1.7.1 on Python 3.12.3
+#       pipx: /home/you/.local/share/pipx/venvs/ai-agent-vcr/bin/python
+#   ✓ ~/.local/bin/vcr → Agent VCR 1.7.1
+#       runs when you type `vcr`
+#   ✓ git version 2.43.0
+#   ✗ Claude Code: hook calls a Python that no longer exists
+#       ~/.claude/settings.json → /home/you/.local/share/pipx/venvs/old/bin/python3
+#       fix: vcr doctor --fix   (or re-run `vcr airbag install`)
+#   ✓ OpenAI Codex CLI: protected (user-level)
+#   · Codex runs new or changed hooks only after you trust them
+#       fix: run /hooks in Codex and trust the Agent VCR hook
+#   ✓ This folder is protected
+#   · 12 snapshots for this project, 3.4 MB
+# ✗ 1 problem; 1 can be fixed with `vcr doctor --fix`.
+vcr doctor --fix
+# 🔧 rewrote the Claude Code hook for /home/you/.local/share/pipx/venvs/ai-agent-vcr/bin/python3: ~/.claude/settings.json
+# …
+# ✓ Healthy.
+```
+
+It checks, each with the exact fix: the Python and Agent VCR version and how it's installed
+(pipx, virtualenv, `pip --user`, editable); every `vcr` launcher on your PATH, flagging a stale
+one (say, a `~/.local/bin/vcr` left over from an old install whose package is gone); git; for
+each agent on your PATH or with hooks: where the hooks are (user or project level), whether the
+Python in the hook command still exists, and the one-time steps (Codex `/hooks`, Gemini
+`/trust` and version ≥ 0.36 for "ask", Cline unsupported on Windows, an OpenHands project file
+hiding yours); the snapshot store of the current project (location, size, count); and whether
+the current folder is protected.
+
+`vcr doctor --fix` only does what is safe to do automatically: it rewrites airbag hook
+commands whose Python is gone (or that predate the self-healing form) and moves project-level
+airbag hooks to the user level. It never deletes a launcher or touches anyone else's hooks.
+`--json` prints `{"healthy": …, "checks": [{"id", "status", "title", "detail", "fix",
+"fixable"}], "fixed": [...]}`. Exit code: `0` healthy, `1` problems. `vcr airbag doctor` is the
+same command.
+
+### The airbag in Claude Code's status line
+
+```bash
+echo '{"workspace": {"current_dir": "'"$PWD"'"}}' | vcr airbag statusline
+# 🛟 airbag · 12 snapshots · last: rm -rf build (2m ago)
+cd ~ && vcr airbag statusline
+# 🛟 airbag off here (your home directory)
+```
+
+It reads the JSON Claude Code passes on stdin, takes no snapshot and runs in about 60 ms. The
+airbag never changes your status line by itself. Add it to `~/.claude/settings.json`:
+
+```json
+{"statusLine": {"type": "command", "command": "vcr airbag statusline"}}
+```
+
+…or let the installer add it, only if you have no `statusLine` yet (an existing one is never
+overwritten):
+
+```bash
+vcr airbag install claude --statusline
+# Status line: Claude Code now shows the airbag (`vcr airbag statusline`).
+```
+
 ### Check health, take a manual save point, tidy up
 
 ```bash
-vcr airbag status                        # policy, store location, installed hooks
+vcr airbag status                        # protection here, policy, store location, hooks
 vcr airbag snapshot -m "before refactor" # your own save point
 vcr airbag gc --keep-days 7              # delete old snapshots (keeps the last 50 by default)
 ```
@@ -252,8 +395,27 @@ runs, so up to one interval of work can be lost. Use a real hook integration whe
 
 ```bash
 vcr airbag uninstall codex   # one agent
-vcr airbag uninstall         # every agent; your own hooks are left alone
+vcr airbag uninstall         # every agent, user and project level; your own hooks are left alone
 ```
+
+### Upgrading from 1.7.0
+
+1.7.0 installed hooks into the project (`.claude/settings.json`, `.codex/hooks.json`, …) with
+your machine's Python path in them. Committed, every teammate's agent then runs a hook that
+fails on each tool call. Run the installer once after upgrading:
+
+```bash
+pipx upgrade ai-agent-vcr
+cd your-project && vcr airbag install
+# 🛟 Airbag armed for 2 agents, user level: every project, nothing written into your repository.
+#   …
+# Moved from the project to your user-level config (commit the removal, so teammates' agents stop calling a path from your machine):
+#   ↪ moved the OpenAI Codex CLI hook from .codex/hooks.json to ~/.codex/hooks.json
+```
+
+It removes only the airbag's entries from the project files (your other hooks and settings
+stay; a file that held nothing else is deleted) and installs the same agents at the user level.
+Commit that change. `vcr doctor --fix` does the same move for every project you run it in.
 
 Every command takes `--project-dir PATH` if you're not inside the project, and most take `--json`.
 
@@ -443,6 +605,9 @@ vcr airbag gc --keep-days 7   # also deletes the dumps of deleted snapshots
 
 ## What it can't do
 
+- **Undo in folders that aren't protected** (not a git repository, no `.vcr/`; always `~` and
+  `/`). Nothing is snapshotted there, so destructive commands are stopped for a human instead
+  ([which folders](#which-folders-are-protected)).
 - **Anything outside the project directory**: other folders, `~`, system files. Deletes and
   writes that land there (`rm -rf ~/Documents`, `echo x > /etc/foo.conf`, `cp a.txt ../x.txt`,
   `mv`/`rsync`/`tee`/`install` targets) are classified *irreversible* and stopped; only paths
@@ -490,6 +655,10 @@ private store on your disk (mode `0700`) and keep their original permissions.
 
 **I ran `vcr undo` by mistake.** Run `vcr redo`.
 
+**Will my teammates notice I installed it?** No. Hooks go into your user-level agent configs,
+snapshots into your own state directory; nothing is written into the repository (unless you
+ask for `--project`).
+
 **Two agents are installed and both run the Claude hook. Double snapshots?** No. A tool call
 that reaches the airbag twice within 5 seconds is handled once.
 
@@ -507,6 +676,18 @@ OpenHands SDK 1.7.3 — installed source · Cline — `cline/cline` repository �
 Devin Local — docs.devin.ai. Payload formats for Cursor, Copilot, Cline and Devin were tested
 with documented sample payloads, not live agent sessions.
 
+User-level hook locations, verified on 2026-11-12: Claude Code `~/.claude/settings.json`
+(code.claude.com/docs/en/hooks, settings, statusline) · Codex `~/.codex/hooks.json`
+(Codex hooks docs; `/hooks` trust applies to user hooks too) · Gemini CLI `~/.gemini/settings.json`
+(0.37.1 bundle: the trusted-folder check drops user hooks too) · Cursor `~/.cursor/hooks.json`
+(cursor.com/docs/hooks) · Copilot CLI `~/.copilot/hooks/*.json` or `$COPILOT_HOME/hooks`
+(Copilot CLI hooks reference) · OpenHands `~/.openhands/hooks.json`, read only when the project
+has none (`software-agent-sdk` `HookConfig.load`) · Devin `~/.config/devin/config.json`, or
+`%APPDATA%\devin\config.json` (docs.devin.ai CLI hooks) · OpenCode
+`~/.config/opencode/plugin/` (opencode.ai/docs/plugins; the 1.19 binary loads `plugin/` and
+`plugins/`) · Cline `<Documents>/Cline/Hooks/` (`cline/cline` source). These locations come from
+docs and source; no live agent session has run the user-level files.
+
 ## Safety review
 
 Before release, an independent reviewer attacked the restore path: file growth past the size
@@ -518,7 +699,9 @@ finding has a regression test in `tests/unit/test_airbag_core.py`.
 
 | Command | What it does |
 |---|---|
-| `vcr airbag install [agent…] [--all] [--user]` | Arm the hooks (default: every agent on your PATH). |
+| `vcr airbag install [agent…] [--all] [--project] [--statusline]` | Arm the hooks at the user level (default: every agent on your PATH); moves 1.7.0 project hooks. |
+| `vcr doctor [--fix] [--json]` | Check the installation and print the exact fix; `--fix` repairs stale hooks. |
+| `vcr airbag statusline` | One status line for Claude Code (reads its JSON on stdin). |
 | `vcr undo [N] [--dry-run]` | Restore files to just before the last (N-th) agent action that changed something. |
 | `vcr redo` | Undo the last undo/rewind. |
 | `vcr rewind` / `vcr airbag log` | Timeline of protected actions with snapshot numbers (`-n` to limit). |
@@ -530,10 +713,10 @@ finding has a regression test in `tests/unit/test_airbag_core.py`.
 | `vcr airbag check "<cmd>"` | Classify a command without running it. |
 | `vcr airbag allow` | Approve the last stopped command for one retry within 10 minutes. |
 | `vcr airbag snapshot -m "msg"` | Manual snapshot. |
-| `vcr airbag status` | Policy, store location, installed hooks. |
+| `vcr airbag status` | Whether this folder is protected, policy, store location, installed hooks. |
 | `vcr airbag gc --keep-days 7 [--keep-last 50]` | Delete old snapshots (and their database dumps). |
 | `vcr airbag run -- <cmd>` | Periodic snapshots for agents without hooks. |
-| `vcr airbag uninstall [agent…]` | Remove only the airbag's hook entries. |
+| `vcr airbag uninstall [agent…] [--user\|--project]` | Remove only the airbag's hook entries (both levels by default). |
 
 **Next:** [Quickstart](quickstart.md) · [Recording and replay](recording-and-replay.md) ·
 [ACID workspace](acid-workspace.md) (file rollback inside your own agent code)
