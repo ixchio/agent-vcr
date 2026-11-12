@@ -121,8 +121,9 @@ feed then just work, over HTTP or behind HTTPS.
 2. Paste `AGENT_VCR_ADMIN_TOKEN` (or `AGENT_VCR_AUTH_TOKEN`) and click **Sign in**.
 
 For scripts or a bookmark, a link does the same thing and redirects to `/dashboard/` with the
-token removed from the address bar (it still lands in your shell history and proxy logs, so
-prefer the form on shared machines):
+token removed from the address bar. The server's own access log shows it as `?token=***`, but
+it still lands in your shell history, browser history and any proxy's logs, so prefer the form
+on shared machines:
 
 ```bash
 curl -s -c jar -o /dev/null -w '%{http_code} %{redirect_url}\n' \
@@ -134,10 +135,14 @@ curl -s -b jar -X POST http://127.0.0.1:8000/api/sessions/demo/resume \
 # {"detail":"Cross-origin request refused: ..."}   <- no Origin header, see below
 ```
 
-- The cookie (`agent_vcr_session`) is `HttpOnly`, `SameSite=Strict`, valid for 8 hours, and
-  `Secure` when the request came in over HTTPS (directly, or with `X-Forwarded-Proto: https`
+- The cookie (`agent_vcr_session_<port>`, so two servers on one host don't sign each other
+  out) is `HttpOnly`, `SameSite=Strict`, valid for 8 hours, and `Secure` with a `__Host-`
+  prefix when the request came in over HTTPS (directly, or with `X-Forwarded-Proto: https`
   from your proxy). It's a signed expiry, never the token itself.
 - Only the two server tokens can sign in. Project tokens get `401`, as on `/api/sessions`.
+  After 10 failed sign-ins in a minute from one address, sign-in answers `429` (with
+  `Retry-After`) until the minute is up. Behind a proxy every visitor shares the proxy's
+  address, so that limit is shared too.
 - Requests that change something (`POST`, `PUT`, `PATCH`, `DELETE`) authenticated only by the
   cookie must carry an `Origin` (or `Referer`) of the server itself: the browser does this
   for the web UI, a forged cross-site form doesn't get through. Requests with a token header

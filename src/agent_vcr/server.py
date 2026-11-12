@@ -87,10 +87,46 @@ _IDENTITY_SCOPE_KEY = "agent_vcr.identity"
 
 # Browser sign-in for the bundled dashboard (the built SPA cannot send a token): the
 # token is exchanged once for this HttpOnly, SameSite=Strict, HMAC-signed session cookie.
+#: Base name; the real cookie is ``<base>_<port>`` (cookies ignore ports, so two servers on
+#: one host would overwrite each other) with a ``__Host-`` prefix when it is Secure.
 DASHBOARD_COOKIE = "agent_vcr_session"
 DASHBOARD_COOKIE_TTL_S = 8 * 60 * 60
 _COOKIE_VERSION = "v1"
+_COOKIE_FORMAT = re.compile(r"^v1\.[0-9]{1,12}\.[0-9a-f]{64}$")
 _UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+#: Failed dashboard sign-ins allowed per client address per window, then HTTP 429.
+SIGN_IN_FAILURE_LIMIT = 10
+SIGN_IN_WINDOW_S = 60.0
+_SIGN_IN_TRACKED_CLIENTS = 10_000
+
+_TOKEN_QUERY = re.compile(r"([?&]token=)[^&\s\"']*", re.IGNORECASE)
+
+
+class RedactTokenFilter(logging.Filter):
+    """Rewrites ``?token=...`` to ``?token=***`` in log records (uvicorn's access log).
+
+    ``/dashboard?token=`` and ``/ws/live?token=`` carry a server token in the URL, and
+    uvicorn logs the full path of every request.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.msg, str) and "token=" in record.msg:
+            record.msg = _TOKEN_QUERY.sub(r"\1***", record.msg)
+        if isinstance(record.args, tuple):
+            record.args = tuple(
+                _TOKEN_QUERY.sub(r"\1***", arg) if isinstance(arg, str) and "token=" in arg
+                else arg
+                for arg in record.args
+            )
+        return True
+
+
+def install_access_log_redaction() -> None:
+    """Attach :class:`RedactTokenFilter` to uvicorn's loggers (idempotent)."""
+    for name in ("uvicorn.access", "uvicorn.error"):
+        target = logging.getLogger(name)
+        if not any(isinstance(f, RedactTokenFilter) for f in target.filters):
+            target.addFilter(RedactTokenFilter())
 
 _UPLOAD_CHUNK_BYTES = 1024 * 1024
 _UPLOAD_READ_TIMEOUT_S = 30.0
@@ -550,6 +586,10 @@ class VCRServer:
         self.allowed_origins = [o.rstrip("/") for o in (allowed_origins or [])]
         # Signs dashboard session cookies. Per process: a restart signs everyone out.
         self._cookie_key = secrets.token_bytes(32)
+        # Failed sign-in timestamps per client address (monotonic seconds).
+        self._sign_in_failures: dict[str, list[float]] = {}
+        self._sign_in_lock: asyncio.Lock | None = None
+        install_access_log_redaction()
         self.watcher = VCRFileWatcher(self.vcr_dir)
         self.observer: Any | None = None
         # Strong references to fire-and-forget work (workflow callbacks).
@@ -685,6 +725,10 @@ class VCRServer:
                 return await call_next(request)
             if path in _AUTH_EXEMPT_PATHS or path.startswith(_AUTH_EXEMPT_PREFIXES):
                 return await call_next(request)
+            if request.method == "OPTIONS" and "access-control-request-method" in request.headers:
+                # CORS preflight carries no credentials by design; the CORS layer answers it
+                # (and refuses origins that are not allowed). The real request is checked.
+                return await call_next(request)
 
             try:
                 identity = await asyncio.wait_for(
@@ -694,7 +738,7 @@ class VCRServer:
             except asyncio.TimeoutError:
                 return JSONResponse({"detail": "Token verification timed out"}, status_code=503)
             if identity[0] is None and self._dashboard_cookie_valid(
-                request.cookies.get(DASHBOARD_COOKIE)
+                self._session_cookie(request.cookies)
             ):
                 # Ambient credential: state changes need proof the dashboard itself sent them.
                 if request.method in _UNSAFE_METHODS and not self._same_origin(request.headers):
@@ -722,17 +766,55 @@ class VCRServer:
         payload = f"{_COOKIE_VERSION}.{int(time.time()) + DASHBOARD_COOKIE_TTL_S}"
         return f"{payload}.{self._sign_cookie(payload)}"
 
+    def cookie_name(self, secure: bool) -> str:
+        """This server's session cookie name: per port, ``__Host-`` prefixed when Secure."""
+        name = f"{DASHBOARD_COOKIE}_{self.port}"
+        return f"__Host-{name}" if secure else name
+
+    def _session_cookie(self, cookies: Any) -> str | None:
+        value = cookies.get(self.cookie_name(True))
+        return value if value is not None else cookies.get(self.cookie_name(False))
+
     def _dashboard_cookie_valid(self, value: str | None) -> bool:
         """Constant-time check of a cookie minted by this process that has not expired."""
-        if not value or not self.auth_required:
+        # Shape check first: anything else (incl. non-ASCII) is not ours, and
+        # hmac.compare_digest raises on non-ASCII str.
+        if not value or not self.auth_required or not _COOKIE_FORMAT.fullmatch(value):
             return False
-        parts = value.split(".")
-        if len(parts) != 3 or parts[0] != _COOKIE_VERSION or not parts[1].isdigit():
+        version, expires, signature = value.split(".")
+        payload = f"{version}.{expires}"
+        if not hmac.compare_digest(self._sign_cookie(payload), signature):
             return False
-        payload = f"{parts[0]}.{parts[1]}"
-        if not hmac.compare_digest(self._sign_cookie(payload), parts[2]):
-            return False
-        return int(parts[1]) > time.time()
+        return int(expires) > time.time()
+
+    def _sign_in_guard(self) -> asyncio.Lock:
+        if self._sign_in_lock is None:
+            self._sign_in_lock = asyncio.Lock()
+        return self._sign_in_lock
+
+    async def _sign_in_blocked(self, client: str) -> bool:
+        """True when ``client`` used up its failed sign-ins for the current window."""
+        now = time.monotonic()
+        async with self._sign_in_guard():
+            recent = [t for t in self._sign_in_failures.get(client, []) if now - t < SIGN_IN_WINDOW_S]
+            if recent:
+                self._sign_in_failures[client] = recent
+            else:
+                self._sign_in_failures.pop(client, None)
+            return len(recent) >= SIGN_IN_FAILURE_LIMIT
+
+    async def _record_sign_in_failure(self, client: str) -> None:
+        now = time.monotonic()
+        async with self._sign_in_guard():
+            if client not in self._sign_in_failures and \
+                    len(self._sign_in_failures) >= _SIGN_IN_TRACKED_CLIENTS:
+                # Bounded memory: drop clients whose window has passed, else the oldest.
+                for key in [k for k, ts in self._sign_in_failures.items()
+                            if not ts or now - ts[-1] >= SIGN_IN_WINDOW_S]:
+                    del self._sign_in_failures[key]
+                if len(self._sign_in_failures) >= _SIGN_IN_TRACKED_CLIENTS:
+                    del self._sign_in_failures[next(iter(self._sign_in_failures))]
+            self._sign_in_failures.setdefault(client, []).append(now)
 
     def _same_origin(self, headers: Any) -> bool:
         """True when Origin (or, without it, Referer) names this server or an allowed origin.
@@ -771,21 +853,29 @@ class VCRServer:
             )
 
         async def _sign_in(request: Request, token: str) -> Any:
+            client = request.client.host if request.client else "unknown"
+            if await self._sign_in_blocked(client):
+                limited = _login_page("Too many failed sign-ins. Try again in a minute.",
+                                      status_code=429)
+                limited.headers["Retry-After"] = str(int(SIGN_IN_WINDOW_S))
+                return limited
             # Only the two server tokens: the dashboard reads every local recording.
             valid = await asyncio.to_thread(self._is_admin_token, token.strip()) if token else False
             if not valid:
+                await self._record_sign_in_failure(client)
                 return _login_page("Invalid token.", status_code=401)
             response = RedirectResponse(url="/dashboard/", status_code=303)
             response.headers["Cache-Control"] = "no-store"
             response.headers["Referrer-Policy"] = "no-referrer"
+            secure = self._is_https(request)
             response.set_cookie(
-                DASHBOARD_COOKIE,
+                self.cookie_name(secure),
                 self._mint_dashboard_cookie(),
                 max_age=DASHBOARD_COOKIE_TTL_S,
                 path="/",
                 httponly=True,
                 samesite="strict",
-                secure=self._is_https(request),
+                secure=secure,
             )
             return response
 
@@ -796,7 +886,7 @@ class VCRServer:
             if token is not None:
                 return RedirectResponse(url="/dashboard/", status_code=303)
             if self.auth_required and not self._dashboard_cookie_valid(
-                request.cookies.get(DASHBOARD_COOKIE)
+                self._session_cookie(request.cookies)
             ):
                 return RedirectResponse(url="/dashboard/login", status_code=303)
             if request.url.path == "/dashboard":
@@ -829,9 +919,13 @@ class VCRServer:
             return await _sign_in(request, token if isinstance(token, str) else "")
 
         @self.app.get("/dashboard/logout", include_in_schema=False)
-        async def dashboard_logout() -> Any:
+        async def dashboard_logout(request: Request) -> Any:
             response = RedirectResponse(url="/dashboard/login", status_code=303)
-            response.delete_cookie(DASHBOARD_COOKIE, path="/", httponly=True, samesite="strict")
+            response.delete_cookie(self.cookie_name(False), path="/", httponly=True,
+                                   samesite="strict")
+            if self._is_https(request):  # __Host- cookies can only be cleared as Secure
+                response.delete_cookie(self.cookie_name(True), path="/", httponly=True,
+                                       samesite="strict", secure=True)
             return response
 
     def _is_admin_token(self, supplied: str) -> bool:
@@ -1692,7 +1786,7 @@ class VCRServer:
                 # or a dashboard session cookie on a same-origin handshake (browsers
                 # always send Origin there, so this also blocks WebSocket hijacking).
                 cookie_ok = self._dashboard_cookie_valid(
-                    websocket.cookies.get(DASHBOARD_COOKIE)
+                    self._session_cookie(websocket.cookies)
                 ) and self._same_origin(websocket.headers)
                 if not cookie_ok and not any(self._is_admin_token(c) for c in candidates):
                     await websocket.close(code=1008)

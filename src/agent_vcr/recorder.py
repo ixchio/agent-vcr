@@ -109,6 +109,15 @@ def update_manifest(output_dir: Path, session_data: dict[str, Any]) -> None:
             raise
 
 
+def stored_form(*values: Any) -> tuple[Any, ...]:
+    """``values`` as they come back from a ``.vcr`` file (a JSON round trip).
+
+    Bounded recorders mix cached frames with frames read back from disk; passing the cached
+    ones through this makes both identical (e.g. ``{1: x}`` is stored as ``{"1": x}``).
+    """
+    return tuple(json.loads(json_dumps_safe(value)) for value in values)
+
+
 def iter_frames_on_disk(path: Path, start: int = 0, stop: int | None = None) -> Iterator[Frame]:
     """Stream the valid frames ``[start, stop)`` of a ``.vcr`` file (player skip rules).
 
@@ -337,6 +346,10 @@ class VCRRecorder:
             else:
                 # Never mutate the caller's object (e.g. a replayed frame's metadata).
                 metadata = metadata.model_copy(update={"custom": dict(metadata.custom)})
+            if self.max_cached_frames is not None:
+                serialized_input, serialized_output, metadata.custom = stored_form(
+                    serialized_input, serialized_output, metadata.custom
+                )
 
             state_diff = None
             if self.diff_mode and self._previous_state is not None:
@@ -623,14 +636,18 @@ class VCRRecorder:
         """Get all recorded frames (including already-flushed ones).
 
         With ``max_cached_frames`` set, evicted frames are read back from the ``.vcr``
-        file, so this costs a file read once eviction has started.
+        file, so this costs a file read once eviction has started, and the result is a
+        snapshot list (eviction trims the cache in place). Unbounded, it is the live list
+        of the session's frames, which only grows.
         """
         with self._lock:
             if not self._session:
                 return self._frames.copy()
             cached = self._cache.get_frames(self._session.session_id)
-            if not self._evicted:
+            if self.max_cached_frames is None:
                 return cached
+            if not self._evicted:
+                return list(cached)
             on_disk = list(iter_frames_on_disk(self._get_session_path(), 0, self._evicted))
             return on_disk + list(cached)
 

@@ -6,9 +6,15 @@ and the header rewrite on save streams from disk instead of the in-memory cache.
 
 from __future__ import annotations
 
+import asyncio
 import json
+import os
+import sys
+import threading
+import time
 import tracemalloc
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -183,3 +189,114 @@ async def test_async_recorder_bounded(tmp_path: Path) -> None:
     fork = await rec.fork(7, new_session_id="async-fork")
     assert fork.get_frames()[0].output_state == {"i": 7}
     assert fork.max_cached_frames == CACHE
+
+
+# -- review fixes --------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_cancelled_async_save_keeps_the_lock_until_the_rewrite_is_done(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A cancelled save() used to release the lock while its rewrite thread ran on; the
+    thread's os.replace then dropped frames appended meanwhile (unrecoverable when bounded)."""
+    rewriting = threading.Event()
+    real_fsync = os.fsync
+
+    def slow_fsync(fd: int) -> None:
+        real_fsync(fd)
+        if sys._getframe(1).f_code.co_name == "_stream_rewrite":
+            rewriting.set()
+            time.sleep(0.4)  # a slow disk, between reading the file and os.replace
+
+    monkeypatch.setattr(os, "fsync", slow_fsync)
+    rec = AsyncVCRRecorder(output_dir=tmp_path, buffer_size=10, max_cached_frames=5)
+    await rec.start_session("cancel")
+    for i in range(100):
+        await rec.record_step(f"s{i}", {}, {"i": i})
+    await rec.save()
+    rewriting.clear()
+    for i in range(5):
+        await rec.record_step(f"t{i}", {}, {"i": i})
+
+    save = asyncio.create_task(rec.save())
+    assert await asyncio.to_thread(rewriting.wait, 10)
+    save.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await save
+    for i in range(20):  # two auto-flushes; they must not race the old rewrite
+        await rec.record_step(f"u{i}", {}, {"i": i})
+    await asyncio.sleep(0.6)  # (before the fix: let the orphaned rewrite's os.replace land)
+    player = VCRPlayer.load(await rec.save())
+    assert len(player.frames) == 125
+    assert player.session.frame_count == 125
+    assert player.verify_integrity()["ok"]
+
+
+@pytest.mark.asyncio
+async def test_cancelled_async_flush_does_not_append_twice(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    syncing = threading.Event()
+    real = AsyncVCRRecorder._fsync_path
+
+    def slow(path: Path) -> None:
+        syncing.set()
+        time.sleep(0.3)
+        real(path)
+
+    # Bounded, so the header rewrite cannot quietly repair the file from the cache.
+    rec = AsyncVCRRecorder(output_dir=tmp_path, buffer_size=5, max_cached_frames=2)
+    await rec.start_session("flush")
+    for i in range(4):
+        await rec.record_step(f"s{i}", {}, {"i": i})
+    monkeypatch.setattr(AsyncVCRRecorder, "_fsync_path", staticmethod(slow))
+    step = asyncio.create_task(rec.record_step("s4", {}, {"i": 4}))  # 5th frame flushes
+    assert await asyncio.to_thread(syncing.wait, 10)
+    step.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await step
+    monkeypatch.setattr(AsyncVCRRecorder, "_fsync_path", staticmethod(real))
+    player = VCRPlayer.load(await rec.save())
+    assert [f.node_name for f in player.frames] == [f"s{i}" for i in range(5)]
+
+
+def test_bounded_get_frames_returns_a_snapshot(tmp_path: Path) -> None:
+    rec = VCRRecorder(output_dir=str(tmp_path), buffer_size=5, max_cached_frames=3)
+    rec.start_session("snap")
+    for i in range(4):
+        _record(rec, i)
+    before = rec.get_frames()
+    ids = [f.frame_id for f in before]
+    for i in range(4, 30):
+        _record(rec, i)  # evicts in place
+    assert [f.frame_id for f in before] == ids
+
+
+@pytest.mark.parametrize("cls", ["sync", "async"])
+def test_cached_and_evicted_frames_look_the_same(tmp_path: Path, cls: str) -> None:
+    """JSON object keys are strings on disk; bounded recorders store cached frames that way
+    too, so get_frames() never mixes ``{1: ..}`` (cache) with ``{"1": ..}`` (disk)."""
+    async def _run() -> list[Any]:
+        rec = AsyncVCRRecorder(output_dir=tmp_path, buffer_size=4, max_cached_frames=3)
+        await rec.start_session("keys")
+        for i in range(12):
+            await rec.record_step("n", {i: "in"}, {i: ("out", i)},
+                                  metadata=FrameMetadata(custom={"k": {i: "c"}}))
+        await rec.save()
+        return rec.get_frames()
+
+    if cls == "async":
+        frames = asyncio.run(_run())
+    else:
+        sync = VCRRecorder(output_dir=str(tmp_path), buffer_size=4, max_cached_frames=3)
+        sync.start_session("keys")
+        for i in range(12):
+            sync.record_step("n", {i: "in"}, {i: ("out", i)},
+                             metadata=FrameMetadata(custom={"k": {i: "c"}}))
+        sync.save()
+        frames = sync.get_frames()
+    disk = VCRPlayer.load(tmp_path / "keys.vcr").frames
+    assert [f.model_dump() for f in frames] == [f.model_dump() for f in disk]
+    assert frames[-1].output_state == {"11": ["out", 11]}
+    assert frames[-1].metadata.custom == {"k": {"11": "c"}}

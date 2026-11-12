@@ -5,9 +5,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from collections.abc import Awaitable
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 import aiofiles
 
@@ -30,13 +31,40 @@ from agent_vcr.recorder import (
     iter_frames_on_disk,
     rewrite_session_file,
     rewrite_session_file_from_disk,
+    stored_form,
     update_manifest,
 )
 
 logger = logging.getLogger(__name__)
 
-#: Upper bound for reading evicted frames back from disk / rewriting a session file.
+#: Upper bound for reading evicted frames back from disk (read-only, safe to abandon).
 _DISK_IO_TIMEOUT_S = 300.0
+
+_T = TypeVar("_T")
+
+
+async def _finish_even_if_cancelled(work: Awaitable[_T]) -> _T:
+    """Await ``work`` to completion even if the caller is cancelled, then re-raise.
+
+    File writes run in worker threads that cancellation cannot stop. Releasing the
+    recorder lock while one is still running lets later appends race it: a rewrite's
+    ``os.replace`` then silently drops frames appended in the meantime. So the caller keeps
+    the lock until the thread has really finished, and only then sees the cancellation.
+    (No timeout for the same reason: abandoning the thread would release the lock early.)
+    """
+    task = asyncio.ensure_future(work)
+    cancelled = False
+    while True:
+        try:
+            result = await asyncio.shield(task)
+        except asyncio.CancelledError:
+            if task.done():
+                raise  # the work itself was cancelled
+            cancelled = True
+            continue
+        if cancelled:
+            raise asyncio.CancelledError
+        return result
 
 
 class AsyncVCRRecorder:
@@ -161,6 +189,11 @@ class AsyncVCRRecorder:
                 metadata = FrameMetadata()
             else:
                 metadata = metadata.model_copy(update={"custom": dict(metadata.custom)})
+            if self.max_cached_frames is not None:
+                # Cached frames must equal the ones read back from disk.
+                serialized_input, serialized_output, metadata.custom = stored_form(
+                    serialized_input, serialized_output, metadata.custom
+                )
 
             state_diff = None
             if self.diff_mode and self._previous_state is not None:
@@ -322,12 +355,12 @@ class AsyncVCRRecorder:
             if self._header_frame_count != self._session.frame_count:
                 # Header totals (frame_count, tokens, cost) were written at
                 # session start; rewrite atomically so they match the frames.
-                # Frames are streamed from the file, not from memory.
-                await asyncio.wait_for(
+                # Frames are streamed from the file, not from memory. The lock is
+                # held until the thread is done, even if this save() is cancelled.
+                await _finish_even_if_cancelled(
                     asyncio.to_thread(self._rewrite_file, path, self._session.model_copy(),
                                       self._evicted,
-                                      list(self._cache.get_frames(self._session.session_id))),
-                    timeout=_DISK_IO_TIMEOUT_S,
+                                      list(self._cache.get_frames(self._session.session_id)))
                 )
                 self._header_frame_count = self._session.frame_count
             await self._update_session_manifest()
@@ -342,13 +375,17 @@ class AsyncVCRRecorder:
         """Get all recorded frames (including already-flushed ones).
 
         With ``max_cached_frames`` set, evicted frames are read back from the ``.vcr``
-        file with blocking I/O; in a coroutine prefer ``await load_frames()``.
+        file with blocking I/O; in a coroutine prefer ``await load_frames()``. The
+        result is then a snapshot list (eviction trims the cache in place); unbounded,
+        it is the live list of the session's frames, which only grows.
         """
         if not self._session:
             return list(self._frames)
         cached = self._cache.get_frames(self._session.session_id)
-        if not self._evicted:
+        if self.max_cached_frames is None:
             return cached
+        if not self._evicted:
+            return list(cached)
         on_disk = list(iter_frames_on_disk(self._get_session_path(), 0, self._evicted))
         return on_disk + list(cached)
 
@@ -484,13 +521,22 @@ class AsyncVCRRecorder:
             json_dumps_safe({"type": "frame", "data": frame.model_dump()}) + "\n"
             for frame in self._frames
         )
-        async with aiofiles.open(path, "a", encoding="utf-8") as f:
-            await f.write(payload)
-            await f.flush()
-        # fsync must use the real fd — aiofiles doesn't expose fileno(),
-        # so we open briefly just for the sync.  os.replace-style atomic
-        # writes aren't practical for append-mode JSONL.
-        await asyncio.to_thread(self._fsync_path, path)
+        async def _append() -> None:
+            async with aiofiles.open(path, "a", encoding="utf-8") as f:
+                await f.write(payload)
+                await f.flush()
+            # fsync must use the real fd — aiofiles doesn't expose fileno(),
+            # so we open briefly just for the sync.  os.replace-style atomic
+            # writes aren't practical for append-mode JSONL.
+            await asyncio.to_thread(self._fsync_path, path)
+
+        try:
+            await _finish_even_if_cancelled(_append())
+        except asyncio.CancelledError:
+            # The batch did reach the file: keeping it buffered would append it twice.
+            self._frames = []
+            self._evict_flushed()
+            raise
         self._frames = []
         self._evict_flushed()
 
