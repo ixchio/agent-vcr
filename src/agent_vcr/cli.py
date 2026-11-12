@@ -125,7 +125,7 @@ TUI_INSTALL_HINT = 'pip install "ai-agent-vcr[tui]"'
 # if it looks like one, or rejected as an unknown command).
 COMMANDS = frozenset({
     "init", "tui", "serve", "bundle", "dataset", "ci", "cloud", "superagent",
-    "workflow", "intel", "reproduce", "undo", "redo", "rewind", "airbag",
+    "workflow", "intel", "reproduce", "undo", "redo", "rewind", "airbag", "mcp",
 })
 
 
@@ -167,6 +167,19 @@ def _run_serve(argv: list[str]) -> None:
     from agent_vcr.server import main as server_main
 
     server_main(argv)
+
+
+def _cmd_mcp(args: argparse.Namespace) -> None:
+    """``vcr mcp`` — stdio Model Context Protocol server (stdout carries only JSON-RPC)."""
+    project_dir = Path(args.project_dir).expanduser()
+    if not project_dir.is_dir():
+        print(f"Error: project directory does not exist: {project_dir}", file=sys.stderr)
+        raise SystemExit(2)
+    from agent_vcr.mcp_server import run
+
+    code = run(project_dir)
+    if code:
+        raise SystemExit(code)
 
 
 def _cmd_bundle_export(args: argparse.Namespace) -> None:
@@ -752,6 +765,19 @@ def main(argv: list[str] | None = None) -> None:
     from agent_vcr.airbag.cli import register as register_airbag
 
     register_airbag(subparsers)
+
+    mcp_parser = subparsers.add_parser(
+        "mcp",
+        help="Run the MCP server on stdio so any MCP agent can see and drive its airbag",
+        description="Model Context Protocol server over stdio. Register it with your agent, "
+                    "e.g. `claude mcp add agent-vcr -- vcr mcp` or "
+                    "`codex mcp add agent-vcr -- vcr mcp`. See docs/mcp.md.",
+    )
+    mcp_parser.add_argument(
+        "--project-dir", default=".",
+        help="Default project for the tools (default: the directory the agent starts it in)",
+    )
+    mcp_parser.set_defaults(func=_cmd_mcp)
 
     tui_parser = subparsers.add_parser("tui", help="Open the terminal debugger")
     tui_parser.add_argument("file", help="Path to the .vcr file to replay")

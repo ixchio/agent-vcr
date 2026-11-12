@@ -27,6 +27,7 @@ New here? → **[Quickstart: every superpower in 5 minutes](quickstart.md)**
 | Feature | What it does for you | Guide |
 |---|---|---|
 | 🛟 **Airbag** | Snapshots your project before every coding-agent tool call; `vcr undo` brings it back | [airbag.md](airbag.md) |
+| 🧰 **MCP server** | `vcr mcp` gives any MCP agent (Claude Code, Codex, Cursor, Gemini CLI) airbag tools: check a command first, snapshot, preview undo | [mcp.md](mcp.md) |
 | ⏪ **Recording & time travel** | Records every step of your agent; jump to any step, diff, fork, resume | [recording-and-replay.md](recording-and-replay.md) |
 | 👻 **Ghost Replay** | Re-runs a verified run from its recording — zero model calls, zero tokens | [recording-and-replay.md](recording-and-replay.md) |
 | 🔁 **ACID workspace** | Transactions for your own agent: savepoint, rollback, commit — files and state together | [acid-workspace.md](acid-workspace.md) |
