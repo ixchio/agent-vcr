@@ -79,6 +79,15 @@ class Snapshot:
 
 
 @dataclass
+class DatabaseDump:
+    """A database dump file (in the store) waiting to be attached to a snapshot."""
+
+    path: Path
+    name: str
+    info: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
 class RestoreResult:
     """What a restore changed on disk."""
 
@@ -89,6 +98,10 @@ class RestoreResult:
     failed: list[str] = field(default_factory=list)
     #: Present on disk but not protected (too large, ignored, nested repo): left untouched.
     kept: list[str] = field(default_factory=list)
+    #: Databases restored from a dump (see :mod:`agent_vcr.airbag.databases`).
+    databases: list[str] = field(default_factory=list)
+    #: Caveats about what was restored (e.g. a database restore that was not exact).
+    notes: list[str] = field(default_factory=list)
 
     @property
     def changed(self) -> int:
@@ -288,6 +301,7 @@ class ShadowStore:
 
     def _git(
         self, *args: str, input_bytes: bytes | None = None, check: bool = True,
+        env_extra: dict[str, str] | None = None, cwd: Path | None = None,
     ) -> subprocess.CompletedProcess[bytes]:
         env = _clean_env()
         env.update({
@@ -302,14 +316,17 @@ class ShadowStore:
             "GIT_COMMITTER_NAME": "agent-vcr airbag",
             "GIT_COMMITTER_EMAIL": "airbag@agent-vcr.local",
         })
+        env.update(env_extra or {})
         cmd = [
             "git", "-c", "core.hooksPath=" + os.devnull, "-c", "commit.gpgsign=false",
             "-c", "core.autocrlf=false", "-c", "core.safecrlf=false",
             "-c", "core.quotepath=false", "-c", "core.fsmonitor=false",
             "-c", "gc.auto=0", "-c", "advice.addIgnoredFile=false", *args,
         ]
+        if cwd is None:
+            cwd = self.root if self.root.exists() else self.dir
         result = subprocess.run(
-            cmd, cwd=str(self.root) if self.root.exists() else str(self.dir),
+            cmd, cwd=str(cwd),
             input=input_bytes, capture_output=True, timeout=self.git_timeout,
             env=env, stdin=None if input_bytes is not None else subprocess.DEVNULL,
         )
@@ -322,19 +339,67 @@ class ShadowStore:
     # ── snapshot ─────────────────────────────────────────────────────────
 
     def snapshot(self, label: str = "snapshot", meta: dict[str, Any] | None = None,
-                 *, backup_git_dir: bool = False) -> Snapshot:
+                 *, backup_git_dir: bool = False,
+                 databases: list[DatabaseDump] | None = None) -> Snapshot:
         """Record the current state of the project. Cheap when nothing changed.
 
         ``backup_git_dir`` also preserves the project's own ``.git`` (as
         hardlinks — near-instant, no extra space) for commands that would
         delete it, e.g. ``rm -rf`` of the project.
+
+        ``databases`` attaches database dumps (already written into the store
+        via :meth:`new_dump_path`). Such a snapshot always gets its own number,
+        even when no file changed, and its metadata lists the dumps.
         """
         self.ensure()
         with self.lock():
-            snap = self._snapshot_locked(label, meta or {})
+            snap = self._snapshot_locked(label, meta or {}, databases=databases)
             if backup_git_dir:
                 self._backup_git_dir(snap.seq)
             return snap
+
+    # ── database dumps attached to snapshots ─────────────────────────────
+
+    @property
+    def db_dir(self) -> Path:
+        return self.dir / "db"
+
+    def new_dump_path(self, name: str) -> Path:
+        """A fresh private (0600) file in the store for a database dump in progress."""
+        self.db_dir.mkdir(parents=True, exist_ok=True)
+        with contextlib.suppress(OSError):
+            os.chmod(self.dir, 0o700)
+            os.chmod(self.db_dir, 0o700)
+        safe = _SAFE_NAME.sub("_", name)[:40] or "db"
+        fd, path = tempfile.mkstemp(dir=str(self.db_dir), prefix=f".tmp-{safe}-", suffix=".dump")
+        os.close(fd)
+        os.chmod(path, 0o600)
+        return Path(path)
+
+    def dump_file(self, entry: dict[str, Any]) -> Path | None:
+        """The dump file a snapshot's ``databases`` entry points to (inside the store only)."""
+        rel = str(entry.get("dump") or "")
+        if not rel:
+            return None
+        path = (self.dir / rel).resolve()
+        if self.db_dir.resolve() not in path.parents or not path.is_file():
+            return None
+        return path
+
+    def _attach_dumps(self, seq: int, dumps: list[DatabaseDump]) -> list[dict[str, Any]]:
+        entries: list[dict[str, Any]] = []
+        for dump in dumps:
+            safe = _SAFE_NAME.sub("_", dump.name)[:40] or "db"
+            dest = self.db_dir / f"{seq:08d}-{safe}.dump"
+            n = 1
+            while dest.exists():
+                n += 1
+                dest = self.db_dir / f"{seq:08d}-{safe}-{n}.dump"
+            os.replace(dump.path, dest)
+            entries.append({**dump.info, "name": dump.name,
+                            "dump": dest.relative_to(self.dir).as_posix(),
+                            "bytes": dest.stat().st_size})
+        return entries
 
     # ── the project's own .git (only for commands that delete it) ────────
 
@@ -467,7 +532,8 @@ class ShadowStore:
         shutil.copytree(backup, target, symlinks=True, copy_function=link_or_copy)
         return note
 
-    def _snapshot_locked(self, label: str, meta: dict[str, Any]) -> Snapshot:
+    def _snapshot_locked(self, label: str, meta: dict[str, Any], *,
+                         databases: list[DatabaseDump] | None = None) -> Snapshot:
         if not self.root.exists():
             self.root.mkdir(parents=True)
         skipped: list[str] = []
@@ -520,10 +586,12 @@ class ShadowStore:
 
         tree = self._git("write-tree").stdout.decode().strip()
         last = self.latest()
-        if last is not None and last.tree == tree:
+        if last is not None and last.tree == tree and not databases:
             return last  # nothing changed since the previous snapshot
         files = int(self._git("ls-files", "-z").stdout.count(b"\0"))
         seq = (last.seq + 1) if last is not None else 1
+        if databases:
+            meta = {**meta, "databases": self._attach_dumps(seq, databases)}
         record = {"seq": seq, "label": label, "time": time.time(), "files": files,
                   "skipped_large": skipped[:50], "nested_repos": nested[:50], **meta}
         commit = self._git(
@@ -712,17 +780,20 @@ class ShadowStore:
 
     # ── restore ──────────────────────────────────────────────────────────
 
-    def restore(self, target: Snapshot) -> RestoreResult:
+    def restore(self, target: Snapshot,
+                databases: list[DatabaseDump] | None = None) -> RestoreResult:
         """Make protected files match ``target``.
 
         A snapshot of the current state is taken first, so every restore can
         itself be undone. Only paths the store tracks are touched: ignored
         dependency trees, files over the size limit and anything outside the
-        project root are left alone.
+        project root are left alone. ``databases`` are safety dumps of the
+        current databases, attached to that "before" snapshot.
         """
         self.ensure()
         with self.lock():
-            before = self._snapshot_locked("before-restore", {"restoring_to": target.seq})
+            before = self._snapshot_locked("before-restore", {"restoring_to": target.seq},
+                                           databases=databases)
             result = RestoreResult(target=target, before=before)
             to_write: list[str] = []
             to_delete: list[str] = []
@@ -814,6 +885,43 @@ class ShadowStore:
         except OSError:
             return False
         return True
+
+    # ── read-only checkouts (vcr bisect) ─────────────────────────────────
+
+    def materialize(self, target: Snapshot, dest: str | Path) -> None:
+        """Write the files of ``target`` into ``dest``, an empty directory outside the project.
+
+        Uses a throwaway index, so the project, the shadow index and the refs
+        are not touched.
+        """
+        dest = Path(dest).resolve()
+        if dest == self.root or self.root in dest.parents:
+            raise AirbagError(f"refusing to check out a snapshot inside the project: {dest}")
+        dest.mkdir(parents=True, exist_ok=True)
+        if any(dest.iterdir()):
+            raise AirbagError(f"checkout directory is not empty: {dest}")
+        with tempfile.TemporaryDirectory(prefix="vcr-index-") as tmp:
+            env = {"GIT_WORK_TREE": str(dest), "GIT_INDEX_FILE": str(Path(tmp) / "index")}
+            self._git("read-tree", target.tree, env_extra=env, cwd=dest)
+            self._git("checkout-index", "-a", "-f", env_extra=env, cwd=dest)
+
+    def ignored_top_level_dirs(self) -> list[str]:
+        """Top-level project directories that snapshots skip (``node_modules``, ``.venv``...)."""
+        if not (self.git_dir / "HEAD").exists() or not self.root.is_dir():
+            return []
+        out = self._git(
+            "ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--directory",
+            check=False,
+        ).stdout
+        dirs: list[str] = []
+        for raw in out.split(b"\0"):
+            rel = raw.decode("utf-8", "surrogateescape")
+            if not rel.endswith("/") or "/" in rel[:-1]:
+                continue
+            name = rel[:-1]
+            if name and name != ".git" and (self.root / name).is_dir():
+                dirs.append(name)
+        return sorted(dirs)
 
     # ── action log / undo state ──────────────────────────────────────────
 
@@ -908,9 +1016,25 @@ class ShadowStore:
                 backup = self.gitdirs / f"{snap.seq:08d}"
                 if backup != newest_gitdir:
                     shutil.rmtree(backup, ignore_errors=True)
+                for entry in snap.meta.get("databases") or []:
+                    dump = self.dump_file(entry) if isinstance(entry, dict) else None
+                    if dump is not None:
+                        with contextlib.suppress(OSError):
+                            dump.unlink()
+            self._remove_stale_dump_tmp()
             self._git("reflog", "expire", "--expire=now", "--all", check=False)
             self._git("gc", "--prune=now", "--quiet", check=False)
         return len(doomed)
+
+    def _remove_stale_dump_tmp(self, max_age: float = 86400.0) -> None:
+        """Dumps left half-written by a killed hook process."""
+        if not self.db_dir.is_dir():
+            return
+        cutoff = time.time() - max_age
+        for path in self.db_dir.glob(".tmp-*"):
+            with contextlib.suppress(OSError):
+                if path.stat().st_mtime < cutoff:
+                    path.unlink()
 
     def disk_usage(self) -> int:
         total = 0

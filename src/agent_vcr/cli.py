@@ -125,7 +125,7 @@ TUI_INSTALL_HINT = 'pip install "ai-agent-vcr[tui]"'
 # if it looks like one, or rejected as an unknown command).
 COMMANDS = frozenset({
     "init", "tui", "serve", "bundle", "dataset", "ci", "cloud", "superagent",
-    "workflow", "intel", "reproduce", "undo", "redo", "rewind", "airbag",
+    "workflow", "intel", "reproduce", "undo", "redo", "rewind", "bisect", "airbag",
 })
 
 
