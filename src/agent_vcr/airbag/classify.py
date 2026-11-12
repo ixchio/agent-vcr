@@ -175,10 +175,7 @@ _LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "0.0.0.0", ""})
 
 def classify(command: str, cwd: str | Path | None = None, root: str | Path | None = None) -> Verdict:
     """Classify a shell command string run in ``cwd`` for project ``root``."""
-    ctx = _Context(
-        cwd=Path(cwd).expanduser().resolve() if cwd else Path.cwd(),
-        root=Path(root).expanduser().resolve() if root else None,
-    )
+    ctx = _Context.create(cwd, root)
     verdict = Verdict()
     _classify_into(command, ctx, verdict, depth=0)
     return verdict
@@ -187,10 +184,7 @@ def classify(command: str, cwd: str | Path | None = None, root: str | Path | Non
 def classify_file_write(path: str, cwd: str | Path | None = None,
                         root: str | Path | None = None) -> Verdict:
     """Verdict for an agent's file-edit tool writing ``path``."""
-    ctx = _Context(
-        cwd=Path(cwd).expanduser().resolve() if cwd else Path.cwd(),
-        root=Path(root).expanduser().resolve() if root else None,
-    )
+    ctx = _Context.create(cwd, root)
     verdict = Verdict(level="write", paths=[path])
     if not ctx.inside(path):
         verdict.raise_to("write", "file is outside the project (not protected by snapshots)",
@@ -207,25 +201,87 @@ class _Context:
     sql_hint: str | None = None
     #: ``VAR=value`` assignments preceding the current simple command.
     env: dict[str, str] = field(default_factory=dict)
+    #: Every spelling of ``root``: its realpath and the path as given. On macOS ``/var``,
+    #: ``/tmp`` and ``/home`` are symlinks, so a project and the paths in a command can name
+    #: the same directory differently; all comparisons go through these.
+    roots: tuple[Path, ...] = ()
+
+    @classmethod
+    def create(cls, cwd: str | Path | None, root: str | Path | None) -> _Context:
+        real_root = Path(os.path.realpath(Path(root).expanduser())) if root else None
+        spellings: list[Path] = []
+        if root:
+            assert real_root is not None
+            spellings.append(real_root)
+            given = Path(os.path.normpath(os.path.abspath(Path(root).expanduser())))
+            if given != real_root:
+                spellings.append(given)
+        return cls(
+            cwd=Path(os.path.realpath(Path(cwd).expanduser())) if cwd else Path.cwd(),
+            root=real_root,
+            roots=tuple(spellings),
+        )
+
+    @staticmethod
+    def _expand(raw: str) -> Path:
+        text = os.path.expandvars(raw.replace("${HOME}", "~").replace("$HOME", "~"))
+        return Path(text).expanduser()
 
     def resolve(self, raw: str) -> Path:
-        text = os.path.expandvars(raw.replace("${HOME}", "~").replace("$HOME", "~"))
-        path = Path(text).expanduser()
+        path = self._expand(raw)
         if not path.is_absolute():
             path = self.cwd / path
-        return Path(os.path.normpath(str(path)))
+        normal = os.path.normpath(str(path))
+        # Resolve symlinks in the parent (``root`` is a realpath, e.g. /tmp -> /private/tmp on
+        # macOS) but not in the last component: ``rm link`` removes the link, not its target.
+        parent, name = os.path.split(normal)
+        return Path(os.path.join(os.path.realpath(parent), name)) if name else Path(normal)
+
+    def root_relative(self, raw: str) -> Path | None:
+        """``raw`` relative to the project root (``.`` for the root), None when outside."""
+        path = self.resolve(raw)
+        for root in self.roots:
+            if path == root:
+                return Path(".")
+            if root in path.parents:
+                return path.relative_to(root)
+        return None
 
     def inside(self, raw: str) -> bool:
-        if self.root is None:
-            return True
+        return self.root is None or self.root_relative(raw) is not None
+
+    def contains_root(self, raw: str) -> bool:
+        """True when ``raw`` is a parent directory of the project (e.g. ``..`` at the root)."""
         path = self.resolve(raw)
-        return path == self.root or self.root in path.parents
+        return any(path in root.parents for root in self.roots)
 
     def is_temp(self, raw: str) -> bool:
-        path = str(self.resolve(raw))
-        temps = {"/tmp", "/var/tmp", "/private/tmp", "/var/folders", "/dev/shm",
-                 os.environ.get("TMPDIR", "/tmp").rstrip("/")}
-        return any(path == t or path.startswith(t + "/") for t in temps if t)
+        """True when ``raw`` is scratch space outside the project (``/tmp/build-cache``).
+
+        Never the temp directory itself, and never a *relative* path that only lands in a
+        temp directory because the project lives there: in ``/tmp/demo``, ``cp a ../x``
+        writes next to the project, not to scratch space it asked for by name.
+        """
+        path = self.resolve(raw)
+        explicit = self._expand(raw).is_absolute()
+        for temp in self._temp_dirs():
+            if not str(path).startswith(str(temp).rstrip("/") + "/"):
+                continue
+            project_in_temp = any(temp in root.parents for root in self.roots)
+            if explicit or not project_in_temp:
+                return True
+        return False
+
+    @staticmethod
+    def _temp_dirs() -> list[Path]:
+        names = {"/tmp", "/var/tmp", "/private/tmp", "/var/folders", "/dev/shm",
+                 os.environ.get("TMPDIR", "").rstrip("/")}
+        dirs: set[Path] = set()
+        for name in names:
+            if name and name != "/":
+                dirs.add(Path(name))
+                dirs.add(Path(os.path.realpath(name)))
+        return sorted(dirs)
 
 
 def _classify_into(command: str, ctx: _Context, verdict: Verdict, depth: int) -> None:
@@ -537,9 +593,48 @@ def _classify_file_tool(prog: str, args: list[str], ctx: _Context, verdict: Verd
         verdict.raise_to("destructive", f"recursive {prog}", "files")
     else:
         verdict.raise_to("write")
-    # Destination for cp/mv/rsync/install/ln is the last operand; others: all.
-    dests = operands[-1:] if prog in {"cp", "mv", "rsync", "install", "ln"} else operands
+    if prog == "rsync" and any(_REMOTE_PATH.match(a) for a in operands[-1:]):
+        verdict.raise_to("irreversible", f"rsync writes {operands[-1]} on another machine",
+                         "remote")
+        return
+    sources: list[str] = []
+    if prog in {"cp", "mv", "install", "ln"} and _target_directory(args) is not None:
+        # GNU ``-t DIR`` / ``--target-directory=DIR``: every operand is a source.
+        target_dir = _target_directory(args) or ""
+        sources = [a for a in operands if a != target_dir]
+        dests = [target_dir]
+    elif prog == "install" and any(a in {"-d", "--directory"} for a in args):
+        dests = operands  # install -d creates every operand
+    elif prog in {"cp", "mv", "rsync", "install", "ln"}:
+        # Destination is the last operand; the rest are sources.
+        sources, dests = operands[:-1], operands[-1:]
+    else:
+        dests = operands
     _check_targets(dests, ctx, verdict, "write")
+    if prog == "mv" or (prog == "rsync" and "--remove-source-files" in args):
+        # Moving removes the source: a source outside the project is an outside delete.
+        _check_targets([s for s in sources if not _REMOTE_PATH.match(s)], ctx, verdict,
+                       "delete")
+
+
+#: ``host:path`` / ``user@host:path`` operands of rsync (not ``./a:b`` or ``/x:y``).
+_REMOTE_PATH = re.compile(r"^(?:[^@/:\s]+@)?[A-Za-z0-9][\w.-]*:(?!//)")
+
+
+def _target_directory(args: list[str]) -> str | None:
+    """Value of GNU ``-t DIR`` / ``-tDIR`` / ``--target-directory[=]DIR``, or None."""
+    for i, arg in enumerate(args):
+        if arg in {"-t", "--target-directory"}:
+            return args[i + 1] if i + 1 < len(args) else ""
+        if arg.startswith("--target-directory="):
+            return arg.split("=", 1)[1]
+        if arg.startswith("-") and not arg.startswith("--") and "t" in arg[1:]:
+            # Short-option cluster: ``-t DIR``, ``-tDIR``, ``-rt DIR``, ``-rtDIR``.
+            rest = arg[arg.index("t", 1) + 1:]
+            if rest:
+                return rest
+            return args[i + 1] if i + 1 < len(args) else ""
+    return None
 
 
 def _check_targets(targets: list[str], ctx: _Context, verdict: Verdict, action: str) -> None:
@@ -547,6 +642,14 @@ def _check_targets(targets: list[str], ctx: _Context, verdict: Verdict, action: 
         if not target or target.startswith("-") or "://" in target:
             continue
         verdict.paths.append(target)
+        if ctx.contains_root(target):
+            verdict.raise_to(
+                "irreversible",
+                f"{action}s {target}, a directory that contains the project (snapshots only "
+                "cover the project)",
+                "outside-project",
+            )
+            continue
         if not ctx.inside(target) and ctx.is_temp(target):
             continue  # scratch files outside the project (e.g. /tmp/build-cache)
         if not ctx.inside(target):
@@ -556,13 +659,13 @@ def _check_targets(targets: list[str], ctx: _Context, verdict: Verdict, action: 
                 "outside-project",
             )
         elif ctx.root is not None and action == "delete":
-            resolved = ctx.resolve(target)
-            git_dir = ctx.root / ".git"
-            if resolved == ctx.root:
+            rel = ctx.root_relative(target)
+            parts = rel.parts if rel is not None else ()
+            if rel == Path("."):
                 verdict.raise_to("destructive", "deletes the whole project directory", "git-dir")
-            elif resolved == git_dir or git_dir in resolved.parents:
+            elif parts[:1] == (".git",):
                 verdict.raise_to("destructive", "deletes the project's .git history", "git-dir")
-            elif any(ch in target for ch in "*?[") and resolved.parent == ctx.root and \
+            elif any(ch in target for ch in "*?[") and len(parts) == 1 and \
                     target.rsplit("/", 1)[-1].startswith("."):
                 verdict.raise_to("destructive", "glob may match .git", "git-dir")
 

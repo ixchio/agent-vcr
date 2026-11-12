@@ -222,6 +222,36 @@ rec.save()
 
 Handy after a crash: totals keep counting from where the file left off.
 
+### Record very long runs in bounded memory
+
+By default the recorder keeps every frame in RAM so `get_frames()` and `fork()` are instant.
+For runs with tens of thousands of steps, cap it:
+
+```python
+from agent_vcr import VCRPlayer, VCRRecorder
+
+rec = VCRRecorder(output_dir=".vcr", max_cached_frames=1000)
+rec.start_session("overnight")
+for i in range(20_000):
+    rec.record_step("tick", {"i": i}, {"i": i + 1})
+rec.save()
+
+print(rec.cached_frame_count)                       # <= 1000 (+ up to buffer_size unflushed)
+print(len(rec.get_frames()))                        # 20000, older ones read back from disk
+print(rec.fork(5).get_frames()[0].output_state)     # {'i': 6}
+print(VCRPlayer.load(".vcr/overnight.vcr").verify_integrity()["ok"])   # True
+```
+
+- Only frames already written to the file are evicted (every `buffer_size` frames with
+  `auto_save=True`, or at `save()`), so RAM stays at about `max_cached_frames + buffer_size`.
+- `get_frames()`, `fork()` and `GoldenRunCache.save_golden_run()` still see every frame; once
+  eviction has started they cost a read of the `.vcr` file. `save()` streams the file to
+  rewrite its header and never needs the whole run in memory.
+- `AsyncVCRRecorder(max_cached_frames=...)` works the same; use `await rec.load_frames()` to
+  read evicted frames off the event loop.
+- The default stays `None` (unbounded): small runs behave exactly as before, and code that calls
+  `get_frames()` in a loop never turns into repeated file reads without you opting in.
+
 ### Ship a bug report as a bundle
 
 ```bash
@@ -373,7 +403,7 @@ when the golden run has no cost data. So a replay that re-ran everything reports
 
 | Do this | With |
 |---|---|
-| Start / attach a recording | `VCRRecorder(output_dir=".vcr", diff_mode=False)`, `.start_session(id, tags=, metadata=, if_exists="rotate")`, `.attach_session(id)` |
+| Start / attach a recording | `VCRRecorder(output_dir=".vcr", diff_mode=False, max_cached_frames=None)`, `.start_session(id, tags=, metadata=, if_exists="rotate")`, `.attach_session(id)` |
 | Record | `.record_step(node, input, output, metadata=)`, `.record_llm_call(...)`, `.record_tool_call(...)`, `.record_error(node, input, exc, latency_ms)`, `.record_checkpoint(state, label=)` |
 | Save | `.save()` (or use `with VCRRecorder(...) as rec:`) |
 | Async | `AsyncVCRRecorder` (same methods, `await`), `await AsyncVCRPlayer.load(path)` |

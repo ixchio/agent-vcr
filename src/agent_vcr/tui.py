@@ -235,6 +235,12 @@ class EditStateScreen(ModalScreen):
     }
     """
 
+    # priority: the focused TextArea must not swallow the save/cancel keys.
+    BINDINGS = [
+        Binding("ctrl+s", "save", "Save", priority=True),
+        Binding("escape", "cancel", "Cancel", priority=True),
+    ]
+
     def __init__(self, initial_json: str, frame_index: int) -> None:
         super().__init__()
         self._initial_json = initial_json
@@ -254,12 +260,14 @@ class EditStateScreen(ModalScreen):
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "save-btn":
-            area = self.query_one(TextArea)
-            self.dismiss(area.text)
+            self.action_save()
         else:
-            self.dismiss(None)
+            self.action_cancel()
 
-    def key_escape(self) -> None:
+    def action_save(self) -> None:
+        self.dismiss(self.query_one(TextArea).text)
+
+    def action_cancel(self) -> None:
         self.dismiss(None)
 
 

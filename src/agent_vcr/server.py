@@ -3,16 +3,20 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import hmac
+import html
 import http.client
 import ipaddress
 import json
 import logging
 import os
 import re
+import secrets
 import socket
 import ssl
 import sys
+import time
 import urllib.parse
 from collections.abc import AsyncGenerator, Callable
 from contextlib import asynccontextmanager
@@ -49,7 +53,7 @@ try:
         WebSocketDisconnect,
     )
     from fastapi.middleware.cors import CORSMiddleware
-    from fastapi.responses import JSONResponse, RedirectResponse
+    from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
     from fastapi.staticfiles import StaticFiles
     from watchdog.events import FileSystemEventHandler
     from watchdog.observers import Observer
@@ -80,6 +84,13 @@ _AUTH_EXEMPT_PREFIXES = ("/api/hosted/",)
 # re-checks that the token belongs to the requested project.
 _PROJECT_SCOPED_PREFIX = "/api/projects/"
 _IDENTITY_SCOPE_KEY = "agent_vcr.identity"
+
+# Browser sign-in for the bundled dashboard (the built SPA cannot send a token): the
+# token is exchanged once for this HttpOnly, SameSite=Strict, HMAC-signed session cookie.
+DASHBOARD_COOKIE = "agent_vcr_session"
+DASHBOARD_COOKIE_TTL_S = 8 * 60 * 60
+_COOKIE_VERSION = "v1"
+_UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
 _UPLOAD_CHUNK_BYTES = 1024 * 1024
 _UPLOAD_READ_TIMEOUT_S = 30.0
@@ -149,6 +160,49 @@ def _header_tokens(headers: Any) -> list[str]:
     if authorization and authorization.lower().startswith("bearer "):
         candidates.append(authorization[7:].strip())
     return [c for c in candidates if c]
+
+
+def _origin_netloc(value: str | None) -> str | None:
+    """``host[:port]`` of an Origin/Referer value, lower-cased; None if unusable."""
+    if not value or value == "null":
+        return None
+    parsed = urllib.parse.urlsplit(value)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return None
+    return parsed.netloc.lower()
+
+
+_LOGIN_PAGE = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent VCR - sign in</title>
+<style>
+body{{font-family:system-ui,sans-serif;background:#0f1115;color:#e6e6e6;display:flex;
+min-height:100vh;align-items:center;justify-content:center;margin:0}}
+form{{background:#181b22;padding:2rem;border-radius:8px;width:min(22rem,90vw)}}
+h1{{font-size:1.2rem;margin:0 0 1rem}}label{{display:block;margin-bottom:.4rem}}
+input{{width:100%;box-sizing:border-box;padding:.5rem;margin-bottom:1rem;border-radius:4px;
+border:1px solid #333;background:#0f1115;color:inherit}}
+button{{padding:.5rem 1rem;border:0;border-radius:4px;background:#3b82f6;color:#fff}}
+.err{{color:#f87171;margin:0 0 1rem}}
+</style></head><body>
+<form method="post" action="/dashboard/login">
+<h1>Agent VCR dashboard</h1>{error}
+<label for="token">Server token</label>
+<input id="token" name="token" type="password" autocomplete="current-password" required autofocus>
+<button type="submit">Sign in</button>
+</form></body></html>
+"""
+
+_LOGIN_HEADERS = {
+    "Cache-Control": "no-store",
+    "Referrer-Policy": "no-referrer",
+    "X-Frame-Options": "DENY",
+    "Content-Security-Policy": (
+        "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; "
+        "frame-ancestors 'none'"
+    ),
+}
 
 
 async def _read_upload_limited(file: Any, limit: int) -> bytes:
@@ -490,6 +544,9 @@ class VCRServer:
             if allow_private_callbacks is None
             else allow_private_callbacks
         )
+        self.allowed_origins = [o.rstrip("/") for o in (allowed_origins or [])]
+        # Signs dashboard session cookies. Per process: a restart signs everyone out.
+        self._cookie_key = secrets.token_bytes(32)
         self.watcher = VCRFileWatcher(self.vcr_dir)
         self.observer: Any | None = None
         # Strong references to fire-and-forget work (workflow callbacks).
@@ -529,6 +586,8 @@ class VCRServer:
         # Serve the built React dashboard if it exists
         dashboard_dir = Path(__file__).parent / "dashboard"
         if dashboard_dir.is_dir() and any(dashboard_dir.iterdir()):
+            # Sign-in routes first: they must win over the static mount.
+            self._setup_dashboard_auth_routes(dashboard_dir)
             self.app.mount("/dashboard", StaticFiles(directory=str(dashboard_dir), html=True), name="dashboard")
             self._has_dashboard = True
         else:
@@ -631,6 +690,17 @@ class VCRServer:
                 )
             except asyncio.TimeoutError:
                 return JSONResponse({"detail": "Token verification timed out"}, status_code=503)
+            if identity[0] is None and self._dashboard_cookie_valid(
+                request.cookies.get(DASHBOARD_COOKIE)
+            ):
+                # Ambient credential: state changes need proof the dashboard itself sent them.
+                if request.method in _UNSAFE_METHODS and not self._same_origin(request.headers):
+                    return JSONResponse(
+                        {"detail": "Cross-origin request refused: a dashboard session cookie "
+                         "only authenticates requests from this server's own origin"},
+                        status_code=403,
+                    )
+                identity = ("admin", None)
             # Route handlers reuse this instead of verifying the token a second time.
             request.scope[_IDENTITY_SCOPE_KEY] = identity
             role = identity[0]
@@ -639,6 +709,127 @@ class VCRServer:
             if role != "admin" and not path.startswith(_PROJECT_SCOPED_PREFIX):
                 return JSONResponse({"detail": "Forbidden"}, status_code=403)
             return await call_next(request)
+
+    # -- dashboard session cookie ---------------------------------------------
+
+    def _sign_cookie(self, payload: str) -> str:
+        return hmac.new(self._cookie_key, payload.encode("ascii"), hashlib.sha256).hexdigest()
+
+    def _mint_dashboard_cookie(self) -> str:
+        payload = f"{_COOKIE_VERSION}.{int(time.time()) + DASHBOARD_COOKIE_TTL_S}"
+        return f"{payload}.{self._sign_cookie(payload)}"
+
+    def _dashboard_cookie_valid(self, value: str | None) -> bool:
+        """Constant-time check of a cookie minted by this process that has not expired."""
+        if not value or not self.auth_required:
+            return False
+        parts = value.split(".")
+        if len(parts) != 3 or parts[0] != _COOKIE_VERSION or not parts[1].isdigit():
+            return False
+        payload = f"{parts[0]}.{parts[1]}"
+        if not hmac.compare_digest(self._sign_cookie(payload), parts[2]):
+            return False
+        return int(parts[1]) > time.time()
+
+    def _same_origin(self, headers: Any) -> bool:
+        """True when Origin (or, without it, Referer) names this server or an allowed origin.
+
+        Missing both counts as cross-origin: browsers send Origin on every POST and
+        WebSocket handshake, so only non-browser clients omit it, and they use tokens.
+        """
+        origin = headers.get("origin")
+        source = origin if origin is not None else headers.get("referer")
+        netloc = _origin_netloc(source)
+        if netloc is None:
+            return False
+        if origin is not None and origin.rstrip("/") in self.allowed_origins:
+            return True
+        hosts = {
+            h.strip().lower()
+            for h in (headers.get("host", ""), headers.get("x-forwarded-host", "").split(",")[0])
+            if h.strip()
+        }
+        return netloc in hosts
+
+    @staticmethod
+    def _is_https(request: Request) -> bool:
+        forwarded = request.headers.get("x-forwarded-proto", "").split(",")[0].strip().lower()
+        return request.url.scheme == "https" or forwarded == "https"
+
+    def _setup_dashboard_auth_routes(self, dashboard_dir: Path) -> None:
+        """``/dashboard?token=`` and ``/dashboard/login``: trade a token for a cookie."""
+        index_html = dashboard_dir / "index.html"
+
+        def _login_page(error: str = "", status_code: int = 200) -> HTMLResponse:
+            block = f'<p class="err">{html.escape(error)}</p>' if error else ""
+            return HTMLResponse(
+                _LOGIN_PAGE.format(error=block), status_code=status_code,
+                headers=_LOGIN_HEADERS,
+            )
+
+        async def _sign_in(request: Request, token: str) -> Any:
+            # Only the two server tokens: the dashboard reads every local recording.
+            valid = await asyncio.to_thread(self._is_admin_token, token.strip()) if token else False
+            if not valid:
+                return _login_page("Invalid token.", status_code=401)
+            response = RedirectResponse(url="/dashboard/", status_code=303)
+            response.headers["Cache-Control"] = "no-store"
+            response.headers["Referrer-Policy"] = "no-referrer"
+            response.set_cookie(
+                DASHBOARD_COOKIE,
+                self._mint_dashboard_cookie(),
+                max_age=DASHBOARD_COOKIE_TTL_S,
+                path="/",
+                httponly=True,
+                samesite="strict",
+                secure=self._is_https(request),
+            )
+            return response
+
+        async def _dashboard_entry(request: Request) -> Any:
+            token = request.query_params.get("token")
+            if token is not None and self.auth_required:
+                return await _sign_in(request, token)
+            if token is not None:
+                return RedirectResponse(url="/dashboard/", status_code=303)
+            if self.auth_required and not self._dashboard_cookie_valid(
+                request.cookies.get(DASHBOARD_COOKIE)
+            ):
+                return RedirectResponse(url="/dashboard/login", status_code=303)
+            if request.url.path == "/dashboard":
+                return RedirectResponse(url="/dashboard/", status_code=307)
+            return FileResponse(str(index_html), headers={"Cache-Control": "no-cache"})
+
+        self.app.add_api_route("/dashboard", _dashboard_entry, methods=["GET"],
+                               include_in_schema=False)
+        self.app.add_api_route("/dashboard/", _dashboard_entry, methods=["GET"],
+                               include_in_schema=False)
+
+        @self.app.get("/dashboard/login", include_in_schema=False)
+        async def dashboard_login_form() -> Any:
+            if not self.auth_required:
+                return RedirectResponse(url="/dashboard/", status_code=303)
+            return _login_page()
+
+        @self.app.post("/dashboard/login", include_in_schema=False)
+        async def dashboard_login(request: Request) -> Any:
+            if not self.auth_required:
+                return RedirectResponse(url="/dashboard/", status_code=303)
+            if (request.headers.get("origin") or request.headers.get("referer")) and \
+                    not self._same_origin(request.headers):
+                return JSONResponse({"detail": "Cross-origin sign-in refused"}, status_code=403)
+            try:
+                form = await asyncio.wait_for(request.form(), timeout=10)
+            except Exception:
+                return _login_page("Could not read the form.", status_code=400)
+            token = form.get("token")
+            return await _sign_in(request, token if isinstance(token, str) else "")
+
+        @self.app.get("/dashboard/logout", include_in_schema=False)
+        async def dashboard_logout() -> Any:
+            response = RedirectResponse(url="/dashboard/login", status_code=303)
+            response.delete_cookie(DASHBOARD_COOKIE, path="/", httponly=True, samesite="strict")
+            return response
 
     def _is_admin_token(self, supplied: str) -> bool:
         # The legacy --auth-token is an admin-equivalent credential (backwards compatible).
@@ -1494,8 +1685,13 @@ class VCRServer:
                 query_token = websocket.query_params.get("token")
                 if query_token:
                     candidates.append(query_token)
-                # The live feed spans every local recording: admin-level tokens only.
-                if not any(self._is_admin_token(c) for c in candidates):
+                # The live feed spans every local recording: admin-level tokens only,
+                # or a dashboard session cookie on a same-origin handshake (browsers
+                # always send Origin there, so this also blocks WebSocket hijacking).
+                cookie_ok = self._dashboard_cookie_valid(
+                    websocket.cookies.get(DASHBOARD_COOKIE)
+                ) and self._same_origin(websocket.headers)
+                if not cookie_ok and not any(self._is_admin_token(c) for c in candidates):
                     await websocket.close(code=1008)
                     return
 

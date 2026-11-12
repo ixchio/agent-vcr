@@ -116,6 +116,85 @@ def update_manifest(output_dir: Path, session_data: dict[str, Any]) -> None:
             raise
 
 
+def iter_frames_on_disk(path: Path, start: int = 0, stop: int | None = None) -> Iterator[Frame]:
+    """Stream the valid frames ``[start, stop)`` of a ``.vcr`` file (player skip rules).
+
+    Used by bounded-memory recorders to read back frames they evicted from RAM.
+    """
+    if stop is not None and stop <= start:
+        return
+    index = 0
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            text = line.strip()
+            if not text:
+                continue
+            try:
+                record = json.loads(text)
+                if not isinstance(record, dict) or record.get("type") != "frame":
+                    continue
+                if index < start:
+                    # Still validate: the player's index space only counts valid frames.
+                    Frame(**record.get("data", {}))
+                    index += 1
+                    continue
+                frame = Frame(**record.get("data", {}))
+            except Exception:
+                continue  # malformed / invalid line: the player skips it too
+            yield frame
+            index += 1
+            if stop is not None and index >= stop:
+                return
+
+
+def rewrite_session_file_from_disk(
+    path: Path, session: Session, expected_frames: int | None = None
+) -> int:
+    """Atomically rewrite ``path`` with a fresh header, streaming its frames from disk.
+
+    Memory stays O(1) in the number of frames: frame lines are copied verbatim, so a
+    bounded recorder never has to hold the whole session. Malformed lines and stale
+    headers are dropped. When ``expected_frames`` is given and a fast copy (JSON check
+    only) disagrees with it, the copy is redone keeping only frames that validate, as the
+    player would load them. Returns the number of frames written.
+    """
+    copied = _stream_rewrite(path, session, validate=False)
+    if expected_frames is not None and copied != expected_frames:
+        copied = _stream_rewrite(path, session, validate=True)
+    return copied
+
+
+def _stream_rewrite(path: Path, session: Session, *, validate: bool) -> int:
+    header = {"type": "session", "schema": "execution/v1", "data": session.model_dump()}
+    fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp", prefix="vcr_")
+    copied = 0
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as out, open(path, encoding="utf-8") as src:
+            out.write(json_dumps_safe(header) + "\n")
+            for line in src:
+                text = line.strip()
+                if not text:
+                    continue
+                try:
+                    record = json.loads(text)
+                    if not isinstance(record, dict) or record.get("type") != "frame":
+                        continue
+                    if validate:
+                        Frame(**record.get("data", {}))
+                except Exception:
+                    continue
+                out.write(text + "\n")
+                copied += 1
+            out.flush()
+            os.fsync(out.fileno())
+        os.replace(tmp_path, str(path))
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp_path)
+        raise
+    return copied
+
+
 def rewrite_session_file(path: Path, session: Session, frames: list[Frame]) -> None:
     """Atomically rewrite a ``.vcr`` file from a session header + frames."""
     header = {"type": "session", "schema": "execution/v1", "data": session.model_dump()}
@@ -144,9 +223,21 @@ class VCRRecorder:
         auto_save: bool = True,
         diff_mode: bool = False,
         on_frame_recorded: Any | None = None,
+        max_cached_frames: int | None = None,
     ):
+        """
+        Args:
+            max_cached_frames: Keep at most this many already-written frames in RAM
+                (plus the unflushed buffer, up to ``buffer_size``). Older frames are
+                evicted once they are on disk and read back from the ``.vcr`` file when
+                :meth:`get_frames`, :meth:`fork` or a golden-cache save need them.
+                ``None`` (default) keeps every frame in memory, as before.
+        """
+        if max_cached_frames is not None and max_cached_frames < 0:
+            raise ValueError("max_cached_frames must be >= 0 or None")
         self.output_dir = Path(output_dir)
         self.buffer_size = buffer_size
+        self.max_cached_frames = max_cached_frames
         self.auto_save = auto_save
         self.diff_mode = diff_mode
         self._on_frame_recorded = on_frame_recorded
@@ -157,6 +248,9 @@ class VCRRecorder:
         self._lock = threading.RLock()
         self._cache = VCRCache()
         self._header_frame_count: int | None = None
+        # Frames of the current session evicted from the cache (they are on disk only);
+        # the cache holds frames [_evicted, frame_count).
+        self._evicted = 0
 
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -212,6 +306,9 @@ class VCRRecorder:
             )
             self._frames = []
             self._previous_state = None
+            # A fresh cache: frames of earlier sessions are on disk and must not pile up.
+            self._cache = VCRCache()
+            self._evicted = 0
             self._cache.add_session(self._session)
 
             logger.info("Started session: %s", self._session.session_id)
@@ -281,7 +378,7 @@ class VCRRecorder:
             self._cache.add_frame(self._session.session_id, frame)
             self._previous_state = serialized_output
 
-            self._session.frame_count = len(
+            self._session.frame_count = self._evicted + len(
                 self._cache.get_frames(self._session.session_id)
             )
             self._session.updated_at = datetime.now(timezone.utc)
@@ -461,7 +558,12 @@ class VCRRecorder:
             self._previous_state = None
             self._cache = VCRCache()
             self._cache.add_session(self._session)
-            for frame in player.frames:
+            # Everything loaded here is already on disk, so a bounded cache keeps the tail.
+            self._evicted = (
+                0 if self.max_cached_frames is None
+                else max(0, len(player.frames) - self.max_cached_frames)
+            )
+            for frame in player.frames[self._evicted:]:
                 self._cache.add_frame(self._session.session_id, frame)
             self._header_frame_count = len(player.frames)
             try:
@@ -525,10 +627,37 @@ class VCRRecorder:
         return manifest
 
     def get_frames(self) -> list[Frame]:
-        """Get all recorded frames (including already-flushed ones)."""
-        if self._session:
-            return self._cache.get_frames(self._session.session_id)
-        return self._frames.copy()
+        """Get all recorded frames (including already-flushed ones).
+
+        With ``max_cached_frames`` set, evicted frames are read back from the ``.vcr``
+        file, so this costs a file read once eviction has started.
+        """
+        with self._lock:
+            if not self._session:
+                return self._frames.copy()
+            cached = self._cache.get_frames(self._session.session_id)
+            if not self._evicted:
+                return cached
+            on_disk = list(iter_frames_on_disk(self._get_session_path(), 0, self._evicted))
+            return on_disk + list(cached)
+
+    @property
+    def cached_frame_count(self) -> int:
+        """Number of frames of the current session held in memory."""
+        if not self._session:
+            return len(self._frames)
+        return len(self._cache.get_frames(self._session.session_id))
+
+    def _frame_at(self, index: int) -> Frame:
+        """Frame ``index`` of the current session, from the cache or the file."""
+        with self._lock:
+            if self._session is None:
+                return self._frames[index]
+            if index >= self._evicted:
+                return self._cache.get_frames(self._session.session_id)[index - self._evicted]
+            for frame in iter_frames_on_disk(self._get_session_path(), index, index + 1):
+                return frame
+            raise ValueError(f"Frame {index} not found in {self._get_session_path()}")
 
     def get_session(self) -> Session | None:
         """Get the current session."""
@@ -558,11 +687,11 @@ class VCRRecorder:
                 new branch. Otherwise a new recorder is returned and this one
                 is left untouched.
         """
-        all_frames = self.get_frames()
-        if from_frame < 0 or from_frame >= len(all_frames):
-            raise ValueError(f"Frame {from_frame} not found (have {len(all_frames)} frames)")
+        total = self._session.frame_count if self._session else len(self._frames)
+        if from_frame < 0 or from_frame >= total:
+            raise ValueError(f"Frame {from_frame} not found (have {total} frames)")
 
-        target_frame = all_frames[from_frame]
+        target_frame = self._frame_at(from_frame)
         base_state = StateSerializer.deserialize(target_frame.output_state)
         forked_state = dict(base_state)
         if state_overrides:
@@ -580,6 +709,7 @@ class VCRRecorder:
                 auto_save=self.auto_save,
                 diff_mode=self.diff_mode,
                 on_frame_recorded=self._on_frame_recorded,
+                max_cached_frames=self.max_cached_frames,
             )
 
         new_recorder.start_session(
@@ -666,22 +796,43 @@ class VCRRecorder:
             os.fsync(f.fileno())
 
         self._frames = []
+        self._evict_flushed()
+
+    def _evict_flushed(self) -> None:
+        """Drop the oldest written frames beyond ``max_cached_frames`` from memory."""
+        if self.max_cached_frames is None or self._session is None:
+            return
+        cached = self._cache.get_frames(self._session.session_id)
+        excess = min(len(cached) - self.max_cached_frames, len(cached) - len(self._frames))
+        if excess > 0:
+            del cached[:excess]
+            self._evicted += excess
 
     def _rewrite_file(self) -> None:
         """Rewrite header + all frames atomically (fixes header staleness).
 
         The JSONL header embeds ``frame_count`` at write time, so any
         frames appended afterwards (buffered saves, crash-resume attach)
-        leave it stale. Rewriting from the in-memory cache restores the
-        ``verify_integrity`` contract. Runs only when counts diverge.
+        leave it stale. Frames are streamed from the file itself (``save()``
+        flushes first), so memory does not grow with the session. If the
+        file lost frames (deleted underneath us) while the whole session is
+        still cached, it is rebuilt from the cache. Runs only when counts diverge.
         """
         if self._session is None:
             return
-        rewrite_session_file(
-            self._get_session_path(),
-            self._session,
-            self._cache.get_frames(self._session.session_id),
-        )
+        path = self._get_session_path()
+        expected = self._session.frame_count
+        copied = rewrite_session_file_from_disk(path, self._session, expected)
+        if copied != expected:
+            if not self._evicted:
+                rewrite_session_file(
+                    path, self._session, self._cache.get_frames(self._session.session_id)
+                )
+            else:
+                logger.warning(
+                    "%s has %d frames, expected %d; evicted frames cannot be restored",
+                    path, copied, expected,
+                )
         self._header_frame_count = self._session.frame_count
 
     def _update_session_manifest(self) -> None:

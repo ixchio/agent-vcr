@@ -6,7 +6,10 @@ import pytest
 
 pytest.importorskip("textual")
 
-from agent_vcr.tui import StateViewer, VCRApp
+from textual.pilot import Pilot  # noqa: E402
+from textual.widgets import TextArea  # noqa: E402
+
+from agent_vcr.tui import EditStateScreen, StateViewer, VCRApp  # noqa: E402
 
 pytestmark = pytest.mark.asyncio
 
@@ -128,3 +131,45 @@ async def test_tui_status_bar(sample_vcr_file: Path):
         status = app.query_one("#status-bar", Static)
         # Just verify it rendered without error
         assert status is not None
+
+
+async def _open_editor(app: VCRApp, pilot: Pilot) -> TextArea:
+    await pilot.pause(0.1)
+    await pilot.press("e")
+    await pilot.pause(0.05)
+    assert isinstance(app.screen, EditStateScreen)
+    return app.screen.query_one(TextArea)
+
+
+async def test_tui_ctrl_s_saves_edited_state(sample_vcr_file: Path):
+    """Ctrl+S in the state editor saves, as its hint says (it used to do nothing)."""
+    app = VCRApp(str(sample_vcr_file))
+    async with app.run_test() as pilot:
+        area = await _open_editor(app, pilot)
+        area.text = '{"edited": true}'
+        await pilot.press("ctrl+s")
+        await pilot.pause(0.05)
+        assert not isinstance(app.screen, EditStateScreen)
+        assert app._edited_state == {"edited": True}
+
+
+async def test_tui_ctrl_s_with_invalid_json_keeps_state(sample_vcr_file: Path):
+    app = VCRApp(str(sample_vcr_file))
+    async with app.run_test() as pilot:
+        area = await _open_editor(app, pilot)
+        area.text = "{not json"
+        await pilot.press("ctrl+s")
+        await pilot.pause(0.05)
+        assert not isinstance(app.screen, EditStateScreen)
+        assert app._edited_state is None
+
+
+async def test_tui_escape_cancels_editor(sample_vcr_file: Path):
+    app = VCRApp(str(sample_vcr_file))
+    async with app.run_test() as pilot:
+        area = await _open_editor(app, pilot)
+        area.text = '{"edited": true}'
+        await pilot.press("escape")
+        await pilot.pause(0.05)
+        assert not isinstance(app.screen, EditStateScreen)
+        assert app._edited_state is None

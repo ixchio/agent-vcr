@@ -260,9 +260,10 @@ Every command takes `--project-dir PATH` if you're not inside the project, and m
 ## What it can't do
 
 - **Anything outside the project directory**: other folders, `~`, system files. Deletes and
-  redirects that land there (`rm -rf ~/Documents`, `echo x > /etc/foo.conf`) are classified
-  *irreversible* and stopped, but not every outside write is spotted: `cp a.txt ../x.txt`
-  passes as a plain `write`.
+  writes that land there (`rm -rf ~/Documents`, `echo x > /etc/foo.conf`, `cp a.txt ../x.txt`,
+  `mv`/`rsync`/`tee`/`install` targets) are classified *irreversible* and stopped; only paths
+  you name under a temp directory (`/tmp/...`) count as scratch space. It's a parser, not a
+  sandbox: a script or a program that picks its own output path isn't seen.
 - **Remote state**: databases on a server (including a Postgres/MySQL server on localhost — its
   data isn't in your project), cloud resources, pushed commits, published packages, sent
   requests. Classified *irreversible* and stopped for confirmation.
