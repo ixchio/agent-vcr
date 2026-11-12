@@ -49,6 +49,22 @@ def register(subparsers: Any) -> None:
     rewind.add_argument("-n", "--limit", type=int, default=20)
     rewind.set_defaults(func=cmd_rewind)
 
+    bis = subparsers.add_parser(
+        "bisect", parents=[common],
+        help="Find the agent action that broke your tests: vcr bisect -- pytest -q",
+    )
+    bis.add_argument("--good", help="Snapshot where the test passes "
+                                    "(default: the oldest recorded action)")
+    bis.add_argument("--bad", help="Snapshot where it fails (default: the current state)")
+    bis.add_argument("--timeout", type=float, default=300.0,
+                     help="Seconds per test run; a timeout counts as a failure (default: 300)")
+    bis.add_argument("--copy-ignored", action="store_true",
+                     help="Symlink the project's top-level ignored directories (node_modules, "
+                          ".venv, ...) into each temporary checkout")
+    bis.add_argument("argv", nargs=argparse.REMAINDER,
+                     help="Test command; one quoted string runs through the shell")
+    bis.set_defaults(func=cmd_bisect)
+
     bag = subparsers.add_parser("airbag", help="Snapshot-before-every-tool-call safety net")
     sub = bag.add_subparsers(dest="airbag_command", required=True)
 
@@ -90,6 +106,24 @@ def register(subparsers: Any) -> None:
     gc.add_argument("--keep-last", type=int, default=50)
     gc.set_defaults(func=cmd_gc)
 
+    db = sub.add_parser("db", help="Local Postgres snapshots: list | snapshot | restore")
+    db_sub = db.add_subparsers(dest="db_command", required=True)
+    db_list = db_sub.add_parser("list", parents=[common],
+                                help="Configured local databases and their dumps")
+    db_list.set_defaults(func=cmd_db_list)
+    db_snap = db_sub.add_parser("snapshot", parents=[common],
+                                help="Dump the configured database(s) now")
+    db_snap.add_argument("--db", help="Only this database (name)")
+    db_snap.add_argument("-m", "--message", default="manual database snapshot")
+    db_snap.set_defaults(func=cmd_db_snapshot)
+    db_restore = db_sub.add_parser(
+        "restore", parents=[common],
+        help="Put the database(s) back to snapshot N (files untouched): vcr airbag db restore 12",
+    )
+    db_restore.add_argument("snapshot", help="Snapshot number (e.g. 12 or #12)")
+    db_restore.add_argument("--db", help="Only this database (name)")
+    db_restore.set_defaults(func=cmd_db_restore)
+
     run = sub.add_parser(
         "run", parents=[common],
         help="Run any agent with periodic snapshots (for agents without hooks): "
@@ -106,7 +140,7 @@ def register(subparsers: Any) -> None:
     hook.set_defaults(func=cmd_hook)
 
 
-COMMANDS = frozenset({"undo", "redo", "rewind", "airbag"})
+COMMANDS = frozenset({"undo", "redo", "rewind", "bisect", "airbag"})
 
 
 def _bag(args: argparse.Namespace) -> Airbag:
@@ -136,6 +170,8 @@ def _summary(result: RestoreResult) -> str:
         parts.append(f"restored {len(result.written)} file{'s' * (len(result.written) != 1)}")
     if result.deleted:
         parts.append(f"removed {len(result.deleted)} created since")
+    if result.databases:
+        parts.append(f"restored database {', '.join(result.databases)}")
     if result.failed:
         parts.append(f"{len(result.failed)} could not be restored: {', '.join(result.failed[:5])}")
     if result.kept:
@@ -152,6 +188,10 @@ def _print_changes(result: RestoreResult, limit: int = 12) -> None:
     extra = len(result.written) + len(result.deleted) - 2 * limit
     if extra > 0:
         print(f"    … and {extra} more")
+    for name in result.databases:
+        print(f"    ⟲ database {name}")
+    for note in result.notes:
+        print(f"    note: {note}")
 
 
 def cmd_undo(args: argparse.Namespace) -> None:
@@ -169,6 +209,9 @@ def cmd_undo(args: argparse.Namespace) -> None:
             print(f"    {'+' if status == 'A' else '-' if status == 'D' else '~'} {rel}")
         if not changes:
             print("    (no file differences)")
+        for entry in bag.database_restore_plan(snap):
+            print(f"    ⟲ database {entry.get('name')} (from the dump at snapshot "
+                  f"#{entry.get('snapshot')})")
         return
     result = bag.undo(args.steps)
     if result is None:
@@ -178,7 +221,8 @@ def cmd_undo(args: argparse.Namespace) -> None:
     if args.json:
         print(json.dumps({"undone": action, "snapshot": restore.target.seq,
                           "written": restore.written, "deleted": restore.deleted,
-                          "failed": restore.failed}, default=str))
+                          "databases": restore.databases, "failed": restore.failed},
+                         default=str))
         return
     print(f"↩ Undid: {action.get('command') or action.get('tool')}  "
           f"({action.get('agent')}, {_ago(float(action.get('time', 0)))})")
@@ -242,9 +286,13 @@ def cmd_rewind_list(args: argparse.Namespace) -> None:
         snap: Snapshot | None = snaps.get(int(seq)) if seq is not None else None
         icon = LEVEL_ICON.get(str(action.get("level")), "?")
         text = action.get("command") or ", ".join(action.get("paths") or []) or action.get("tool")
+        text = str(text)[:70]
+        if action.get("databases"):
+            marker = f"  [db: {', '.join(str(d) for d in action['databases'])}]"
+            text = text[:max(20, 70 - len(marker))] + marker
         mark = f"#{seq}" if snap else "  -"
         print(f"  {mark:>5}  {_ago(float(action.get('time', 0))):>8}  "
-              f"{str(action.get('agent', ''))[:12]:<12} {icon} {str(text)[:70]}")
+              f"{str(action.get('agent', ''))[:12]:<12} {icon} {text}")
     state = bag.store.read_state()
     if state.get("undo_pos") is not None:
         print("  (you are in an undone state — `vcr redo` to go forward)")
@@ -259,7 +307,21 @@ def cmd_check(args: argparse.Namespace) -> None:
     from agent_vcr.airbag.store import find_project_root
 
     cwd = os.path.abspath(args.project_dir)
-    verdict = classify(command, cwd=cwd, root=find_project_root(cwd))
+    root = find_project_root(cwd)
+    verdict = classify(command, cwd=cwd, root=root)
+    if verdict.db_targets:
+        from agent_vcr.airbag.core import downgrade_for_databases
+        from agent_vcr.airbag.databases import plan_dumps
+
+        plan = plan_dumps(verdict, root, command)
+        if plan.problem:
+            verdict.reasons.append(plan.problem)
+        elif plan.databases and plan.caveat:
+            names = ", ".join(db.dbname for db in plan.databases)
+            verdict.reasons.append(f"local database {names} is dumped first, but {plan.caveat}")
+        elif plan.databases and plan.covers_all and verdict.level == "irreversible":
+            downgrade_for_databases(verdict, [db.dbname for db in plan.databases],
+                                    note="dumped with pg_dump before it runs")
     if args.json:
         print(json.dumps({"level": verdict.level, "reasons": verdict.reasons,
                           "categories": verdict.categories, "undoable": verdict.undoable}))
@@ -370,3 +432,168 @@ def cmd_hook(args: argparse.Namespace) -> None:
     from agent_vcr.airbag.hook import main as hook_main
 
     raise SystemExit(hook_main([args.agent, args.event, args.option]))
+
+
+# ── vcr bisect ───────────────────────────────────────────────────────────
+
+_OUTCOME = {"pass": "✓ pass", "fail": "✗ fail", "timeout": "⏱ timeout", "error": "✗ error"}
+
+
+def cmd_bisect(args: argparse.Namespace) -> None:
+    from pathlib import Path
+
+    from agent_vcr.airbag.bisect import TestRun, bisect
+
+    argv = list(args.argv)
+    if argv and argv[0] == "--":
+        argv = argv[1:]
+    if not argv:
+        _fail("usage: vcr bisect [--good N] [--bad N] -- <test command ...>", 2)
+    if args.timeout <= 0:
+        _fail("--timeout must be positive", 2)
+    good = _parse_seq(args.good) if args.good else None
+    bad = _parse_seq(args.bad) if args.bad else None
+    bag = _bag(args)
+
+    def progress(run: TestRun, note: str) -> None:
+        label = f"#{run.seq}{' (current)' if note == 'current' else ''}"
+        timing = "same files as an earlier run" if run.cached else f"{run.seconds:.1f}s"
+        extra = f" after {args.timeout:g}s (counted as a failure)" if run.outcome == "timeout" \
+            else ""
+        print(f"  {label:<14} {_OUTCOME.get(run.outcome, run.outcome)}{extra}   ({timing})",
+              flush=True)
+
+    if not args.json:
+        print(f"🔍 Bisecting the airbag timeline of {bag.root}")
+        print(f"   test: {' '.join(argv)}   (each run in a temporary checkout)")
+    report = bisect(bag, argv, good=good, bad=bad, timeout=args.timeout,
+                    copy_ignored=args.copy_ignored,
+                    progress=None if args.json else progress)
+    rewind = report.rewind
+    if rewind:
+        here = Path.cwd().resolve()
+        if here != bag.root and bag.root not in here.parents:
+            rewind += f" --project-dir {bag.root}"
+            report.rewind = rewind
+    if args.json:
+        print(json.dumps(report.to_dict(), default=str))
+        raise SystemExit(0 if report.status == "found" else 1)
+    if report.status != "found":
+        print(f"\n{report.message}")
+        last = report.runs[-1] if report.runs else None
+        if last is not None and last.output and report.status == "good-fails":
+            print("  last lines of that run:")
+            for line in last.output.splitlines()[-12:]:
+                print(f"    {line}")
+        raise SystemExit(2 if report.status == "invalid" else 1)
+
+    event = report.culprit or {}
+    when = float(event.get("time", 0))
+    stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(when)) if when else "?"
+    print(f"\n🎯 {report.message}")
+    if report.culprit_kind == "action":
+        who = " · ".join(str(x) for x in (event.get("agent"), event.get("tool")) if x)
+        print(f"   {who} · {stamp} ({_ago(when)})")
+        if event.get("agent") == "user":
+            print("   (a manual save point: the change came from you or a process "
+                  "without airbag hooks)")
+    else:
+        print(f"   {stamp} ({_ago(when)})")
+    after = f"#{report.after}{' (current state)' if report.after_is_current else ''}"
+    print(f"   snapshot #{report.before} passes → {after} fails   "
+          f"({report.test_runs} test run{'s' * (report.test_runs != 1)})")
+    if report.timeouts:
+        print(f"   note: {report.timeouts} run(s) timed out after {args.timeout:g}s and "
+              "counted as failures")
+    print("   files it changed (+ added, - deleted, ~ modified):")
+    for status, rel in report.changes[:30]:
+        print(f"     {'+' if status == 'A' else '-' if status == 'D' else '~'} {rel}")
+    if len(report.changes) > 30:
+        print(f"     … and {len(report.changes) - 30} more")
+    if not report.changes:
+        print("     (no file differences)")
+    failing = next((r for r in report.runs if r.seq == report.after), None)
+    if failing is not None and failing.output.strip():
+        print("   failing run (last lines):")
+        tail = failing.output.splitlines()[-10:]
+        while tail and not tail[0].strip():
+            tail.pop(0)
+        for line in tail:
+            print(f"     {line}")
+    print(f"   Go back to just before it:  {rewind}")
+
+
+# ── vcr airbag db ────────────────────────────────────────────────────────
+
+def cmd_db_list(args: argparse.Namespace) -> None:
+    from agent_vcr.airbag import databases as dbs
+
+    bag = _bag(args)
+    configs, problems = dbs.load_databases(bag.root)
+    dumps = [(s, e) for s in bag.store.snapshots() for e in (s.meta.get("databases") or [])
+             if isinstance(e, dict)]
+    if args.json:
+        print(json.dumps({
+            "databases": [db.info() for db in configs], "refused": problems,
+            "dumps": [{"snapshot": s.seq, "time": s.time, "label": s.label, **e}
+                      for s, e in dumps],
+            "pg_dump": dbs.pg_tool("pg_dump"), "pg_restore": dbs.pg_tool("pg_restore"),
+        }, default=str))
+        return
+    if not configs and not problems:
+        print("No local databases configured. Add one with "
+              f"{dbs.ENV_VAR}=postgresql://localhost/app or {dbs.CONFIG_FILE}.")
+    for db in configs:
+        print(f"  ✓ {db.display}")
+    for problem in problems:
+        print(f"  ✗ refused: {problem}")
+    missing = dbs.missing_tools("pg_dump", "pg_restore")
+    if missing:
+        print(f"  ⚠ {missing}")
+    if dumps:
+        print("Dumps (restore with `vcr undo`, `vcr rewind <#>` or `vcr airbag db restore <#>`):")
+        for snap, entry in dumps:
+            size = float(entry.get("bytes") or 0)
+            print(f"  #{snap.seq:<5} {str(entry.get('name')):<16} {size / 1024:8.1f} KB  "
+                  f"{_ago(snap.time):>8}  {snap.label}")
+    elif configs:
+        print("No dumps yet (taken before destructive SQL, or `vcr airbag db snapshot`).")
+
+
+def cmd_db_snapshot(args: argparse.Namespace) -> None:
+    bag = _bag(args)
+    try:
+        snap, names = bag.snapshot_databases(only=args.db, label=args.message)
+    except AirbagError as err:
+        _fail(str(err))
+        return
+    if args.json:
+        print(json.dumps({"snapshot": snap.seq, "databases": names}))
+        return
+    print(f"🗄  Snapshot {snap.short}: dumped database {', '.join(names)}. "
+          f"Restore with `vcr airbag db restore {snap.seq}`.")
+
+
+def cmd_db_restore(args: argparse.Namespace) -> None:
+    bag = _bag(args)
+    seq = _parse_seq(args.snapshot)
+    try:
+        result = bag.restore_databases(seq, only=args.db)
+    except KeyError as err:
+        _fail(str(err.args[0] if err.args else err))
+        return
+    if result is None:
+        _fail(f"no database dump at or after snapshot #{seq}: the database has not been "
+              "dumped since then (see `vcr airbag db list`)")
+        return
+    if args.json:
+        print(json.dumps({"snapshot": seq, "before": result.before.seq,
+                          "databases": result.databases, "failed": result.failed}))
+        raise SystemExit(0 if not result.failed else 1)
+    if result.databases:
+        print(f"⏪ Restored database {', '.join(result.databases)} to snapshot #{seq}. "
+              f"Undo with `vcr airbag db restore {result.before.seq}`.")
+    for problem in result.failed:
+        print(f"  ✗ {problem}", file=sys.stderr)
+    if result.failed:
+        raise SystemExit(1)

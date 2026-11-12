@@ -23,6 +23,7 @@ import re
 import shlex
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 LEVELS = ("read", "write", "destructive", "irreversible")
 _RANK = {name: i for i, name in enumerate(LEVELS)}
@@ -34,6 +35,11 @@ class Verdict:
     reasons: list[str] = field(default_factory=list)
     categories: list[str] = field(default_factory=list)
     paths: list[str] = field(default_factory=list)
+    #: reason -> category, for every reason that made the command irreversible.
+    irreversible_reasons: dict[str, str] = field(default_factory=dict)
+    #: Database-server client calls seen (``prog``, ``args``, inline ``env``, SQL ``label``),
+    #: so a configured *local* database can be dumped first (see airbag.databases).
+    db_targets: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def needs_snapshot(self) -> bool:
@@ -50,6 +56,8 @@ class Verdict:
             self.reasons.append(reason)
         if category and category not in self.categories:
             self.categories.append(category)
+        if level == "irreversible":
+            self.irreversible_reasons.setdefault(reason or "", category or "other")
 
     def merge(self, other: Verdict) -> None:
         for reason in other.reasons:
@@ -59,6 +67,9 @@ class Verdict:
             if cat not in self.categories:
                 self.categories.append(cat)
         self.paths.extend(p for p in other.paths if p not in self.paths)
+        for reason, category in other.irreversible_reasons.items():
+            self.irreversible_reasons.setdefault(reason, category)
+        self.db_targets.extend(other.db_targets)
         if _RANK[other.level] > _RANK[self.level]:
             self.level = other.level
 
@@ -684,13 +695,12 @@ def _database_verdict(label: str, argv: list[str], ctx: _Context, verdict: Verdi
                              "database")
         return
     host = _db_host(argv, ctx.env)
-    where = "remote" if host not in _LOCAL_HOSTS else "local server"
-    verdict.raise_to(
-        "irreversible",
-        f"{label} on a {where} database{f' ({host})' if host else ''} — server data is not in "
-        "your project files, so the airbag cannot undo it",
-        "database",
-    )
+    where = "remote" if host not in _LOCAL_HOSTS and not host.startswith("/") else "local server"
+    reason = (f"{label} on a {where} database{f' ({host})' if host else ''} — server data is "
+              "not in your project files, so the airbag cannot undo it")
+    verdict.db_targets.append({"prog": prog, "args": list(argv[1:]), "env": dict(ctx.env),
+                               "label": label, "reason": reason})
+    verdict.raise_to("irreversible", reason, "database")
 
 
 def _db_host(argv: list[str], inline_env: dict[str, str] | None = None) -> str:

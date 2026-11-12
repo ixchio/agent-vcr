@@ -12,6 +12,7 @@ to "ask"/"deny" for commands it cannot undo.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
@@ -23,6 +24,7 @@ from typing import Any
 from agent_vcr.airbag.classify import Verdict, classify, classify_file_write
 from agent_vcr.airbag.store import (
     AirbagError,
+    DatabaseDump,
     RestoreResult,
     ShadowStore,
     Snapshot,
@@ -138,19 +140,29 @@ class Airbag:
     def _decide(self, call: ToolCall, verdict: Verdict, decision: Decision) -> None:
 
         label = _short(call.command or ", ".join(call.paths) or call.tool_name, 120)
+        dumps, covers_all, db_problem = self._dump_databases(verdict, call.command)
         try:
             decision.snapshot = self.store.snapshot(
                 label=f"before {call.tool_name}",
                 meta={"agent": call.agent, "tool": call.tool_name, "command": label,
                       "level": verdict.level},
                 backup_git_dir="git-dir" in verdict.categories,
+                databases=dumps or None,
             )
         except (AirbagError, OSError, ValueError) as err:
             decision.error = f"airbag snapshot failed: {err}"
         except Exception as err:  # noqa: BLE001 - a hook must never crash the agent
             decision.error = f"airbag snapshot failed unexpectedly: {err!r}"
+        finally:
+            _discard_dumps(dumps)  # only the ones not attached to a snapshot
 
         snap = decision.snapshot
+        dumped = [str(e.get("name")) for e in (snap.meta.get("databases") or [])] \
+            if snap is not None and dumps else []
+        if dumped and covers_all and not db_problem and verdict.level == "irreversible":
+            downgrade_for_databases(verdict, dumped)
+        elif db_problem and db_problem not in verdict.reasons:
+            verdict.reasons.append(db_problem)
         nested = self._nested_repos_hit(call, verdict, snap)
         if nested:
             verdict.raise_to(
@@ -181,15 +193,187 @@ class Airbag:
             return
 
         if verdict.level == "destructive" and self.policy.notify_destructive and snap:
+            extra = f" (database {', '.join(dumped)} snapshotted)" if dumped else ""
             decision.user_message = (
                 f"🛟 Agent VCR airbag: snapshot {snap.short} saved before "
-                f"`{_short(call.command or label, 60)}`. Undo with `vcr undo`."
+                f"`{_short(call.command or label, 60)}`{extra}. Undo with `vcr undo`."
             )
         if decision.error and verdict.level in {"destructive", "irreversible"}:
             decision.user_message = (
                 f"⚠ Agent VCR airbag could not snapshot before a {verdict.level} command: "
                 f"{decision.error}"
             )
+
+    # ── local databases (opt-in, see airbag.databases) ───────────────────
+
+    def _dump_databases(self, verdict: Verdict, command: str | None = None,
+                        ) -> tuple[list[DatabaseDump], bool, str | None]:
+        """Dump the configured local databases a destructive SQL command would hit.
+
+        Returns (dumps, whether they make every irreversible part undoable, problem).
+        """
+        if not verdict.db_targets:
+            return [], False, None
+        dumps: list[DatabaseDump] = []
+        try:
+            from agent_vcr.airbag import databases as dbs
+
+            plan = dbs.plan_dumps(verdict, self.root, command)
+            if not plan.databases or plan.problem:
+                return [], False, plan.problem
+            for db in plan.databases:
+                path = self.store.new_dump_path(db.dbname)
+                try:
+                    dbs.dump(db, path)
+                except dbs.DatabaseError as err:
+                    _discard_dumps([DatabaseDump(path=path, name=db.dbname)])
+                    return dumps, False, (f"could not snapshot the local database {db.display}: "
+                                          f"{err}")
+                dumps.append(DatabaseDump(path=path, name=db.dbname, info=db.info()))
+            if plan.caveat:
+                names = ", ".join(d.name for d in dumps)
+                return dumps, False, f"local database {names} was dumped, but {plan.caveat}"
+            return dumps, plan.covers_all, None
+        except Exception as err:  # noqa: BLE001 - a hook must never crash the agent
+            _discard_dumps(dumps)
+            return [], False, f"could not snapshot the local database: {err!r}"
+
+    def database_restore_plan(self, target: Snapshot,
+                              only: str | None = None) -> list[dict[str, Any]]:
+        """Database dumps that bring each database back to how it was at ``target``.
+
+        A database's state at a snapshot is the first dump taken at or after it
+        (nothing dumped it in between, so nothing destructive ran on it). No
+        dump after ``target`` means the database has not been touched since.
+        """
+        chosen: dict[str, dict[str, Any]] = {}
+        for snap in self.store.snapshots():
+            if snap.seq < target.seq:
+                continue
+            for entry in snap.meta.get("databases") or []:
+                if not isinstance(entry, dict):
+                    continue
+                key = str(entry.get("key") or entry.get("name"))
+                if only and only not in {entry.get("name"), key}:
+                    continue
+                if key not in chosen:
+                    chosen[key] = {**entry, "snapshot": snap.seq}
+        return list(chosen.values())
+
+    def _prepare_database_restore(
+        self, plan: list[dict[str, Any]],
+    ) -> tuple[list[DatabaseDump], list[tuple[Any, Path, str]], list[str]]:
+        """Safety-dump every database about to be restored (never restore without one)."""
+        from agent_vcr.airbag import databases as dbs
+
+        configs = {db.key: db for db in dbs.load_databases(self.root)[0]}
+        pre: list[DatabaseDump] = []
+        ready: list[tuple[Any, Path, str]] = []
+        problems: list[str] = []
+        missing = dbs.missing_tools("pg_dump", "pg_restore")
+        for entry in plan:
+            name = str(entry.get("name"))
+            db = configs.get(str(entry.get("key")))
+            src = self.store.dump_file(entry)
+            if db is None:
+                problems.append(f"database {name}: no longer configured in "
+                                f"{dbs.ENV_VAR} or {dbs.CONFIG_FILE}; left untouched")
+                continue
+            if src is None:
+                problems.append(f"database {name}: dump file is missing; left untouched")
+                continue
+            if missing:
+                problems.append(f"database {name}: {missing}; left untouched")
+                continue
+            path = self.store.new_dump_path(db.dbname)
+            try:
+                dbs.dump(db, path)
+            except dbs.DatabaseError as err:
+                _discard_dumps([DatabaseDump(path=path, name=name)])
+                problems.append(f"database {name}: could not dump its current state first "
+                                f"({err}); left untouched")
+                continue
+            pre.append(DatabaseDump(path=path, name=db.dbname, info=db.info()))
+            ready.append((db, src, name))
+        return pre, ready, problems
+
+    def _apply_database_restore(self, ready: list[tuple[Any, Path, str]],
+                                result: RestoreResult) -> None:
+        from agent_vcr.airbag import databases as dbs
+
+        for db, src, name in ready:
+            try:
+                note = dbs.restore(db, src)
+            except dbs.DatabaseError as err:
+                result.failed.append(f"database {name}: {err}")
+                continue
+            result.databases.append(name)
+            if note:
+                result.notes.append(f"database {name}: {note}")
+
+    def _restore(self, target: Snapshot) -> RestoreResult:
+        """Files (and configured local databases) back to ``target``."""
+        plan = self.database_restore_plan(target)
+        if not plan:
+            return self.store.restore(target)
+        pre, ready, problems = self._prepare_database_restore(plan)
+        try:
+            result = self.store.restore(target, databases=pre or None)
+        finally:
+            _discard_dumps(pre)
+        self._apply_database_restore(ready, result)
+        result.failed.extend(problems)
+        return result
+
+    def restore_databases(self, seq: int, only: str | None = None) -> RestoreResult | None:
+        """Only the databases back to snapshot ``seq`` (files untouched); None = no dump."""
+        target = self.store.get(seq)
+        plan = self.database_restore_plan(target, only=only)
+        if not plan:
+            return None
+        pre, ready, problems = self._prepare_database_restore(plan)
+        try:
+            before = self.store.snapshot(label="before database restore",
+                                         meta={"restoring_to": seq}, databases=pre or None)
+        finally:
+            _discard_dumps(pre)
+        result = RestoreResult(target=target, before=before)
+        self._apply_database_restore(ready, result)
+        result.failed.extend(problems)
+        self.store.log_event({"kind": "db-restore", "to": seq, "before": before.seq,
+                              "databases": result.databases, "failed": result.failed[:20]})
+        return result
+
+    def snapshot_databases(self, only: str | None = None,
+                           label: str = "database snapshot") -> tuple[Snapshot, list[str]]:
+        """Dump the configured databases now (``vcr airbag db snapshot``)."""
+        from agent_vcr.airbag import databases as dbs
+
+        configs, _ = dbs.load_databases(self.root)
+        configs = [db for db in configs if not only or only in {db.dbname, db.key}]
+        if not configs:
+            raise AirbagError("no matching local database configured")
+        missing = dbs.missing_tools("pg_dump")
+        if missing:
+            raise AirbagError(missing)
+        dumps: list[DatabaseDump] = []
+        try:
+            for db in configs:
+                path = self.store.new_dump_path(db.dbname)
+                dumps.append(DatabaseDump(path=path, name=db.dbname, info=db.info()))
+                try:
+                    dbs.dump(db, path)
+                except dbs.DatabaseError as err:
+                    raise AirbagError(f"{db.display}: {err}") from None
+            snap = self.store.snapshot(label=label, meta={"agent": "user", "manual": True},
+                                       databases=dumps)
+        finally:
+            _discard_dumps(dumps)
+        names = [db.dbname for db in configs]
+        self.store.log_event({"kind": "action", "agent": "user", "tool": "db snapshot",
+                              "command": label, "level": "write", "snapshot": snap.seq,
+                              "databases": names})
+        return snap, names
 
     # ── undo / redo / rewind ─────────────────────────────────────────────
 
@@ -215,7 +399,7 @@ class Airbag:
                 idx -= 1
                 continue
             repairs_git = git_damaged and "git-dir" in (action.get("categories") or [])
-            if snap.tree != current.tree or repairs_git:
+            if snap.tree != current.tree or repairs_git or snap.meta.get("databases"):
                 remaining -= 1
                 if remaining == 0:
                     return action, snap
@@ -260,7 +444,7 @@ class Airbag:
         actions = self.actions()
         state = self.store.read_state()
         old_pos = _pos(state, len(actions))
-        result = self.store.restore(snap)
+        result = self._restore(snap)
         new_pos = next((i for i, a in enumerate(actions) if a is action or a == action), old_pos)
         redo = list(state.get("redo", []))
         redo.append({"before": result.before.seq, "pos": old_pos})
@@ -279,7 +463,7 @@ class Airbag:
             # The snapshot was garbage-collected; drop this redo entry.
             self.store.update_state({"redo": redo})
             raise
-        result = self.store.restore(target)
+        result = self._restore(target)
         update: dict[str, Any] = {"redo": redo}
         update["undo_pos"] = item.get("pos")
         self.store.update_state(update)
@@ -287,7 +471,7 @@ class Airbag:
 
     def rewind(self, seq: int) -> RestoreResult:
         state = self.store.read_state()
-        result = self.store.restore(self.store.get(seq))
+        result = self._restore(self.store.get(seq))
         redo = list(state.get("redo", []))
         redo.append({"before": result.before.seq, "pos": state.get("undo_pos")})
         actions = self.actions()
@@ -388,9 +572,31 @@ class Airbag:
                 "snapshot": snap.seq if snap else None, "error": error,
                 "hash": self._call_hash(call), "decision": decision.action,
                 "agent_message": decision.agent_message,
+                "databases": [str(e.get("name")) for e in (snap.meta.get("databases") or [])]
+                if snap else [],
             })
         except OSError:
             pass
+
+
+def _discard_dumps(dumps: list[DatabaseDump]) -> None:
+    """Delete dump files that were not attached to a snapshot (attached ones were moved)."""
+    for item in dumps:
+        with contextlib.suppress(OSError):
+            item.path.unlink()
+
+
+def downgrade_for_databases(verdict: Verdict, names: list[str],
+                            note: str = "database snapshotted") -> None:
+    """Every irreversible part was a configured local database, now dumped: undoable."""
+    for reason in verdict.irreversible_reasons:
+        if reason in verdict.reasons:
+            verdict.reasons.remove(reason)
+    verdict.irreversible_reasons.clear()
+    verdict.level = "destructive"
+    labels = sorted({str(t.get("label") or "destructive SQL") for t in verdict.db_targets})
+    verdict.raise_to("destructive", f"{' / '.join(labels)} on local database "
+                     f"{', '.join(names)} ({note})", "database")
 
 
 def _pos(state: dict[str, Any], count: int) -> int:
