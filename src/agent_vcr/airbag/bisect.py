@@ -13,8 +13,9 @@ the first action whose before-state passes and whose after-state fails.
 Read-only for the project and the existing snapshots: the only write to the
 store is one snapshot of the current state, exactly like ``vcr undo --dry-run``
 takes. Ignored dependency trees (``node_modules``, ``.venv``) are not in
-snapshots; ``copy_ignored`` symlinks the project's top-level ones into every
-checkout.
+snapshots; ``copy_ignored`` symlinks the project's top-level *dependency*
+directories (:data:`DEPENDENCY_DIRS`, plus any the user names) into every
+checkout — never build output, which a test run could overwrite.
 """
 
 from __future__ import annotations
@@ -26,7 +27,7 @@ import signal
 import subprocess
 import tempfile
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -36,6 +37,10 @@ from agent_vcr.airbag.store import AirbagError, Snapshot, _clean_env
 
 DEFAULT_TIMEOUT = 300.0
 OUTPUT_TAIL_LINES = 30
+#: Ignored top-level directories ``copy_ignored`` links by default: dependency trees only.
+#: The links are shared with the real project, so build output (``dist/``) is never linked.
+DEPENDENCY_DIRS = ("node_modules", ".venv", "venv", "env", "vendor", ".tox",
+                   "bower_components")
 
 
 @dataclass
@@ -134,35 +139,33 @@ def run_test(argv: list[str], cwd: Path, timeout: float, *, shell: bool = False,
     env = _clean_env()  # no GIT_DIR & co. pointing back at the user's repository
     env.update({"PWD": str(cwd), **(env_extra or {})})
     start = time.monotonic()
-    try:
-        proc = subprocess.Popen(
-            argv[0] if shell else argv, shell=shell, cwd=str(cwd), env=env,
-            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            start_new_session=os.name != "nt",
-        )
-    except OSError as err:
-        return "error", None, time.monotonic() - start, f"could not start {argv[0]!r}: {err}"
-    try:
-        out, _ = proc.communicate(timeout=timeout)
-        outcome = "pass" if proc.returncode == 0 else "fail"
-    except subprocess.TimeoutExpired:
-        _kill(proc)
+    # Output goes to a file, not a pipe: a background child the test leaves behind
+    # (`server & pytest`) would keep a pipe open and make a passing run look hung.
+    with tempfile.TemporaryFile() as out:
         try:
-            out, _ = proc.communicate(timeout=10)
-        except subprocess.TimeoutExpired:  # a grandchild still holds the pipe
-            proc.kill()
-            out = b""
-        outcome = "timeout"
-    finally:
-        if proc.poll() is None:
+            proc = subprocess.Popen(
+                argv[0] if shell else argv, shell=shell, cwd=str(cwd), env=env,
+                stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT,
+                start_new_session=os.name != "nt",
+            )
+        except OSError as err:
+            return "error", None, time.monotonic() - start, f"could not start {argv[0]!r}: {err}"
+        try:
+            proc.wait(timeout=timeout)
+            outcome = "pass" if proc.returncode == 0 else "fail"
+        except subprocess.TimeoutExpired:
+            outcome = "timeout"
+        finally:
+            # The test itself on timeout, and leftover background processes (servers, watchers).
             _kill(proc)
             with contextlib.suppress(subprocess.TimeoutExpired):
                 proc.wait(timeout=10)
-        # Leftover background processes of the test (servers, watchers).
-        if os.name != "nt":
-            with contextlib.suppress(OSError):
-                os.killpg(proc.pid, signal.SIGKILL)
-    text = out.decode("utf-8", "replace")
+            if os.name != "nt":
+                with contextlib.suppress(OSError):
+                    os.killpg(proc.pid, signal.SIGKILL)
+        out.seek(0, os.SEEK_END)
+        out.seek(max(0, out.tell() - 65536))
+        text = out.read().decode("utf-8", "replace")
     tail = "\n".join(text.rstrip().splitlines()[-OUTPUT_TAIL_LINES:])
     return outcome, proc.returncode, time.monotonic() - start, tail
 
@@ -170,10 +173,16 @@ def run_test(argv: list[str], cwd: Path, timeout: float, *, shell: bool = False,
 class _Checkouts:
     """Temporary checkouts of snapshots, one at a time, removed afterwards."""
 
-    def __init__(self, bag: Airbag, copy_ignored: bool) -> None:
+    def __init__(self, bag: Airbag, copy_ignored: bool, extra: Sequence[str] = ()) -> None:
         self.bag = bag
+        self.links: list[str] = []
+        if copy_ignored or extra:
+            ignored = bag.store.ignored_top_level_dirs()
+            self.links = [d for d in ignored if d in DEPENDENCY_DIRS] if copy_ignored else []
+            for name in extra:
+                if name not in self.links and (bag.root / name).is_dir():
+                    self.links.append(name)
         self.base = Path(tempfile.mkdtemp(prefix="vcr-bisect-"))
-        self.links = bag.store.ignored_top_level_dirs() if copy_ignored else []
 
     @contextlib.contextmanager
     def checkout(self, snap: Snapshot) -> Any:
@@ -202,9 +211,17 @@ def _remove_tree(path: Path) -> None:
 def bisect(
     bag: Airbag, argv: list[str], *, good: int | None = None, bad: int | None = None,
     timeout: float = DEFAULT_TIMEOUT, copy_ignored: bool = False,
+    extra_links: Sequence[str] = (),
     progress: Callable[[TestRun, str], None] | None = None,
 ) -> BisectReport:
-    """Find the first recorded action after which ``argv`` fails."""
+    """Find the first recorded action after which ``argv`` fails.
+
+    ``copy_ignored`` links the ignored :data:`DEPENDENCY_DIRS` into each
+    checkout; ``extra_links`` names more top-level directories to link.
+    """
+    for name in extra_links:
+        if not name or name in {".", "..", ".git"} or "/" in name or "\\" in name:
+            raise ValueError(f"--copy-ignored takes a top-level directory name, not {name!r}")
     shell = len(argv) == 1 and any(ch.isspace() for ch in argv[0])
     report = BisectReport(status="no-actions", message="", root=str(bag.root),
                           command=list(argv))
@@ -244,7 +261,7 @@ def bisect(
     report.good, report.bad = states[lo], states[hi]
 
     cache: dict[str, TestRun] = {}
-    checkouts = _Checkouts(bag, copy_ignored)
+    checkouts = _Checkouts(bag, copy_ignored, extra_links)
 
     def test(i: int) -> TestRun:
         snap = snaps[states[i]]

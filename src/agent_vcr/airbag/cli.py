@@ -58,9 +58,11 @@ def register(subparsers: Any) -> None:
     bis.add_argument("--bad", help="Snapshot where it fails (default: the current state)")
     bis.add_argument("--timeout", type=float, default=300.0,
                      help="Seconds per test run; a timeout counts as a failure (default: 300)")
-    bis.add_argument("--copy-ignored", action="store_true",
-                     help="Symlink the project's top-level ignored directories (node_modules, "
-                          ".venv, ...) into each temporary checkout")
+    bis.add_argument("--copy-ignored", action="append", nargs="?", const="", metavar="DIR",
+                     help="Symlink the project's ignored dependency directories (node_modules, "
+                          ".venv, venv, env, vendor, .tox, bower_components) into each "
+                          "temporary checkout; repeat with DIR to link another top-level "
+                          "directory too (put `--` before the test command)")
     bis.add_argument("argv", nargs=argparse.REMAINDER,
                      help="Test command; one quoted string runs through the shell")
     bis.set_defaults(func=cmd_bisect)
@@ -211,7 +213,7 @@ def cmd_undo(args: argparse.Namespace) -> None:
             print(f"    {'+' if status == 'A' else '-' if status == 'D' else '~'} {rel}")
         if not changes:
             print("    (no file differences)")
-        for entry in bag.database_restore_plan(snap):
+        for entry in bag.undo_database_plan(action):
             print(f"    ⟲ database {entry.get('name')} (from the dump at snapshot "
                   f"#{entry.get('snapshot')})")
         return
@@ -490,9 +492,14 @@ def cmd_bisect(args: argparse.Namespace) -> None:
     if not args.json:
         print(f"🔍 Bisecting the airbag timeline of {bag.root}")
         print(f"   test: {' '.join(argv)}   (each run in a temporary checkout)")
-    report = bisect(bag, argv, good=good, bad=bad, timeout=args.timeout,
-                    copy_ignored=args.copy_ignored,
-                    progress=None if args.json else progress)
+    links = list(args.copy_ignored or [])
+    try:
+        report = bisect(bag, argv, good=good, bad=bad, timeout=args.timeout,
+                        copy_ignored=bool(links), extra_links=[d for d in links if d],
+                        progress=None if args.json else progress)
+    except ValueError as err:
+        _fail(str(err), 2)
+        return
     rewind = report.rewind
     if rewind:
         here = Path.cwd().resolve()

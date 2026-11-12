@@ -90,6 +90,8 @@ class Decision:
     #: Fed back to the model (reason for ask/deny, or a hint).
     agent_message: str | None = None
     error: str | None = None
+    #: Local databases dumped for this call (attached to ``snapshot``).
+    databases: list[str] = field(default_factory=list)
 
 
 class Airbag:
@@ -159,6 +161,7 @@ class Airbag:
         snap = decision.snapshot
         dumped = [str(e.get("name")) for e in (snap.meta.get("databases") or [])] \
             if snap is not None and dumps else []
+        decision.databases = dumped
         if dumped and covers_all and not db_problem and verdict.level == "irreversible":
             downgrade_for_databases(verdict, dumped)
         elif db_problem and db_problem not in verdict.reasons:
@@ -311,9 +314,37 @@ class Airbag:
             if note:
                 result.notes.append(f"database {name}: {note}")
 
-    def _restore(self, target: Snapshot) -> RestoreResult:
-        """Files (and configured local databases) back to ``target``."""
-        plan = self.database_restore_plan(target)
+    def undo_database_plan(self, action: dict[str, Any]) -> list[dict[str, Any]]:
+        """Dumps ``vcr undo`` restores when it reverts back to ``action``.
+
+        Only databases that one of the reverted actions (``action`` and the
+        ones after it, up to the current undo position) dumped itself: undoing
+        a file edit never touches a database.
+        """
+        actions = self.actions()
+        pos = _pos(self.store.read_state(), len(actions))
+        start = next((i for i, a in enumerate(actions) if a is action or a == action), None)
+        if start is None:
+            return []
+        snaps = {s.seq: s for s in self.store.snapshots()}
+        chosen: dict[str, dict[str, Any]] = {}
+        for undone in actions[start:max(pos, start + 1)]:
+            snap = snaps.get(int(undone["snapshot"]))
+            if snap is None or not _dumped_by(undone, snap):
+                continue
+            for entry in snap.meta.get("databases") or []:
+                if isinstance(entry, dict):
+                    key = str(entry.get("key") or entry.get("name"))
+                    chosen.setdefault(key, {**entry, "snapshot": snap.seq})
+        return list(chosen.values())
+
+    def _restore(self, target: Snapshot,
+                 db_plan: list[dict[str, Any]] | None = None) -> RestoreResult:
+        """Files (and configured local databases) back to ``target``.
+
+        ``db_plan`` defaults to the databases' state at ``target`` (rewind, redo).
+        """
+        plan = self.database_restore_plan(target) if db_plan is None else db_plan
         if not plan:
             return self.store.restore(target)
         pre, ready, problems = self._prepare_database_restore(plan)
@@ -399,7 +430,7 @@ class Airbag:
                 idx -= 1
                 continue
             repairs_git = git_damaged and "git-dir" in (action.get("categories") or [])
-            if snap.tree != current.tree or repairs_git or snap.meta.get("databases"):
+            if snap.tree != current.tree or repairs_git or _dumped_by(action, snap):
                 remaining -= 1
                 if remaining == 0:
                     return action, snap
@@ -444,7 +475,7 @@ class Airbag:
         actions = self.actions()
         state = self.store.read_state()
         old_pos = _pos(state, len(actions))
-        result = self._restore(snap)
+        result = self._restore(snap, db_plan=self.undo_database_plan(action))
         new_pos = next((i for i, a in enumerate(actions) if a is action or a == action), old_pos)
         redo = list(state.get("redo", []))
         redo.append({"before": result.before.seq, "pos": old_pos})
@@ -572,11 +603,15 @@ class Airbag:
                 "snapshot": snap.seq if snap else None, "error": error,
                 "hash": self._call_hash(call), "decision": decision.action,
                 "agent_message": decision.agent_message,
-                "databases": [str(e.get("name")) for e in (snap.meta.get("databases") or [])]
-                if snap else [],
+                "databases": decision.databases,
             })
         except OSError:
             pass
+
+
+def _dumped_by(action: dict[str, Any], snap: Snapshot) -> bool:
+    """Did this action itself dump a database (not just share a snapshot with one that did)?"""
+    return bool(action.get("databases")) and bool(snap.meta.get("databases"))
 
 
 def _discard_dumps(dumps: list[DatabaseDump]) -> None:

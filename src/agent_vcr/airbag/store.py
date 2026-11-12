@@ -588,8 +588,11 @@ class ShadowStore:
 
         tree = self._git("write-tree").stdout.decode().strip()
         last = self.latest()
-        if last is not None and last.tree == tree and not databases:
-            return last  # nothing changed since the previous snapshot
+        if last is not None and last.tree == tree and not databases \
+                and not last.meta.get("databases"):
+            # Nothing changed since the previous snapshot. One carrying database dumps is
+            # never shared, so a later action can't be mistaken for the one that dumped.
+            return last
         files = int(self._git("ls-files", "-z").stdout.count(b"\0"))
         seq = (last.seq + 1) if last is not None else 1
         if databases:

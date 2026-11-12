@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 import pytest
@@ -167,6 +168,58 @@ def test_copy_ignored_symlinks_dependencies(project: Path) -> None:
     report = bisect(bag, needs_deps, copy_ignored=True)
     assert report.status == "found" and report.before == 3
     assert (deps / "index.js").read_text() == "module.exports = 1\n"  # cleanup kept the real dir
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX shell background job")
+def test_background_child_holding_stdout_is_not_a_timeout(project: Path) -> None:
+    bag = _break_it(project)
+    start = time.monotonic()
+    # Passes immediately but leaves `sleep 30` running with the test's stdout.
+    report = bisect(bag, ["sleep 30 & echo started"], timeout=10.0)
+    assert report.status == "bad-passes"
+    assert report.runs[0].outcome == "pass" and "started" in report.runs[0].output
+    assert report.timeouts == 0
+    assert time.monotonic() - start < 9
+
+
+def test_copy_ignored_links_dependencies_not_build_output(project: Path) -> None:
+    (project / ".gitignore").write_text("node_modules/\ndist/\n")
+    (project / "node_modules").mkdir()
+    (project / "dist").mkdir()
+    (project / "dist" / "app.js").write_text("built\n")
+    bag = _break_it(project)
+    # The test wipes dist/ in its checkout: it must never reach the real project's dist/.
+    wipe = [PY, "-c", "import os, shutil\n"
+            "assert os.path.islink('node_modules')\n"
+            "shutil.rmtree('dist', ignore_errors=True)\n"
+            "os.makedirs('dist', exist_ok=True)\n"
+            "open('dist/app.js', 'w').write('clobbered')\n"
+            "from calc import add\nraise SystemExit(0 if add(2, 2) == 4 else 1)"]
+    report = bisect(bag, wipe, copy_ignored=True)
+    assert report.status == "found" and report.before == 3
+    assert (project / "dist" / "app.js").read_text() == "built\n"
+
+    probe = [PY, "-c", "import os\nraise SystemExit(0 if os.path.islink('dist') else 1)"]
+    assert bisect(bag, probe, copy_ignored=True).status == "good-fails"
+    assert bisect(bag, probe, extra_links=["dist"]).status == "bad-passes"  # named explicitly
+    with pytest.raises(ValueError):
+        bisect(bag, probe, extra_links=["../elsewhere"])
+
+
+def test_cli_copy_ignored_with_extra_dir(project: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    (project / ".gitignore").write_text("node_modules/\ndist/\n")
+    (project / "dist").mkdir()
+    _break_it(project)
+    probe = [PY, "-c", "import os\nraise SystemExit(0 if os.path.islink('dist') else 1)"]
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["bisect", "--project-dir", str(project), "--json", "--copy-ignored",
+                  "--copy-ignored", "dist", "--", *probe])
+    assert exc.value.code == 1
+    assert json.loads(capsys.readouterr().out)["status"] == "bad-passes"
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["bisect", "--project-dir", str(project), "--copy-ignored", "../x", "--",
+                  *probe])
+    assert exc.value.code == 2
 
 
 def test_single_string_runs_through_the_shell(project: Path) -> None:

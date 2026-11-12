@@ -20,6 +20,7 @@ import tempfile
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -432,3 +433,181 @@ def test_restore_refuses_without_a_safety_dump(pg: Cluster, project: Path,
     assert restore.databases == []
     assert any("could not dump its current state first" in f for f in restore.failed)
     assert pg.psql("SELECT x FROM precious") == "42"  # nothing overwritten
+
+
+# ── review regressions: the downgrade needs certainty ────────────────────
+
+def _fake_dumps(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(dbs, "pg_tool", lambda name: "/usr/bin/" + name)
+
+    def fake_dump(db: dbs.PgDatabase, dest: object, timeout: float | None = None) -> None:
+        Path(str(dest)).write_bytes(b"PGDMP fake")
+
+    monkeypatch.setattr(dbs, "dump", fake_dump)
+
+
+def _decide(project: Path, command: str) -> Any:
+    bag = Airbag(project, policy=Policy())
+    return bag.before(ToolCall(agent="t", tool_name="Bash", kind="shell", cwd=str(project),
+                               command=command))
+
+
+@pytest.mark.parametrize("command", [
+    "npx prisma migrate reset --force",
+    "supabase db reset --linked",
+    "RAILS_ENV=production rails db:reset",
+    "php artisan migrate:fresh --env=production",
+    "python manage.py flush",
+])
+def test_orm_commands_never_skip_the_prompt(command: str, project: Path,
+                                            monkeypatch: pytest.MonkeyPatch) -> None:
+    # One local database configured, but the ORM reads its own config (here: prod).
+    monkeypatch.setenv(dbs.ENV_VAR, "postgresql://localhost:5433/app")
+    (project / "prisma").mkdir()
+    (project / "prisma" / ".env").write_text("DATABASE_URL=postgresql://prod.example.com/app\n")
+    _fake_dumps(monkeypatch)
+    decision = _decide(project, command)
+    assert decision.verdict.level == "irreversible", command
+    assert decision.action == "ask"
+
+
+@pytest.mark.parametrize("command", [
+    # libpq: host in a conninfo / URL database argument beats -h.
+    "psql -h 127.0.0.1 -p 5433 -U postgres 'host=prod.example.com dbname=app' "
+    "-c 'drop table users'",
+    "psql -h 127.0.0.1 -p 5433 'postgresql://prod.example.com/app' -c 'drop table users'",
+    "psql -h 127.0.0.1 -p 5433 'hostaddr=10.0.0.9 dbname=app' -c 'drop table users'",
+    "psql -h 127.0.0.1 -p 5433 'service=prod' -c 'drop table users'",
+    "PGHOSTADDR=10.0.0.9 psql -h 127.0.0.1 -p 5433 -d app -c 'drop table users'",
+    "PGSERVICE=prod psql -h 127.0.0.1 -p 5433 -d app -c 'drop table users'",
+    "export PGHOST=prod.example.com; psql -p 5433 -d app -c 'drop table users'",
+    "export PGHOSTADDR=10.0.0.9 && psql -h 127.0.0.1 -p 5433 -d app -c 'drop table users'",
+    "psql -h 127.0.0.1 -h prod.example.com -p 5433 -d app -c 'drop table users'",
+    "psql -p 5433 -d app -c 'drop table users'",  # no host: default socket, not stated
+    "psql -h 127.0.0.1 -p 5433 -d app -c 'drop table users' -f more.sql",
+    "psql -h 127.0.0.1 -p 5433 -d app -f drop.sql -c 'drop table users'",
+    "psql -h 127.0.0.1 -p 5433 app -c '\\connect postgresql://prod.example.com/app' "
+    "-c 'drop table users'",
+    "psql -h 127.0.0.1 -p 5433 -d app -c '\\c prod' -c 'drop table users'",
+    "psql -h 127.0.0.1 -p 5433 -d app -c '\\i other.sql' -c 'drop table users'",
+    "psql -h 127.0.0.1 -p 5433 -d app -c \"select dblink_exec('host=prod', 'x'); "
+    "drop table users\"",
+    "pgcli -h 127.0.0.1 -p 5433 -d app -c 'drop table users'",
+])
+def test_uncertain_psql_targets_keep_the_prompt(command: str, project: Path,
+                                                monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(dbs.ENV_VAR, "postgresql://127.0.0.1:5433/app")
+    _fake_dumps(monkeypatch)
+    plan = dbs.plan_dumps(classify(command, cwd=str(project), root=project), project, command)
+    assert not plan.covers_all, command
+    assert _decide(project, command).action == "ask"
+
+
+def test_environment_redirects_are_honored(project: Path,
+                                           monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(dbs.ENV_VAR, "postgresql://127.0.0.1:5433/app")
+    _fake_dumps(monkeypatch)
+    command = "psql -h 127.0.0.1 -p 5433 -d app -c 'drop table users'"
+    assert _decide(project, command).action == "continue"
+    monkeypatch.setenv("PGHOSTADDR", "10.0.0.9")
+    assert _decide(project, command + " ").action == "ask"
+    monkeypatch.delenv("PGHOSTADDR")
+    monkeypatch.setenv("PGSERVICE", "prod")
+    assert _decide(project, command + "  ").action == "ask"
+
+
+@pytest.mark.parametrize("command,covered", [
+    ("psql -h 127.0.0.1 -p 5433 -d app -c 'DROP TABLE users'", True),
+    ("psql 'host=localhost port=5433 dbname=app' -c 'DROP TABLE users'", True),
+    ("PGHOST=127.0.0.1 PGPORT=5433 psql -d app -c 'TRUNCATE users'", True),
+    # The conninfo host wins, but a non-local host named anywhere means: ask anyway.
+    ("psql -h prod.example.com 'host=127.0.0.1 port=5433 dbname=app' -c 'drop table users'",
+     False),
+])
+def test_fully_stated_local_targets_still_downgrade(command: str, covered: bool, project: Path,
+                                                    monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(dbs.ENV_VAR, "postgresql://127.0.0.1:5433/app")
+    plan = dbs.plan_dumps(classify(command, cwd=str(project), root=project), project, command)
+    assert plan.covers_all is covered, command
+
+
+def test_socket_directories_must_match() -> None:
+    tcp = [dbs.parse_url("postgresql://localhost:5432/app")]
+    other_socket = {"prog": "psql", "env": {},
+                    "args": ["-h", "/some/other/socket", "-p", "5432", "-d", "app", "-c", "x"]}
+    assert dbs.match_target(other_socket, tcp) is None
+    sock = [dbs.parse_url("postgresql:///app?host=/run/a&port=5432")]
+    assert dbs.match_target({**other_socket, "args": ["-h", "/run/b", "-d", "app"]}, sock) is None
+    assert dbs.match_target({**other_socket, "args": ["-h", "/run/a/", "-d", "app"]}, sock)
+
+
+def test_redact_uses_the_last_at_sign() -> None:
+    assert dbs.redact("postgresql://u:p@ss@evil.com/app") == "postgresql://u:***@evil.com/app"
+    assert dbs.redact("postgresql://u@localhost/app?password=x&a=1") == \
+        "postgresql://u@localhost/app?password=***&a=1"
+
+
+@needs_pg
+def test_conninfo_host_beats_dash_h_like_real_psql(pg: Cluster) -> None:
+    # Real psql connects to the conninfo host even though -h names a socket that doesn't exist.
+    args = ["-h", "/nonexistent/socket", "-p", str(pg.port), f"host={pg.sock} dbname=app",
+            "-c", "select 1"]
+    out = subprocess.run([str(pg.bin / "psql"), "-X", "-tA", *args], capture_output=True,
+                         text=True, timeout=30)
+    assert out.returncode == 0 and out.stdout.strip() == "1"
+    db, certain = dbs.resolve_target({"prog": "psql", "args": args, "env": {}},
+                                     [dbs.parse_url(pg.url)])
+    assert db is not None and db.host == pg.sock and certain
+
+
+@needs_pg
+def test_undoing_a_later_edit_leaves_the_database_alone(
+        pg: Cluster, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    bag = Airbag(project, policy=Policy())
+    drop = bag.before(ToolCall(agent="claude", tool_name="Bash", kind="shell", cwd=str(project),
+                               command=pg.drop_command()))
+    assert drop.action == "continue" and drop.databases == ["app"]
+    _shell(pg.drop_command(), project)
+    pg.psql("CREATE TABLE t2 (x int); INSERT INTO t2 VALUES (42)")
+    edit = bag.before(ToolCall(agent="claude", tool_name="Edit", kind="edit", cwd=str(project),
+                               paths=[str(project / "app.py")]))
+    assert edit.snapshot is not None and drop.snapshot is not None
+    assert edit.snapshot.seq != drop.snapshot.seq  # a snapshot with dumps is never shared
+    assert edit.databases == []
+    (project / "app.py").write_text("print('v2')\n")
+
+    cli.main(["rewind", "--project-dir", str(project)])
+    timeline = capsys.readouterr().out.splitlines()
+    assert sum("[db: app]" in line for line in timeline) == 1
+
+    result = bag.undo(1)
+    assert result is not None
+    action, restore = result
+    assert action["tool"] == "Edit" and restore.databases == []
+    assert (project / "app.py").read_text() == "print('v1')\n"
+    assert _tables(pg) == "t2"  # the database was not touched
+
+    result = bag.undo(1)  # now the DROP itself
+    assert result is not None and result[1].databases == ["app"]
+    assert _tables(pg) == "users"
+
+
+@needs_pg
+def test_exact_restore_with_identity_and_serial_columns(pg: Cluster) -> None:
+    db = dbs.parse_url(pg.url)
+    pg.psql("CREATE TABLE ident (id int GENERATED ALWAYS AS IDENTITY PRIMARY KEY, v text);"
+            "CREATE TABLE ser (id serial PRIMARY KEY, v text);"
+            "CREATE SEQUENCE free_seq;"
+            "INSERT INTO ident (v) VALUES ('a'), ('b'); INSERT INTO ser (v) VALUES ('c')")
+    with tempfile.TemporaryDirectory() as tmp:
+        dump = Path(tmp) / "app.dump"
+        dbs.dump(db, dump)
+        pg.psql("DROP TABLE ser; CREATE SEQUENCE later_seq;"
+                "CREATE TABLE later (id int GENERATED BY DEFAULT AS IDENTITY, x serial)")
+        assert dbs.restore(db, dump) is None  # exact, no pg_restore --clean fallback
+    rels = pg.psql("SELECT string_agg(relname, ',' ORDER BY relname) FROM pg_class "
+                   "WHERE relkind IN ('r', 'S') AND relnamespace = 'public'::regnamespace")
+    assert rels == "free_seq,ident,ident_id_seq,ser,ser_id_seq,users"
+    assert pg.psql("SELECT string_agg(v, ',' ORDER BY id) FROM ident") == "a,b"
+    pg.psql("INSERT INTO ident (v) VALUES ('c')")  # the identity sequence still works
+    assert pg.psql("SELECT max(id) FROM ident") == "3"
