@@ -99,7 +99,7 @@ agent tool call ──► hook process (python -m agent_vcr.airbag.hook <agent>)
   SQL command; the dump is attached to that snapshot and restored by undo/rewind. Non-local
   hosts are refused.
 * **Bisect.** `airbag/bisect.py` materializes snapshots into temporary directories
-  (`git archive` from the store), runs the test command there and binary-searches the
+  (a throwaway index and `checkout-index`), runs the test command there and binary-searches the
   timeline. It only adds one append-only "before bisect" snapshot; nothing else is written.
 * **MCP.** `mcp_server.py` exposes status, timeline, check, snapshot and (confirm-gated)
   undo/rewind as MCP tools over stdio, reusing the same `Airbag` API as the CLI.
