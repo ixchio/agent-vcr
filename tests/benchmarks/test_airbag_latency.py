@@ -12,13 +12,16 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import sqlite3
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from agent_vcr.airbag import store as store_mod
 from agent_vcr.airbag.core import Airbag, ToolCall
 from agent_vcr.airbag.store import ShadowStore
 
@@ -128,3 +131,66 @@ class TestAirbagHookLatency:
         proc = benchmark.pedantic(run_hook, rounds=5, iterations=1, warmup_rounds=1)
         assert proc.returncode == 0 and "Traceback" not in proc.stderr, proc.stderr
         assert benchmark.stats["mean"] < 1.5 * SLACK
+
+
+@pytest.fixture(scope="module")
+def app_with_ignored_data(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """A small app with what tends to be git-ignored: a 5 MB SQLite database in
+    instance/, a 20k-file vendor/ tree and a 5k-file data/ folder with a .env."""
+    root = tmp_path_factory.mktemp("bench-ignored") / "app"
+    (root / "instance").mkdir(parents=True)
+    con = sqlite3.connect(str(root / "instance" / "app.db"))
+    con.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, v BLOB)")
+    con.executemany("INSERT INTO t (v) VALUES (?)", [(os.urandom(1000),) for _ in range(5000)])
+    con.commit()
+    con.close()
+    for top, count in (("vendor", 20000), ("data", 5000)):
+        for i in range(count):
+            folder = root / top / f"pkg{i // 500:03d}"
+            folder.mkdir(parents=True, exist_ok=True)
+            (folder / f"f{i}.txt").write_text("x\n", encoding="utf-8")
+    (root / "data" / ".env").write_text("TOKEN=1\n", encoding="utf-8")
+    (root / "vendor" / "pkg000" / ".env").write_text("THEIRS=1\n", encoding="utf-8")
+    (root / "app.py").write_text("print(1)\n", encoding="utf-8")
+    (root / ".gitignore").write_text("instance/\nvendor/\ndata/\n.env\n", encoding="utf-8")
+    _git(root, "init", "-q")
+    _git(root, "add", "-A")
+    _git(root, "commit", "-qm", "init")
+    return root
+
+
+class TestAirbagIgnoredDataLatency:
+    """What ignored databases and folders cost on every tool call."""
+
+    def test_snapshot_with_unchanged_sqlite_and_big_ignored_trees(
+            self, benchmark: Any, app_with_ignored_data: Path, tmp_path: Path,
+            monkeypatch: pytest.MonkeyPatch) -> None:
+        """Later snapshot, database untouched, after one edit: must average < 0.3s."""
+        monkeypatch.setattr(store_mod, "_SQLITE_RACY_NS", 0)  # the db is fresh in CI
+        root = app_with_ignored_data
+        time.sleep(0.05)
+        store = ShadowStore(root, home=tmp_path / "home")
+        first = store.snapshot(label="first")
+        store.snapshot(label="warm")
+        counter = iter(range(1000))
+        backups: list[str] = []
+        real_connect = sqlite3.connect
+
+        def connect(database: Any, *args: Any, **kwargs: Any) -> sqlite3.Connection:
+            backups.append(str(database))
+            return real_connect(database, *args, **kwargs)
+
+        monkeypatch.setattr(store_mod.sqlite3, "connect", connect)
+
+        def edit() -> tuple[tuple[()], dict[str, Any]]:
+            (root / "app.py").write_text(f"print({next(counter)})\n", encoding="utf-8")
+            return (), {}
+
+        snap = benchmark.pedantic(lambda: store.snapshot(label="edit"), setup=edit,
+                                  rounds=5, iterations=1)
+        tree = store._git("ls-tree", "-r", "--name-only", snap.tree).stdout.decode().split()
+        assert {"instance/app.db", "data/.env"} <= set(tree)
+        assert not any(name.startswith("vendor/") for name in tree)
+        assert first.meta.get("notes") is None
+        assert backups == []  # the database backup was reused every time
+        assert benchmark.stats["mean"] < 0.3 * SLACK
