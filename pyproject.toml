@@ -130,6 +130,9 @@ vcr-server = "agent_vcr.server:main"
 vcr = "agent_vcr.cli:main"
 sentinel = "openhands_sentinel.cli:main"
 
+[project.entry-points.pytest11]
+agent_vcr = "agent_vcr.pytest_plugin"
+
 [project.urls]
 Homepage = "https://github.com/ixchio/agent-vcr"
 Documentation = "https://ixchio.github.io/agent-vcr/"
