@@ -458,7 +458,9 @@ def test_opts(agent_vcr, request):
 
     helptext = inner("--help")
     helptext.stdout.fnmatch_lines(
-        ["*--vcr-dir=DIR*", "*--vcr-record={none,once,all}*", "*--vcr-fail-on={degraded,failed,never}*"]
+        # Python 3.13 prints aliases as "--vcr-record, --agent-vcr-record={...}".
+        ["*--vcr-dir=DIR*", "*--vcr-record*={none,once,all}*",
+         "*--vcr-fail-on={degraded,failed,never}*"]
     )
     markers = inner("--markers")
     markers.stdout.fnmatch_lines(["*@pytest.mark.agent_vcr(task=None, identity=None, record=None)*"])

@@ -329,7 +329,7 @@ def test_recordings_list_and_summary(pipe: Pipe, project: Path) -> None:
     assert listing["count"] == 1
     entry = listing["recordings"][0]
     assert entry["path"] == str(path) and entry["session_id"] == "mcp-demo"
-    assert entry["relative"] == os.path.join(".vcr", path.name)
+    assert entry["relative"] == f".vcr/{path.name}"  # POSIX-style on every OS
 
     summary = _payload(pipe.call("recording_summary", path=entry["relative"]))
     assert summary["session_id"] == "mcp-demo"

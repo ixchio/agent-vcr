@@ -229,6 +229,8 @@ class TestAsyncVCRPlayer:
             await recorder.start_session()
 
             await recorder.record_step("n1", {}, {"v": 1})
+            # Distinct timestamps even where the clock ticks every ~16ms (Windows).
+            await asyncio.sleep(0.05)
             await recorder.record_step("n2", {}, {"v": 2})
 
             path = await recorder.save()
