@@ -39,23 +39,29 @@ def test_20k_frames_with_a_small_cache_stay_bounded_and_correct(tmp_path: Path) 
     rec = VCRRecorder(output_dir=str(tmp_path), buffer_size=BUFFER, max_cached_frames=CACHE)
     rec.start_session("long-run")
 
-    tracemalloc.start()
+    tracemalloc.start(8)
     try:
         peak_cache = 0
         baseline = 0
+        before: tracemalloc.Snapshot | None = None
         for i in range(N_FRAMES):
             _record(rec, i)
             peak_cache = max(peak_cache, rec.cached_frame_count)
             if i == 2_000:
+                before = tracemalloc.take_snapshot()  # before the baseline: not "growth"
                 baseline = tracemalloc.get_traced_memory()[0]
         grown = tracemalloc.get_traced_memory()[0] - baseline
+        top = ""
+        if grown >= 1_000_000 and before is not None:
+            stats = tracemalloc.take_snapshot().compare_to(before, "traceback")[:3]
+            top = "\n".join(line for stat in stats for line in [str(stat), *stat.traceback.format()])
     finally:
         tracemalloc.stop()
 
     # The cache never holds more than the bound plus one unflushed buffer ...
     assert peak_cache <= CACHE + BUFFER
     # ... so 18k more frames add (almost) nothing. Unbounded, they cost ~20 MB.
-    assert grown < 1_000_000, f"memory grew by {grown} bytes"
+    assert grown < 1_000_000, f"memory grew by {grown} bytes; top growth:\n{top}"
     assert rec.get_session() is not None
     assert rec.get_session().frame_count == N_FRAMES  # type: ignore[union-attr]
 
