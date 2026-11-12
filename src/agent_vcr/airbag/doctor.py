@@ -102,9 +102,11 @@ def _shebang(path: Path) -> str | None:
 
 
 def _package_version(python: str) -> str | None:
+    """The agent_vcr version ``python`` imports, as its launcher would run it."""
     try:
         out = subprocess.run(
-            [python, "-c", "import agent_vcr; print(agent_vcr.__version__)"],
+            # -E: like the launcher, ignore this shell's PYTHONPATH (it may point elsewhere).
+            [python, "-E", "-c", "import agent_vcr; print(agent_vcr.__version__)"],
             capture_output=True, text=True, timeout=15, stdin=subprocess.DEVNULL,
             encoding="utf-8", errors="replace",
         )

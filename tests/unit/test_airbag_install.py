@@ -576,8 +576,10 @@ def test_fresh_home_end_to_end(tmp_path: Path) -> None:
     assert "not protected" in status.stdout and "mkdir .vcr" in status.stdout
 
     # 4. The interpreter disappears (pipx reinstall): the hook is a no-op, doctor sees it.
+    written = ag.hook_interpreter(command)
+    assert written
     settings.write_text(settings.read_text(encoding="utf-8").replace(
-        ag._interpreter("default"), "/gone/venv/bin/python"), encoding="utf-8")
+        written, "/gone/venv/bin/python"), encoding="utf-8")
     command = json.loads(settings.read_text(encoding="utf-8"))[
         "hooks"]["PreToolUse"][0]["hooks"][0]["command"]
     out = hook(project, "rm -rf .")
