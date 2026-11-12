@@ -175,10 +175,7 @@ _LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "0.0.0.0", ""})
 
 def classify(command: str, cwd: str | Path | None = None, root: str | Path | None = None) -> Verdict:
     """Classify a shell command string run in ``cwd`` for project ``root``."""
-    ctx = _Context(
-        cwd=Path(cwd).expanduser().resolve() if cwd else Path.cwd(),
-        root=Path(root).expanduser().resolve() if root else None,
-    )
+    ctx = _Context.create(cwd, root)
     verdict = Verdict()
     _classify_into(command, ctx, verdict, depth=0)
     return verdict
@@ -187,10 +184,7 @@ def classify(command: str, cwd: str | Path | None = None, root: str | Path | Non
 def classify_file_write(path: str, cwd: str | Path | None = None,
                         root: str | Path | None = None) -> Verdict:
     """Verdict for an agent's file-edit tool writing ``path``."""
-    ctx = _Context(
-        cwd=Path(cwd).expanduser().resolve() if cwd else Path.cwd(),
-        root=Path(root).expanduser().resolve() if root else None,
-    )
+    ctx = _Context.create(cwd, root)
     verdict = Verdict(level="write", paths=[path])
     if not ctx.inside(path):
         verdict.raise_to("write", "file is outside the project (not protected by snapshots)",
@@ -207,6 +201,26 @@ class _Context:
     sql_hint: str | None = None
     #: ``VAR=value`` assignments preceding the current simple command.
     env: dict[str, str] = field(default_factory=dict)
+    #: Every spelling of ``root``: its realpath and the path as given. On macOS ``/var``,
+    #: ``/tmp`` and ``/home`` are symlinks, so a project and the paths in a command can name
+    #: the same directory differently; all comparisons go through these.
+    roots: tuple[Path, ...] = ()
+
+    @classmethod
+    def create(cls, cwd: str | Path | None, root: str | Path | None) -> _Context:
+        real_root = Path(os.path.realpath(Path(root).expanduser())) if root else None
+        spellings: list[Path] = []
+        if root:
+            assert real_root is not None
+            spellings.append(real_root)
+            given = Path(os.path.normpath(os.path.abspath(Path(root).expanduser())))
+            if given != real_root:
+                spellings.append(given)
+        return cls(
+            cwd=Path(os.path.realpath(Path(cwd).expanduser())) if cwd else Path.cwd(),
+            root=real_root,
+            roots=tuple(spellings),
+        )
 
     @staticmethod
     def _expand(raw: str) -> Path:
@@ -223,15 +237,23 @@ class _Context:
         parent, name = os.path.split(normal)
         return Path(os.path.join(os.path.realpath(parent), name)) if name else Path(normal)
 
-    def inside(self, raw: str) -> bool:
-        if self.root is None:
-            return True
+    def root_relative(self, raw: str) -> Path | None:
+        """``raw`` relative to the project root (``.`` for the root), None when outside."""
         path = self.resolve(raw)
-        return path == self.root or self.root in path.parents
+        for root in self.roots:
+            if path == root:
+                return Path(".")
+            if root in path.parents:
+                return path.relative_to(root)
+        return None
+
+    def inside(self, raw: str) -> bool:
+        return self.root is None or self.root_relative(raw) is not None
 
     def contains_root(self, raw: str) -> bool:
         """True when ``raw`` is a parent directory of the project (e.g. ``..`` at the root)."""
-        return self.root is not None and self.resolve(raw) in self.root.parents
+        path = self.resolve(raw)
+        return any(path in root.parents for root in self.roots)
 
     def is_temp(self, raw: str) -> bool:
         """True when ``raw`` is scratch space outside the project (``/tmp/build-cache``).
@@ -245,7 +267,7 @@ class _Context:
         for temp in self._temp_dirs():
             if not str(path).startswith(str(temp).rstrip("/") + "/"):
                 continue
-            project_in_temp = self.root is not None and temp in self.root.parents
+            project_in_temp = any(temp in root.parents for root in self.roots)
             if explicit or not project_in_temp:
                 return True
         return False
@@ -637,13 +659,13 @@ def _check_targets(targets: list[str], ctx: _Context, verdict: Verdict, action: 
                 "outside-project",
             )
         elif ctx.root is not None and action == "delete":
-            resolved = ctx.resolve(target)
-            git_dir = ctx.root / ".git"
-            if resolved == ctx.root:
+            rel = ctx.root_relative(target)
+            parts = rel.parts if rel is not None else ()
+            if rel == Path("."):
                 verdict.raise_to("destructive", "deletes the whole project directory", "git-dir")
-            elif resolved == git_dir or git_dir in resolved.parents:
+            elif parts[:1] == (".git",):
                 verdict.raise_to("destructive", "deletes the project's .git history", "git-dir")
-            elif any(ch in target for ch in "*?[") and resolved.parent == ctx.root and \
+            elif any(ch in target for ch in "*?[") and len(parts) == 1 and \
                     target.rsplit("/", 1)[-1].startswith("."):
                 verdict.raise_to("destructive", "glob may match .git", "git-dir")
 

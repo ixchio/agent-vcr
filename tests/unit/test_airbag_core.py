@@ -208,6 +208,33 @@ def test_symlinked_parent_dirs_are_resolved(tmp_path: Path) -> None:
     assert verdict.level == "irreversible"
 
 
+@pytest.mark.parametrize("root_via,command_via", [
+    ("alias", "real"), ("real", "alias"), ("alias", "alias"), ("real", "real"),
+])
+def test_symlinked_parent_spellings_classify_the_same(tmp_path: Path, root_via: str,
+                                                      command_via: str) -> None:
+    """macOS: /var, /tmp and /home are symlinks, so a project path and the paths in a command
+    can spell the same directory differently. The verdicts must not depend on the spelling."""
+    (tmp_path / "real" / "proj" / "src").mkdir(parents=True)
+    (tmp_path / "alias").symlink_to(tmp_path / "real")
+    root = tmp_path / root_via / "proj"
+    other = tmp_path / command_via
+    parent_cwd = tmp_path / root_via
+
+    deleted = classify(f"rm -rf {other}/proj", cwd=parent_cwd, root=root)
+    assert deleted.level == "destructive"
+    assert "git-dir" in deleted.categories
+    assert "outside-project" not in deleted.categories
+    assert "git-dir" in classify(f"rm -rf {other}/proj/.git", cwd=root, root=root).categories
+    assert classify(f"cp a.txt {other}/proj/src/b.txt", cwd=root, root=root).level == "write"
+    assert classify(f"echo x > {other}/proj/out.txt", cwd=root, root=root).level == "write"
+    assert classify(f"cp a.txt {other}/x.txt", cwd=root, root=root).level == "write"  # /tmp
+    # A directory that contains the project, however it is spelled (``rm -rf`` of the
+    # alias itself would only remove the symlink, so test the real common parent).
+    assert classify(f"rm -rf {tmp_path}", cwd=root, root=root).level == "irreversible"
+    assert classify("cp a.txt ../x.txt", cwd=root, root=root).level == "irreversible"
+
+
 # ── store ────────────────────────────────────────────────────────────────
 
 def test_store_lives_outside_the_project_and_never_touches_user_git(project: Path) -> None:
