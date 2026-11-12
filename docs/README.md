@@ -31,6 +31,7 @@ New here? → **[Quickstart: every superpower in 5 minutes](quickstart.md)**
 | 👻 **Ghost Replay** | Re-runs a verified run from its recording — zero model calls, zero tokens | [recording-and-replay.md](recording-and-replay.md) |
 | 🔁 **ACID workspace** | Transactions for your own agent: savepoint, rollback, commit — files and state together | [acid-workspace.md](acid-workspace.md) |
 | ✅ **Agent CI** | Fails a pull request when the agent's behavior, cost or speed regresses | [agent-ci.md](agent-ci.md) |
+| 🧪 **pytest plugin** | Records your agent once in a test, replays it on every later run — zero tokens in CI | [pytest-plugin.md](pytest-plugin.md) |
 | 🔍 **Sentinel** | Catches broken, bloated or duplicated code your agent just wrote | [sentinel.md](sentinel.md) |
 | 📺 **Dashboard & TUI** | Browse recordings in the terminal or a local web UI; share them with your team | [dashboard.md](dashboard.md) |
 | 🔌 **Integrations** | LangGraph, CrewAI, OpenHands, Claude Code, n8n, or your own framework | [integrations/](integrations/README.md) |
