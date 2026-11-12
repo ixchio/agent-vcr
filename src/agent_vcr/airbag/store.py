@@ -65,7 +65,10 @@ DEFAULT_MAX_FILES = 200_000
 #: store). Other C libraries ignore these variables.
 _MALLOC_ENV = {"MALLOC_TRIM_THRESHOLD_": "268435456", "MALLOC_TOP_PAD_": "16777216"}
 
-#: Parallel blob writers for big batches (see ``ShadowStore._prewrite_blobs``).
+#: Parallel blob writers for big batches (see ``ShadowStore._prewrite_blobs``). Off on
+#: Windows: measured on a GitHub runner, a 20k-file first snapshot took 41 s with them and
+#: 18 s without (parallel loose-object writes there are slower than one update-index).
+_PREWRITE_ENABLED = not _platform.WINDOWS
 _PREWRITE_JOBS = 4
 _PREWRITE_MIN_FILES = 2000
 
@@ -800,7 +803,7 @@ class ShadowStore:
         wrong (a file changing meanwhile) is at worst an unreferenced object.
         """
         jobs = min(_PREWRITE_JOBS, os.cpu_count() or 1)
-        if jobs < 2 or len(regular) < _PREWRITE_MIN_FILES:
+        if not _PREWRITE_ENABLED or jobs < 2 or len(regular) < _PREWRITE_MIN_FILES:
             return
         # --stdin-paths is line-based, strips a trailing CR and C-unquotes lines
         # starting with '"'; a path it cannot open ends that worker (no harm).
