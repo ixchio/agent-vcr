@@ -75,6 +75,8 @@ def _call(proj: Path, command: str) -> ToolCall:
     ("git push --force origin main", "irreversible"),
     ("git branch -D feature", "irreversible"),
     ("psql -h prod.example.com -c 'DROP TABLE users'", "irreversible"),
+    ("psql -h prod.example.com -c 'DROP OWNED BY app_user'", "irreversible"),
+    ("sqlite3 app.db 'drop materialized view m'", "destructive"),
     ("echo 'TRUNCATE orders;' | psql", "irreversible"),
     ("DATABASE_URL=postgres://u@db.internal/app npx prisma db push --accept-data-loss",
      "irreversible"),

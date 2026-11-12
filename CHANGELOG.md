@@ -14,12 +14,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   binary-searching the airbag's snapshots in temporary checkouts. No model tokens, and the
   project, its `.git` and the snapshots are never modified. Reports the culprit command, the
   files it changed, the failing output and the `vcr rewind` command to go back. `--good`,
-  `--bad`, `--timeout`, `--copy-ignored`, `--json`.
+  `--bad`, `--timeout`, `--copy-ignored` (links node_modules/.venv-style dependency dirs into
+  each checkout), `--json`.
 - **Local Postgres rewind**: list local databases in `AGENT_VCR_AIRBAG_DATABASES` (or
   `.vcr/airbag-databases.json`). A destructive SQL command against one gets a `pg_dump` first,
   and `vcr undo` / `vcr rewind` restore the database together with the files (with a dump of the
   current state first, so the restore is undoable too). Only localhost / unix-socket databases
-  are accepted. `vcr airbag db list|snapshot|restore`.
+  are accepted, and the prompt is only skipped when the command's target is certain (a `psql -c`
+  against a configured local database); ORM and framework commands still ask, with a dump taken.
+  `vcr airbag db list|snapshot|restore`.
 - **`vcr mcp`**: a stdio MCP server (standard library only) that gives any MCP-capable agent
   `airbag_status`, `airbag_timeline`, `airbag_check`, `airbag_snapshot`, `airbag_undo`,
   `airbag_rewind`, `recordings_list` and `recording_summary`. Undo and rewind only preview
@@ -54,6 +57,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `mv` out of the project, `rsync` to `host:path`, through a symlink inside the project) are
   irreversible, not plain writes. Projects under symlinked directories (`/var`, `/tmp`,
   `/home` on macOS) are classified the same as on Linux.
+- Airbag: `DROP OWNED`, `DROP EXTENSION`, `DROP FUNCTION` and other DROP forms count as
+  destructive SQL.
 - TUI: Ctrl+S saves in the state editor (the hint was there, the binding wasn't).
 - The dashboard sidebar showed a stale version.
 - `vcr bundle verify` exits 1 for a tampered or unreadable bundle (it printed `"ok": false`

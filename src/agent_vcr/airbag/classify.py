@@ -121,7 +121,9 @@ _PUBLISH = {
 }
 
 _SQL_DANGER = [
-    (re.compile(r"\bdrop\s+(table|database|schema|collection|index|view|user|role)\b", re.I),
+    (re.compile(r"\bdrop\s+(table|database|schema|collection|index|view|user|role|owned|"
+                r"materialized\s+view|sequence|function|procedure|type|extension|trigger)\b",
+                re.I),
      "SQL DROP"),
     (re.compile(r"\btruncate\s+(table\s+)?[\w.\"`]+", re.I), "SQL TRUNCATE"),
     (re.compile(r"\bdelete\s+from\s+[\w.\"`]+\s*(;|$|\"|')", re.I), "SQL DELETE without WHERE"),
