@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import sys
@@ -67,24 +68,64 @@ def register(subparsers: Any) -> None:
                      help="Test command; one quoted string runs through the shell")
     bis.set_defaults(func=cmd_bisect)
 
+    doc = subparsers.add_parser(
+        "doctor", parents=[common],
+        help="Check that the airbag really protects you, and print the exact fix",
+        description="Checks Python and the `vcr` launchers on PATH, git, every agent's hooks "
+                    "(installed where, interpreter still there, one-time trust steps), and "
+                    "whether this folder is protected. Exit code 0 when healthy, 1 when not.",
+    )
+    doc.add_argument("--fix", action="store_true",
+                     help="Fix what is safe to fix automatically: rewrite stale hook commands "
+                          "and move project-level hooks to the user level")
+    doc.set_defaults(func=cmd_doctor)
+
     bag = subparsers.add_parser("airbag", help="Snapshot-before-every-tool-call safety net")
     sub = bag.add_subparsers(dest="airbag_command", required=True)
 
-    inst = sub.add_parser("install", parents=[common], help="Install airbag hooks for agents")
+    inst = sub.add_parser(
+        "install", parents=[common], help="Install airbag hooks for agents",
+        description="Install airbag hooks. By default they go into each agent's user-level "
+                    "config, so one install protects every project and nothing is written "
+                    "into your repository. Hooks from an older project-level install are "
+                    "moved to the user level.",
+    )
     inst.add_argument("agents", nargs="*", help="claude, codex, gemini, cursor, opencode, ... "
                                                "(default: every agent detected)")
     inst.add_argument("--all", action="store_true", help="Install for every supported agent")
-    inst.add_argument("--user", action="store_true",
-                      help="Install in the user-level config instead of the project")
+    where = inst.add_mutually_exclusive_group()
+    where.add_argument("--user", action="store_true",
+                       help="User-level config: protects every project (the default)")
+    where.add_argument("--project", action="store_true",
+                       help="Per-developer config inside the project instead (Claude Code: "
+                            ".claude/settings.local.json); do not commit it")
+    inst.add_argument("--statusline", action="store_true",
+                      help="Claude Code: also show the airbag in the status line, only if no "
+                           "statusLine is configured yet")
     inst.set_defaults(func=cmd_install)
 
-    uninst = sub.add_parser("uninstall", parents=[common], help="Remove airbag hooks")
+    uninst = sub.add_parser("uninstall", parents=[common],
+                            help="Remove airbag hooks (user and project level)")
     uninst.add_argument("agents", nargs="*")
-    uninst.add_argument("--user", action="store_true")
+    which = uninst.add_mutually_exclusive_group()
+    which.add_argument("--user", action="store_true", help="Only the user-level hooks")
+    which.add_argument("--project", action="store_true", help="Only the project's hooks")
     uninst.set_defaults(func=cmd_uninstall)
 
     status = sub.add_parser("status", parents=[common], help="Show protection status")
     status.set_defaults(func=cmd_status)
+
+    line = sub.add_parser(
+        "statusline", help="One-line airbag status for Claude Code's statusLine (reads its "
+                           "JSON on stdin)",
+    )
+    line.set_defaults(func=cmd_statusline)
+
+    doctor = sub.add_parser("doctor", parents=[common],
+                            help="Check the installation and print the exact fix (= vcr doctor)")
+    doctor.add_argument("--fix", action="store_true",
+                        help="Fix what is safe to fix automatically")
+    doctor.set_defaults(func=cmd_doctor)
 
     log = sub.add_parser("log", parents=[common], help="Timeline of protected agent actions")
     log.add_argument("-n", "--limit", type=int, default=20)
@@ -142,7 +183,7 @@ def register(subparsers: Any) -> None:
     hook.set_defaults(func=cmd_hook)
 
 
-COMMANDS = frozenset({"undo", "redo", "rewind", "bisect", "airbag"})
+COMMANDS = frozenset({"undo", "redo", "rewind", "bisect", "airbag", "doctor"})
 
 
 def _bag(args: argparse.Namespace) -> Airbag:
@@ -330,12 +371,16 @@ def cmd_check(args: argparse.Namespace) -> None:
         command = command[3:]
     if not command:
         _fail('usage: vcr airbag check "<shell command>"', 2)
-    from agent_vcr.airbag.store import find_project_root
+    from agent_vcr.airbag.scope import resolve
 
     cwd = os.path.abspath(args.project_dir)
-    root = find_project_root(cwd)
+    scope = resolve(cwd)
+    root = scope.root
     verdict = classify(command, cwd=cwd, root=root)
-    if verdict.db_targets:
+    if not scope.protected and verdict.level == "destructive":
+        # What the hook does here: no snapshot, so a human decides (see airbag.scope).
+        verdict.raise_to("irreversible", scope.unprotected_reason, "unprotected")
+    if verdict.db_targets and scope.protected:
         from agent_vcr.airbag.core import downgrade_for_databases
         from agent_vcr.airbag.databases import plan_dumps
 
@@ -350,7 +395,8 @@ def cmd_check(args: argparse.Namespace) -> None:
                                     note="dumped with pg_dump before it runs")
     if args.json:
         print(json.dumps({"level": verdict.level, "reasons": verdict.reasons,
-                          "categories": verdict.categories, "undoable": verdict.undoable}))
+                          "categories": verdict.categories, "undoable": verdict.undoable,
+                          "protected": scope.protected}))
         return
     icon = LEVEL_ICON[verdict.level]
     print(f"{icon} {verdict.level.upper()}: {LEVEL_EXPLAIN[verdict.level]}")
@@ -364,8 +410,24 @@ def cmd_snapshot(args: argparse.Namespace) -> None:
     print(f"📸 Snapshot {snap.short} of {bag.root} ({snap.files} files protected).")
 
 
+def _pending_time(bag: Airbag) -> float:
+    pending = bag.store.read_state().get("pending")
+    return float(pending.get("time", 0)) if isinstance(pending, dict) else -1.0
+
+
 def cmd_allow(args: argparse.Namespace) -> None:
-    pending = _bag(args).approve_pending()
+    from agent_vcr.airbag.scope import GuardStore, resolve
+    from agent_vcr.airbag.store import ShadowStore
+
+    policy = Policy.from_env()
+    scope = resolve(args.project_dir)
+    # Commands stopped in unprotected folders wait in the shared guard store.
+    bags = [Airbag(scope.root, policy=policy, store=GuardStore(scope.root), scope=scope)]
+    if scope.protected:
+        with contextlib.suppress(AirbagError):
+            bags.append(Airbag(scope.root, policy=policy, store=ShadowStore(scope.root)))
+    bag = max(bags, key=_pending_time)
+    pending = bag.approve_pending()
     if pending is None:
         print("No stopped command is waiting for approval (approvals expire after 10 minutes).")
         return
@@ -380,67 +442,202 @@ def cmd_gc(args: argparse.Namespace) -> None:
           f"{bag.store.disk_usage() / 1e6:.1f} MB ({bag.store.dir}).")
 
 
-def cmd_status(args: argparse.Namespace) -> None:
-    from agent_vcr.airbag.agents import detect_installed
+def _short_path(path: str | os.PathLike[str]) -> str:
+    text = str(path)
+    home = os.path.expanduser("~")
+    return "~" + text[len(home):] if text.startswith(home + os.sep) else text
 
-    bag = _bag(args)
-    info = bag.store.info()
-    policy = bag.policy
+
+def _roots(project_dir: str) -> tuple[Any, list[Any]]:
+    """The scope of ``project_dir`` and the roots whose project-level hooks count."""
+    from pathlib import Path
+
+    from agent_vcr.airbag.scope import resolve
+
+    here = Path(os.path.abspath(project_dir))
+    scope = resolve(here)
+    return scope, [here] + ([scope.root] if scope.root != here else [])
+
+
+def protection_line(scope: Any) -> str:
+    if scope.protected:
+        return f"✓ protected: {scope.root} ({scope.why})"
+    return (f"✗ not protected: {scope.root} ({scope.why}). Nothing is snapshotted here; "
+            f"commands that would destroy data are stopped for a human. To protect it, "
+            f"{scope.opt_in_hint}.")
+
+
+def cmd_status(args: argparse.Namespace) -> None:
+    from agent_vcr.airbag.agents import find_hooks
+    from agent_vcr.airbag.store import ShadowStore, state_home
+
+    scope, roots = _roots(args.project_dir)
+    policy = Policy.from_env()
+    info: dict[str, Any] = {"root": str(scope.root), "store": str(state_home()),
+                            "snapshots": 0, "latest": None}
+    if scope.protected:
+        with contextlib.suppress(AirbagError):
+            info = ShadowStore(scope.root).info()
+    sites = {s.path: s for root in roots for s in find_hooks(root)}.values()
+    hooks: dict[str, str] = {}
+    for site in sorted(sites, key=lambda s: s.scope != "project"):
+        hooks.setdefault(site.agent, str(site.path))
     if args.json:
-        print(json.dumps({**info, "policy": policy.__dict__,
-                          "hooks": detect_installed(bag.root)}, default=str))
+        print(json.dumps({**info, "policy": policy.__dict__, "hooks": hooks,
+                          "protected": scope.protected, "protection": scope.to_dict(),
+                          "hook_sites": [s.to_dict() for s in sites]}, default=str))
         return
     print(f"Airbag for {info['root']}")
+    print(f"  {protection_line(scope)}")
     print(f"  enabled: {policy.enabled}   mode: {policy.mode}   "
           f"irreversible commands: {policy.on_irreversible}")
     print(f"  snapshots: {info['snapshots']}   store: {info['store']}")
-    hooks = detect_installed(bag.root)
-    if hooks:
-        for agent, where in hooks.items():
-            print(f"  ✓ {agent}: {where}")
-    else:
+    if not sites:
         print("  ✗ no agent hooks installed — run `vcr airbag install`")
+    for site in sites:
+        mark = "✗" if site.missing_interpreters else "!" if site.scope == "project" else "✓"
+        extra = ""
+        if site.missing_interpreters:
+            extra = "  (its Python is gone: `vcr doctor --fix`)"
+        elif site.scope == "project":
+            extra = "  (in the project: `vcr doctor --fix` moves it to user level)"
+        print(f"  {mark} {site.agent} ({site.scope}): {_short_path(site.path)}{extra}")
+    print("  Protected folders: git repositories, and folders with a .vcr/ folder "
+          "(`mkdir .vcr`). Elsewhere nothing is snapshotted, and destructive commands are "
+          "stopped for a human.")
 
 
 def cmd_install(args: argparse.Namespace) -> None:
-    from agent_vcr.airbag.agents import ADAPTERS, detect_available, install
+    from agent_vcr.airbag import agents as ag
+    from agent_vcr.airbag.doctor import migrate
 
+    user = not args.project
+    scope, roots = _roots(args.project_dir)
+    leftovers = sorted({s.agent for root in roots for s in ag.find_hooks(root)
+                        if s.scope == "project"}) if user else []
     names = list(args.agents)
     if args.all:
-        names = sorted(ADAPTERS)
+        names = sorted(ag.ADAPTERS)
     elif not names:
-        names = detect_available()
-        if not names:
+        names = ag.detect_available()
+        if not names and not leftovers:
             _fail("no supported agent found on PATH; name one: "
-                  f"vcr airbag install {' | '.join(sorted(ADAPTERS))}")
-    unknown = [n for n in names if n not in ADAPTERS]
+                  f"vcr airbag install {' | '.join(sorted(ag.ADAPTERS))}")
+    # Project-level hooks from an older install are always moved: left in the repository,
+    # they break every teammate's agent once committed.
+    names += [n for n in leftovers if n not in names]
+    unknown = [n for n in names if n not in ag.ADAPTERS]
     if unknown:
-        _fail(f"unknown agent(s) {', '.join(unknown)}; choose from {', '.join(sorted(ADAPTERS))}",
-              2)
-    root = os.path.abspath(args.project_dir)
+        _fail(f"unknown agent(s) {', '.join(unknown)}; choose from "
+              f"{', '.join(sorted(ag.ADAPTERS))}", 2)
+    root = roots[0]
+    installed: list[dict[str, Any]] = []
+    failed: list[dict[str, str]] = []
+    moved: list[str] = []
+    statusline: str | None = None
     for name in names:
+        adapter = ag.ADAPTERS[name]
+        wants_line = args.statusline and name == "claude"
         try:
-            where, note = install(name, root, user=args.user)
+            if user and name in leftovers:
+                moved.extend(migrate(name, roots))
+            where, note = ag.install(name, root, user=user, statusline=wants_line)
         except (OSError, ValueError) as err:
-            print(f"  ✗ {name}: {err}", file=sys.stderr)
+            failed.append({"agent": name, "error": str(err)})
             continue
-        print(f"  ✓ {ADAPTERS[name].title}: {where}")
-        if note:
-            print(f"      {note}")
-    print("Airbag armed. Try: vcr airbag check \"rm -rf .\"   ·   undo anything: vcr undo")
+        if wants_line:
+            current = ag._read_json(where).get("statusLine")
+            statusline = "added" if ag._is_our_statusline(current) else "kept-existing"
+        installed.append({"agent": name, "title": adapter.title, "path": str(where),
+                          "scope": "user" if user else "project", "note": note,
+                          "required_step": adapter.required_step})
+    steps = [i["required_step"] for i in installed if i["required_step"]]
+    if args.json:
+        print(json.dumps({"scope": "user" if user else "project", "installed": installed,
+                          "failed": failed, "moved": moved, "required_steps": steps,
+                          "protection": scope.to_dict(), "statusline": statusline}))
+        if failed and not installed:
+            raise SystemExit(1)
+        return
+    for item in failed:
+        print(f"  ✗ {item['agent']}: {item['error']}", file=sys.stderr)
+    if not installed:
+        raise SystemExit(1)
+    n = len(installed)
+    if user:
+        print(f"🛟 Airbag armed for {n} agent{'s' * (n != 1)}, user level: every project, "
+              "nothing written into your repository.")
+    else:
+        print(f"🛟 Airbag armed for {n} agent{'s' * (n != 1)} in this project only.")
+    width = max(len(i["title"]) for i in installed)
+    for item in installed:
+        print(f"  ✓ {item['title']:<{width}}  {_short_path(item['path'])}")
+        if item["note"]:
+            print(f"      {item['note']}")
+    if not user:
+        print("  ⚠ These files are per-developer (they hold this machine's Python path): "
+              "don't commit them; add them to your .gitignore.")
+    if moved:
+        print("Moved from the project to your user-level config (commit the removal, so "
+              "teammates' agents stop calling a path from your machine):")
+        for line in moved:
+            print(f"  ↪ {line}")
+    if statusline == "added":
+        print("Status line: Claude Code now shows the airbag (`vcr airbag statusline`).")
+    elif statusline == "kept-existing":
+        print("Status line: you already have one, left as is; see `vcr airbag statusline` in "
+              "docs/airbag.md to add it yourself.")
+    print("What your agent sees: nothing for safe commands; a one-line notice "
+          "(\"snapshot #N saved … Undo with `vcr undo`\") before destructive ones; a "
+          "confirmation, or a block, before anything a snapshot can't undo.")
+    print(f"Protected: git repositories and folders with a .vcr/ folder. Here: "
+          f"{protection_line(scope)}")
+    if steps:
+        print("Required once:")
+        for step in steps:
+            print(f"  • {step}")
+    print('Try it: vcr airbag check "rm -rf ."   ·   undo anything: vcr undo   ·   '
+          "health check: vcr doctor")
 
 
 def cmd_uninstall(args: argparse.Namespace) -> None:
-    from agent_vcr.airbag.agents import ADAPTERS, uninstall
+    from agent_vcr.airbag.agents import ADAPTERS, uninstall_paths
 
     names = list(args.agents) or sorted(ADAPTERS)
-    root = os.path.abspath(args.project_dir)
+    _, roots = _roots(args.project_dir)
+    scopes = [True] if args.user else [False] if args.project else [False, True]
     for name in names:
         if name not in ADAPTERS:
             _fail(f"unknown agent {name!r}", 2)
-        removed = uninstall(name, root, user=args.user)
-        if removed:
-            print(f"  ✓ removed {ADAPTERS[name].title} hooks: {removed}")
+        removed: list[Any] = []
+        for user in scopes:
+            for root in roots[:1] if user else roots:
+                removed.extend(p for p in uninstall_paths(name, root, user=user)
+                               if p not in removed)
+        for path in removed:
+            print(f"  ✓ removed {ADAPTERS[name].title} hooks: {_short_path(path)}")
+
+
+def cmd_statusline(args: argparse.Namespace) -> None:
+    from agent_vcr.airbag.statusline import main as statusline_main
+
+    raise SystemExit(statusline_main([]))
+
+
+def cmd_doctor(args: argparse.Namespace) -> None:
+    from agent_vcr.airbag import doctor
+
+    fixed = doctor.fix(args.project_dir) if args.fix else []
+    report = doctor.diagnose(args.project_dir)
+    report.fixed = fixed
+    if args.json:
+        print(json.dumps(report.to_dict(), default=str))
+    else:
+        if args.fix:
+            for line in fixed or ["nothing to fix automatically"]:
+                print(f"🔧 {line}")
+        print(doctor.format_report(report))
+    raise SystemExit(0 if report.healthy else 1)
 
 
 def cmd_run(args: argparse.Namespace) -> None:

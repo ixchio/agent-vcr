@@ -31,6 +31,10 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     proj = tmp_path / "proj"
     (proj / "src").mkdir(parents=True)
     (proj / "src" / "app.py").write_text("print(1)\n", encoding="utf-8")
+    # A git repository: the airbag only snapshots protected folders (see airbag.scope).
+    subprocess.run(["git", "init", "-q", str(proj)], check=True, capture_output=True,
+                   timeout=60, env={k: v for k, v in os.environ.items()
+                                    if not k.startswith("GIT_")})
     return proj
 
 
@@ -252,7 +256,10 @@ def test_hook_command_uses_this_interpreter(project: Path) -> None:
         # Forward slashes, double quotes only when needed: valid in Git Bash, cmd and pwsh.
         assert command.lstrip('"').startswith(sys.executable.replace(os.sep, "/"))
     else:
-        assert command.startswith(sys.executable if " " not in sys.executable else "'")
+        quoted = sys.executable if " " not in sys.executable else "'"
+        # Guarded: a no-op instead of a failing hook once the interpreter is gone.
+        assert command.startswith(f"test -x {quoted}") and f"&& exec {quoted}" in command
+        assert agents.hook_interpreter(command) == sys.executable
     # The command really runs in the platform shell (/bin/sh, or cmd.exe on Windows).
     assert "vcr undo" in _run_in_shell(command, project, shell=True)["systemMessage"]
     assert snapshots(project) == 1

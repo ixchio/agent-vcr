@@ -127,7 +127,40 @@ TUI_INSTALL_HINT = 'pip install "ai-agent-vcr[tui]"'
 COMMANDS = frozenset({
     "init", "tui", "serve", "bundle", "dataset", "ci", "cloud", "superagent",
     "workflow", "intel", "reproduce", "undo", "redo", "rewind", "bisect", "airbag", "mcp",
+    "doctor",
 })
+
+#: How `vcr --help` lists the commands (every command but the hidden ones, in this order).
+COMMAND_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("Undo & safety", ("undo", "redo", "rewind", "bisect", "airbag", "doctor", "mcp")),
+    ("Debug & replay", ("tui", "serve", "bundle", "reproduce")),
+    ("CI", ("dataset", "ci")),
+    ("Advanced / experimental", ("cloud", "superagent", "workflow", "intel")),
+)
+#: Still work, not listed in `vcr --help`.
+HIDDEN_COMMANDS = frozenset({"init"})
+
+HELP_DESCRIPTION = """\
+Undo anything your coding agent did.
+
+Quickstart:
+  pipx install ai-agent-vcr
+  vcr airbag install      protect every project, for every coding agent on your PATH
+  vcr undo                put the files back after the agent's last action"""
+
+
+def _command_listing(subparsers: Any) -> str:
+    """The grouped command list for `vcr --help`, with each command's own one-line help."""
+    helps = {action.dest: action.help or "" for action in subparsers._choices_actions}
+    width = max(len(name) for _, names in COMMAND_GROUPS for name in names) + 2
+    lines: list[str] = []
+    for title, names in COMMAND_GROUPS:
+        lines.append(f"{title}:")
+        lines.extend(f"  {name:<{width}}{helps.get(name, '')}" for name in names)
+        lines.append("")
+    lines.append("Run `vcr <command> --help` for a command's options.")
+    lines.append("`vcr path/to/run.vcr` opens a recording in the terminal debugger.")
+    return "\n".join(lines)
 
 
 def _looks_like_vcr_path(arg: str) -> bool:
@@ -739,6 +772,11 @@ def main(argv: list[str] | None = None) -> None:
     """Run the Agent VCR CLI."""
     utf8_stdio()  # a cp1252 pipe/console cannot encode the arrows and emoji printed below
     raw_args = list(argv if argv is not None else sys.argv[1:])
+    if raw_args == ["airbag", "statusline"]:
+        # Runs after every Claude Code message: skip building the whole parser.
+        from agent_vcr.airbag.statusline import main as statusline_main
+
+        raise SystemExit(statusline_main([]))
     if raw_args and raw_args[0] == "serve":
         # Pass everything through so `vcr serve --help` shows the server's options.
         _run_serve(raw_args[1:])
@@ -746,17 +784,26 @@ def main(argv: list[str] | None = None) -> None:
 
     parser = argparse.ArgumentParser(
         prog="vcr",
-        description="Agent VCR — record, replay and regression-test AI agent runs.",
-        epilog="Shortcut: `vcr path/to/run.vcr` opens the terminal debugger.",
+        usage="vcr <command> [options]",
+        description=HELP_DESCRIPTION,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
-    subparsers = parser.add_subparsers(dest="command", metavar="<command>")
+    # The listing is hand-grouped in the epilog (COMMAND_GROUPS), so argparse's own is hidden.
+    subparsers = parser.add_subparsers(dest="command", metavar="<command>", prog="vcr",
+                                       help=argparse.SUPPRESS)
 
-    init_parser = subparsers.add_parser("init", help="Initialize Agent VCR integrations")
+    init_parser = subparsers.add_parser(
+        "init", help="(deprecated) Create .vcr/ and optionally record Claude Code sessions",
+        description="Deprecated. To protect your project from your coding agent, use "
+                    "`vcr airbag install` (see docs/airbag.md). To record agent runs for "
+                    "replay, see docs/recording-and-replay.md. `vcr init` still creates .vcr/ "
+                    "and, with --claude-code, adds recording hooks to .claude/settings.json.",
+    )
     init_parser.add_argument(
         "--claude-code",
         action="store_true",
-        help="Install Claude Code hooks into .claude/settings.json",
+        help="Install Claude Code recording hooks into .claude/settings.json",
     )
     init_parser.add_argument(
         "--project-dir",
@@ -1038,18 +1085,24 @@ def main(argv: list[str] | None = None) -> None:
     in_costs.add_argument("--dir", default=".vcr")
     in_costs.set_defaults(func=_cmd_intel_costs)
 
+    parser.epilog = _command_listing(subparsers)
+
     if raw_args and not raw_args[0].startswith("-") and raw_args[0] not in COMMANDS:
         if _looks_like_vcr_path(raw_args[0]):
             _run_tui(raw_args[0])
             return
+        listed = sorted(COMMANDS - HIDDEN_COMMANDS)
         parser.error(
-            f"unknown command {raw_args[0]!r} (choose from {', '.join(sorted(COMMANDS))}, "
+            f"unknown command {raw_args[0]!r} (choose from {', '.join(listed)}, "
             "or pass a path to a .vcr file)"
         )
 
     args = parser.parse_args(raw_args)
 
     if args.command == "init":
+        print("Note: `vcr init` is deprecated. To protect your project from your coding agent "
+              "run `vcr airbag install`; for recording see docs/recording-and-replay.md.",
+              file=sys.stderr)
         project_dir = Path(args.project_dir)
         if not project_dir.is_dir():
             parser.error(f"project directory does not exist: {project_dir}")
