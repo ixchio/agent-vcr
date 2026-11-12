@@ -334,6 +334,7 @@ def _mutate_2(root: Path, *, symlinks: bool, unreadable: bool) -> None:
 def prewrite(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> str:
     if request.param == "prewrite-on":
         # Exercise the parallel blob writers even on this small fixture.
+        monkeypatch.setattr(store_mod, "_PREWRITE_ENABLED", True)  # off by default on Windows
         monkeypatch.setattr(store_mod, "_PREWRITE_MIN_FILES", 1)
         monkeypatch.setattr(store_mod, "_PREWRITE_JOBS", 2)
         monkeypatch.setattr(os, "cpu_count", lambda: 2)
@@ -366,8 +367,11 @@ def test_staging_matches_1_7_0_for_every_case(tmp_path: Path, git: bool, prewrit
         assert "src/app.py" in second.meta["skipped_large"]
         _mutate_2(root, symlinks=symlinks, unreadable=unreadable)
         pair.check("third")
-        # The fast path really ran (the comparison is not git add against itself).
-        assert calls == [True] * 4
+        # The fast path really ran (the comparison is not git add against itself): for
+        # first, second and third. "unchanged" only has data/app.db to restage while its
+        # SQLite backup is too recent to reuse (the 2 s racy window), which depends on
+        # how fast the machine got here (on the Windows runner it usually is not).
+        assert calls in ([True] * 3, [True] * 4)
     finally:
         for path in (root / "unreadable.txt", root / "docs" / "readme.md"):
             with contextlib.suppress(OSError):
