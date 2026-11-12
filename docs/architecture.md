@@ -23,7 +23,8 @@ flowchart TB
         FW[LangGraph / CrewAI / OpenHands SDK / plain Python]
     end
     subgraph safety["Safety layer"]
-        AB["airbag/ — hook adapters, classifier,<br/>shadow-git store, undo/redo/rewind"]
+        AB["airbag/ — hook adapters, classifier,<br/>shadow-git store, undo/redo/rewind,<br/>bisect, local Postgres dumps"]
+        MCP["mcp_server — vcr mcp (stdio)"]
         ACID["integrations/openhands.py — ACIDWorkspace<br/>(git transaction + local-file escrow)"]
         SEN["openhands_sentinel/ — AST quality guard"]
     end
@@ -40,6 +41,7 @@ flowchart TB
         RT["superagent · workflows · sandbox · intelligence"]
     end
     CC -- "PreToolUse hooks / plugins" --> AB
+    CC -- "MCP tools" --> MCP --> AB
     FW -- "callbacks / wrappers" --> REC
     FW --> ACID
     ACID --> REC
@@ -51,8 +53,8 @@ flowchart TB
 | Layer | Packages | Stability |
 |---|---|---|
 | Recording kernel | `models`, `recorder`, `async_recorder`, `player`, `async_player` | **Stable** — `execution/v1` is frozen; old files always load |
-| Safety | `airbag/`, `integrations/openhands.py` (ACIDWorkspace), `openhands_sentinel/` | **Stable API**, actively developed |
-| Replay & CI | `golden_cache`, `datasets`, `regression`, `bundle`, `action.yml` | **Stable** |
+| Safety | `airbag/` (incl. `bisect`, `databases`), `mcp_server`, `integrations/openhands.py` (ACIDWorkspace), `openhands_sentinel/` | **Stable API**, actively developed |
+| Replay & CI | `golden_cache`, `datasets`, `regression`, `bundle`, `pytest_plugin`, `action.yml` | **Stable** |
 | Integrations | `integrations/langgraph.py`, `crewai.py`, `openhands_airbag.py`, `hooks/claude_code.py` | **Stable**, tested against real LangGraph 1.2, CrewAI 0.203, OpenHands SDK 1.7 |
 | Dashboard & store | `server`, `cloud`, `cloud_store`, `tui` | Supported; self-hosted |
 | Hosted control plane | `hosted`, `deploy/` | Foundation only — not a finished multi-tenant SaaS |
@@ -92,6 +94,15 @@ agent tool call ──► hook process (python -m agent_vcr.airbag.hook <agent>)
 * **Decisions.** The airbag never grants permission. Irreversible commands are escalated with
   the strongest mechanism the agent offers ("ask" for Claude Code, Gemini CLI ≥ 0.36, Copilot
   CLI; deny/block elsewhere) and can be approved once with `vcr airbag allow`.
+* **Databases (opt-in).** Local Postgres URLs listed in `AGENT_VCR_AIRBAG_DATABASES` (or
+  `.vcr/airbag-databases.json`) are dumped with `pg_dump` into the store before a destructive
+  SQL command; the dump is attached to that snapshot and restored by undo/rewind. Non-local
+  hosts are refused.
+* **Bisect.** `airbag/bisect.py` materializes snapshots into temporary directories
+  (`git archive` from the store), runs the test command there and binary-searches the
+  timeline. It only adds one append-only "before bisect" snapshot; nothing else is written.
+* **MCP.** `mcp_server.py` exposes status, timeline, check, snapshot and (confirm-gated)
+  undo/rewind as MCP tools over stdio, reusing the same `Airbag` API as the CLI.
 * **Concurrency.** Store creation and every snapshot/restore run under an `flock`; one tool call
   delivered through two agents' hooks within 5 s is handled once.
 
