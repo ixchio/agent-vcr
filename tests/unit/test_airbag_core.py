@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import multiprocessing
 import os
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -104,7 +105,8 @@ def test_classifier_levels(command: str, level: str) -> None:
 
 def test_classifier_reports_remote_database_host() -> None:
     verdict = classify("psql -h prod.example.com -c 'DROP TABLE users'", cwd=ROOT, root=ROOT)
-    assert "prod.example.com" in " ".join(verdict.reasons)
+    # Message check (not URL sanitization): the reason names the remote host.
+    assert re.search(r"\bprod\.example\.com\b", " ".join(verdict.reasons))
     assert "database" in verdict.categories
 
 

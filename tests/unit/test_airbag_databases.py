@@ -12,6 +12,7 @@ import getpass
 import glob
 import json
 import os
+import re
 import shutil
 import socket
 import stat
@@ -123,7 +124,8 @@ def test_load_from_env_and_project_file(project: Path, monkeypatch: pytest.Monke
             encoding="utf-8")
     configs, problems = dbs.load_databases(project)
     assert [db.dbname for db in configs] == ["one", "two"]
-    assert len(problems) == 1 and "prod.example.com" in problems[0]
+    assert len(problems) == 1
+    assert re.search(r"\bprod\.example\.com\b", problems[0])  # message names the refused host
 
 
 def test_bad_project_file_is_reported(project: Path) -> None:
