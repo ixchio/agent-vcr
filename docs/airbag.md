@@ -210,9 +210,9 @@ vcr airbag check --json "git reset --hard"
 # {"level": "destructive", "reasons": [...], "categories": ["files"], "undoable": true, "protected": true}
 ```
 
-Run these inside a git repository. In a folder the airbag doesn't protect, `destructive`
-becomes `irreversible`, because there's no snapshot to undo it with
-([which folders](#which-folders-are-protected)).
+Run these inside a git repository. In a folder the airbag doesn't protect, deleting a
+directory tree becomes `irreversible` (there's no snapshot to undo it with) and other
+destructive commands go ahead without a snapshot ([which folders](#which-folders-are-protected)).
 
 The classifier understands pipelines, `&&`, `sudo`, `bash -c "..."` and redirects, and leans
 towards `write` (snapshot) when it isn't sure.
@@ -232,34 +232,51 @@ Skipped on purpose: dependency trees and build output (`node_modules/`, `.venv/`
 User-level hooks fire wherever your agent runs: in a repository, but also in `~`, in `/` or in
 a downloads folder. Snapshotting those would be slow and pointless, so the rule is:
 
-| Where the agent works | Snapshots | Destructive command (`rm -rf old`) | Irreversible command |
-|---|---|---|---|
-| A git repository (any subfolder) | ✓ before every change | runs, undo with `vcr undo` | stopped for a human |
-| A folder with a `.vcr/` folder in it or above it (`mkdir .vcr`) | ✓ | runs, undo with `vcr undo` | stopped for a human |
-| A folder that already has snapshots (say, the agent deleted `.git`) | ✓ | runs, undo with `vcr undo` | stopped for a human |
-| Anything else: a plain folder, `~`, `/`, `~/Desktop`, `~/Documents`, `~/Downloads` | never | **stopped for a human**: there's no snapshot, so it can't be undone | stopped for a human |
+| Where the agent works | Snapshots | Deleting a tree (`rm -rf old`, `git clean -fdx`) | Other changes (`mv`, `sed -i`, `>`, one `rm`, edits) | Irreversible command |
+|---|---|---|---|---|
+| A git repository (any subfolder) | ✓ before every change | runs, undo with `vcr undo` | runs, undo with `vcr undo` | stopped for a human |
+| A folder you opted in with `vcr airbag protect` (or one below it) | ✓ | runs, undo with `vcr undo` | runs, undo with `vcr undo` | stopped for a human |
+| A folder that already has snapshots (say, the agent deleted `.git`) | ✓ | runs, undo with `vcr undo` | runs, undo with `vcr undo` | stopped for a human |
+| Anything else: a plain folder, `~`, `/`, `~/Desktop`, `~/Documents`, `~/Downloads` | never | **stopped for a human**: no snapshot, so it can't be undone | runs, with a notice: "not protected here (not a git repo) — `vcr airbag protect` to enable snapshots" | stopped for a human |
 
-Your home directory, the filesystem root and Desktop/Documents/Downloads are never snapshotted,
-even when they're a git repository (a dotfiles repo) or contain a `.vcr/`. An agent started in
-`~` that works inside a repository is protected: the hook looks at the command's own folder too.
-Elsewhere, the airbag stays quiet for reads and plain writes, so nothing gets in your way.
+"Deleting a tree" means `rm -r`/`-rf` on a directory (or the folder itself), `rm` with a glob,
+`git clean`, `git reset --hard`, `find … -delete` and `rsync --delete`. Agents that can't ask
+(Codex, Cursor, Devin, OpenCode, Cline) block those until `vcr airbag allow`; everything else
+in an unprotected folder goes through, so working outside a repository isn't a wall of prompts.
 
-`vcr airbag check` and `vcr airbag status` follow the same rule:
+Your home directory, the filesystem root and Desktop/Documents/Downloads are never snapshotted
+and can't be opted in. A dotfiles repository at `~` doesn't count as a project, but it doesn't
+hide one either: a protected folder or an existing store below it still wins. An agent started
+in `~` that works inside a repository is protected: the hook looks at the command's own folder
+too.
+
+`vcr airbag protect [DIR]` writes `DIR/.vcr/airbag.json`, and `vcr airbag unprotect` removes it.
+A bare `.vcr/` folder doesn't count: the recorder and `vcr init` create one too, and it
+shouldn't silently widen what gets snapshotted. `vcr doctor` points out a bare `.vcr/` that
+isn't an opt-in. `vcr airbag check` and `vcr airbag status` follow the same rule:
 
 ```bash
 cd ~/notes                     # not a git repository
 vcr airbag check "rm -rf build"
 # ⚠ IRREVERSIBLE: cannot be undone by a snapshot — the airbag asks a human first
 #    • rm deletes files
-#    • this folder is not protected by the airbag (no git repository, no .vcr/), so nothing was snapshotted and this cannot be undone (`git init` or `mkdir .vcr` protects it)
+#    • this folder is not protected by the airbag (not a git repo), so nothing was snapshotted and this cannot be undone (`vcr airbag protect` to enable snapshots)
+vcr airbag check "mv a.txt b.txt"
+# 🛟 DESTRUCTIVE: goes ahead, but this folder is not protected: no snapshot, no `vcr undo`
+#    • mv can overwrite files
+#    • not protected here (not a git repo) — `vcr airbag protect` to enable snapshots
 vcr airbag status
 # Airbag for /home/you/notes
-#   ✗ not protected: /home/you/notes (not a git repository and no .vcr/ folder). Nothing is snapshotted here; commands that would destroy data are stopped for a human. To protect it, run `git init` or `mkdir .vcr` in /home/you/notes.
+#   ✗ not protected: /home/you/notes (not a git repository, not opted in). Nothing is snapshotted here; deleting a directory tree is stopped for a human, other changes go ahead with a notice. To protect it, run `vcr airbag protect` (or `git init`) in /home/you/notes.
 #   …
-mkdir .vcr && vcr airbag status
-# Airbag for /home/you/notes
-#   ✓ protected: /home/you/notes (opted in with a .vcr/ folder)
+vcr airbag protect
+# 🛟 /home/you/notes is now protected: agents' changes there are snapshotted first, undo with `vcr undo`. Opt-in file: /home/you/notes/.vcr/airbag.json (`vcr airbag unprotect` removes it).
+vcr airbag unprotect
+# Removed /home/you/notes/.vcr/airbag.json.
 ```
+
+If the folder already has snapshots, `vcr airbag unprotect` says so: it stays protected (so
+`vcr undo` keeps working) until you delete its store, whose path it prints.
 
 `vcr airbag allow` works in unprotected folders too: approvals there are kept in one shared
 place in the airbag store.
@@ -334,17 +351,23 @@ vcr doctor --fix
 ```
 
 It checks, each with the exact fix: the Python and Agent VCR version and how it's installed
-(pipx, virtualenv, `pip --user`, editable); every `vcr` launcher on your PATH, flagging a stale
-one (say, a `~/.local/bin/vcr` left over from an old install whose package is gone); git; for
-each agent on your PATH or with hooks: where the hooks are (user or project level), whether the
-Python in the hook command still exists, and the one-time steps (Codex `/hooks`, Gemini
-`/trust` and version ≥ 0.36 for "ask", Cline unsupported on Windows, an OpenHands project file
-hiding yours); the snapshot store of the current project (location, size, count); and whether
-the current folder is protected.
+(pipx, virtualenv, `pip --user`, editable); every `vcr` launcher on your PATH, each one *run*
+with `--version`, so a stale one (say, a `~/.local/bin/vcr` left over from an old install whose
+package is gone) is flagged, and removing a launcher is only suggested when running it fails;
+git; for each agent on your PATH or with hooks: where the hooks are (user or project level),
+whether the Python in the hook command still exists, and the one-time steps (Codex `/hooks`,
+Gemini `/trust` and version ≥ 0.36 for "ask", Cline unsupported on Windows, an OpenHands
+project file hiding yours); the snapshot store of the current project (location, size, count);
+and whether the current folder is protected (a bare `.vcr/` that isn't an opt-in is pointed
+out, with `vcr airbag protect` as the fix).
 
 `vcr doctor --fix` only does what is safe to do automatically: it rewrites airbag hook
 commands whose Python is gone (or that predate the self-healing form) and moves project-level
-airbag hooks to the user level. It never deletes a launcher or touches anyone else's hooks.
+airbag hooks to the user level. A move writes the user-level hook first and checks it; only
+then is the airbag's entry taken out of the project file. If your user-level file can't be
+written (invalid JSON, read-only), it says which file and why, and changes nothing. It never
+deletes a launcher or touches anyone else's hooks; it removes a folder like `.claude/` only
+when the airbag's file was the last thing in it.
 `--json` prints `{"healthy": …, "checks": [{"id", "status", "title", "detail", "fix",
 "fixable"}], "fixed": [...]}`. Exit code: `0` healthy, `1` problems. `vcr airbag doctor` is the
 same command.
@@ -605,8 +628,9 @@ vcr airbag gc --keep-days 7   # also deletes the dumps of deleted snapshots
 
 ## What it can't do
 
-- **Undo in folders that aren't protected** (not a git repository, no `.vcr/`; always `~` and
-  `/`). Nothing is snapshotted there, so destructive commands are stopped for a human instead
+- **Undo in folders that aren't protected** (not a git repository, not opted in with
+  `vcr airbag protect`; always `~` and `/`). Nothing is snapshotted there: deleting a directory
+  tree is stopped for a human, other changes go ahead with a notice and can't be undone
   ([which folders](#which-folders-are-protected)).
 - **Anything outside the project directory**: other folders, `~`, system files. Deletes and
   writes that land there (`rm -rf ~/Documents`, `echo x > /etc/foo.conf`, `cp a.txt ../x.txt`,
@@ -714,6 +738,7 @@ finding has a regression test in `tests/unit/test_airbag_core.py`.
 | `vcr airbag allow` | Approve the last stopped command for one retry within 10 minutes. |
 | `vcr airbag snapshot -m "msg"` | Manual snapshot. |
 | `vcr airbag status` | Whether this folder is protected, policy, store location, installed hooks. |
+| `vcr airbag protect [DIR]` / `vcr airbag unprotect [DIR]` | Opt a folder that isn't a git repository in to snapshots (`DIR/.vcr/airbag.json`), or back out. |
 | `vcr airbag gc --keep-days 7 [--keep-last 50]` | Delete old snapshots (and their database dumps). |
 | `vcr airbag run -- <cmd>` | Periodic snapshots for agents without hooks. |
 | `vcr airbag uninstall [agent…] [--user\|--project]` | Remove only the airbag's hook entries (both levels by default). |

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -92,17 +93,35 @@ def test_plain_directories_home_and_root_are_not(home: Path) -> None:
     assert resolve(downloads).kind == "unsafe"
 
 
-def test_vcr_folder_opts_a_directory_in(home: Path) -> None:
+def test_protect_opts_a_directory_in_and_unprotect_undoes_it(
+        home: Path, capsys: pytest.CaptureFixture[str]) -> None:
     project = home / "scratch" / "tool"
     (project / "deep").mkdir(parents=True)
-    (project / ".vcr").mkdir()
+    main_cli.main(["airbag", "protect", str(project)])
+    assert "now protected" in capsys.readouterr().out
+    assert (project / ".vcr" / "airbag.json").is_file()
     scope = resolve(project / "deep")
     assert scope.protected and scope.kind == "opt-in" and scope.root == project.resolve()
-    # A .vcr/ in the home directory (the recorder ran there) never opts in all of ~.
-    (home / ".vcr").mkdir()
-    other = home / "elsewhere"
-    other.mkdir()
-    assert not resolve(other).protected
+    main_cli.main(["airbag", "unprotect", str(project / "deep")])
+    assert "Removed" in capsys.readouterr().out
+    assert not resolve(project).protected and not (project / ".vcr").exists()
+    with pytest.raises(SystemExit):
+        main_cli.main(["airbag", "protect", str(home)])  # never ~
+    assert "refusing to protect your home directory" in capsys.readouterr().err
+
+
+def test_a_bare_vcr_folder_no_longer_opts_in(home: Path, monkeypatch: pytest.MonkeyPatch
+                                             ) -> None:
+    # The recorder's default output dir (or `vcr init`) in ~/code must not widen the
+    # snapshot root to every folder under ~/code.
+    code = home / "code"
+    (code / ".vcr").mkdir(parents=True)
+    (code / "scratch").mkdir()
+    assert not resolve(code / "scratch").protected
+    assert not resolve(code).protected
+    monkeypatch.setattr(ag, "detect_available", lambda: [])
+    checks = {c.id: c for c in doctor.diagnose(code, path_env="").checks}
+    assert checks["protection:bare-vcr"].fix == "vcr airbag protect"
 
 
 def test_a_home_directory_git_repo_is_never_snapshotted(home: Path) -> None:
@@ -110,6 +129,26 @@ def test_a_home_directory_git_repo_is_never_snapshotted(home: Path) -> None:
     (home / "notes").mkdir()
     scope = resolve(home / "notes")
     assert scope.kind == "unsafe" and not scope.protected
+    assert not resolve(home).protected
+
+
+def test_a_dotfiles_repo_does_not_hide_protected_projects(home: Path) -> None:
+    _git_init(home)
+    proj = home / "proj"
+    (proj / "src").mkdir(parents=True)
+    from agent_vcr.airbag.scope import protect
+
+    protect(proj)
+    scope = resolve(proj / "src")
+    assert scope.protected and scope.kind == "opt-in" and scope.root == proj.resolve()
+    # The command-line tools act on the project, not on ~.
+    assert Airbag(proj / "src").root == proj.resolve()
+    # A project that lost its own .git keeps its store, under a dotfiles repo too.
+    other = _git_init(home / "other")
+    Airbag(other).manual_snapshot("save")
+    shutil.rmtree(other / ".git")
+    assert resolve(other).protected and resolve(other).kind == "store"
+    assert resolve(other).root == other.resolve()
 
 
 def test_existing_store_keeps_a_project_protected_after_git_is_gone(repo: Path) -> None:
@@ -129,6 +168,7 @@ def test_unprotected_dir_never_snapshots_but_stops_destruction(home: Path) -> No
     decision = bag.before(_call(notes, "rm -rf old"))
     assert decision.action == "ask" and decision.snapshot is None
     assert "not protected" in (decision.agent_message or "")
+    assert "vcr airbag protect" in (decision.agent_message or "")
     # Writes go ahead silently; reads too; irreversible is stopped as everywhere.
     assert Airbag.for_call(_call(notes, "echo x > n.txt")).before(
         _call(notes, "echo x > n.txt")).action == "continue"
@@ -137,6 +177,54 @@ def test_unprotected_dir_never_snapshots_but_stops_destruction(home: Path) -> No
         _call(home, "git push --force")).action == "ask"
     assert _stores(home) == [GUARD_DIR_NAME]  # no snapshot store for ~ or ~/notes
     assert not list((home.parent / "airbag").glob("*/root.txt"))
+
+
+@pytest.mark.parametrize("command", [
+    "rm -rf node_modules", "rm -r old", "rm -rf .", "rm *.log", "git clean -fdx",
+    "find . -name '*.pyc' -delete", "rsync -a --delete src/ dst/", "sudo rm -R old",
+])
+def test_unprotected_dir_stops_tree_deletions(home: Path, command: str) -> None:
+    notes = home / "notes"
+    (notes / "old").mkdir(parents=True)
+    (notes / "node_modules").mkdir()
+    call = _call(notes, command)
+    decision = Airbag.for_call(call).before(call)
+    assert decision.action == "ask" and decision.snapshot is None
+
+
+@pytest.mark.parametrize("command", [
+    "mv a.txt b.txt", "sed -i s/a/b/ a.txt", "echo x > a.txt", "rm a.txt", "rm -f a.txt",
+    "cp a.txt existing.txt", "truncate -s0 a.txt", "rm -r a.txt",
+])
+def test_unprotected_dir_lets_other_changes_through_with_a_notice(home: Path,
+                                                                  command: str) -> None:
+    notes = home / "notes"
+    notes.mkdir()
+    (notes / "a.txt").write_text("a\n", encoding="utf-8")
+    (notes / "existing.txt").write_text("e\n", encoding="utf-8")
+    call = _call(notes, command)
+    decision = Airbag.for_call(call).before(call)
+    assert decision.action == "continue" and decision.agent_message is None  # never "allow"
+    if decision.verdict.level == "destructive":
+        assert decision.user_message == ("🛟 Agent VCR airbag: not protected here (not a git "
+                                         "repo) — `vcr airbag protect` to enable snapshots")
+    edit = ToolCall(agent="claude", tool_name="Write", kind="edit", cwd=str(notes),
+                    paths=[str(notes / "a.txt")])
+    assert Airbag.for_call(edit).before(edit).action == "continue"
+
+
+def test_unprotected_notice_reaches_each_agent_format(home: Path) -> None:
+    notes = home / "notes"
+    notes.mkdir()
+    (notes / "a.txt").write_text("a\n", encoding="utf-8")
+    call = _call(notes, "mv a.txt b.txt")
+    decision = Airbag.for_call(call).before(call)
+    claude = json.loads(ag.render_claude(decision, call, "")[0])
+    assert "not protected here" in claude["systemMessage"] and "hookSpecificOutput" not in claude
+    cursor = json.loads(ag.render_cursor(decision, call, "")[0])
+    assert cursor["permission"] == "allow" and "not protected here" in cursor["user_message"]
+    assert ag.render_codex(decision, call, "")[0]  # notice, no permissionDecision
+    assert "hookSpecificOutput" not in json.loads(ag.render_codex(decision, call, "")[0])
 
 
 def test_unprotected_never_grants_and_respects_policy(home: Path) -> None:
@@ -348,6 +436,89 @@ def test_uninstall_removes_both_levels_and_only_ours(repo: Path, home: Path) -> 
     assert json.loads((home / ".claude" / "settings.json").read_text(encoding="utf-8")) == {}
 
 
+def _legacy_project_hook(repo: Path) -> Path:
+    (repo / ".claude").mkdir()
+    path = repo / ".claude" / "settings.json"
+    path.write_text(json.dumps({"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [
+        {"type": "command", "command": "/old/bin/python -m agent_vcr.airbag.hook claude pre"},
+    ]}]}}), encoding="utf-8")
+    return path
+
+
+@pytest.mark.parametrize("problem", ["malformed", "read-only"])
+def test_migration_never_removes_the_project_hook_when_user_level_fails(
+        repo: Path, home: Path, problem: str, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str]) -> None:
+    if problem == "read-only" and POSIX and os.geteuid() == 0:
+        pytest.skip("root ignores file permissions")
+    project_hook = _legacy_project_hook(repo)
+    before = project_hook.read_text(encoding="utf-8")
+    user = home / ".claude" / "settings.json"
+    user.parent.mkdir()
+    user.write_text('{"model": "x",}' if problem == "malformed" else '{"model": "x"}',
+                    encoding="utf-8")
+    original = user.read_text(encoding="utf-8")
+    if problem == "read-only":
+        user.chmod(0o444)
+    try:
+        with pytest.raises(SystemExit):
+            main_cli.main(["airbag", "install", "claude", "--project-dir", str(repo)])
+        err = capsys.readouterr().err
+        assert str(user) in err and "Nothing was changed" in err
+        assert project_hook.read_text(encoding="utf-8") == before  # still there, untouched
+        assert user.read_text(encoding="utf-8") == original
+        _no_agents_on_path(monkeypatch)
+        done = doctor.fix(repo)
+        assert done and done[0].startswith(doctor.FAILED) and str(user) in done[0]
+        assert "still there" in done[0]
+        assert project_hook.read_text(encoding="utf-8") == before
+    finally:
+        user.chmod(0o644)
+    # Once the user-level file is fixed, the move goes through.
+    user.write_text("{}", encoding="utf-8")
+    assert any("moved the Claude Code hook" in d for d in doctor.fix(repo))
+    assert not (repo / ".claude").exists()
+
+
+def test_settings_errors_name_the_file(tmp_path: Path) -> None:
+    bad = tmp_path / "settings.json"
+    bad.write_text("{nope", encoding="utf-8")
+    with pytest.raises(ValueError, match=str(bad).replace("\\", "\\\\")):
+        ag._read_json(bad)
+
+
+def test_migration_keeps_other_files_and_their_folder(repo: Path, home: Path) -> None:
+    _legacy_project_hook(repo)
+    (repo / ".claude" / "commands.md").write_text("mine\n", encoding="utf-8")
+    doctor.migrate("claude", [repo])
+    # Only our hook was in settings.json, so it went; the folder has another file: kept.
+    assert sorted(p.name for p in (repo / ".claude").iterdir()) == ["commands.md"]
+
+
+def test_hook_sites_report_guarding_correctly(repo: Path, home: Path) -> None:
+    ag.install("copilot", repo, user=True)
+    copilot = next(s for s in ag.find_hooks(repo) if s.agent == "copilot")
+    assert copilot.guarded  # its powershell variant only runs on Windows
+    if POSIX:
+        legacy = home / "Documents" / "Cline" / "Hooks" / "PreToolUse"
+        legacy.parent.mkdir(parents=True)
+        legacy.write_text("#!/bin/sh\n# Agent VCR airbag (-m agent_vcr.airbag.hook)\n"
+                          f"exec {sys.executable} -m agent_vcr.airbag.hook cline pre\n",
+                          encoding="utf-8")
+        cline = next(s for s in ag.find_hooks(repo) if s.agent == "cline")
+        assert not cline.guarded  # the 1.7.0 script, without the `test -x` line
+        ag.install("cline", repo, user=True)
+        assert next(s for s in ag.find_hooks(repo) if s.agent == "cline").guarded
+
+
+def test_hook_interpreter_with_exec_in_its_path() -> None:
+    weird = "/opt/my exec env/bin/python"
+    command = ag.hook_command("claude", python=weird)
+    assert ag.hook_interpreter(command) == weird
+    assert ag.hook_interpreter(f"exec {shlex.quote(weird)} -m agent_vcr.airbag.hook cline pre") \
+        == weird
+
+
 # ── status line ──────────────────────────────────────────────────────────
 
 def test_statusline_is_added_only_when_none_exists(repo: Path, home: Path,
@@ -459,6 +630,42 @@ def test_doctor_flags_stale_launchers(home: Path, tmp_path: Path) -> None:
         checks = doctor._launcher_checks(str(bin_dir))
         assert checks[0].status == "fail" and "stale" in checks[0].title
     assert doctor._launcher_checks(str(tmp_path / "nothing"))[0].status == "warn"
+
+
+@pytest.mark.skipif(not POSIX, reason="POSIX launcher scripts")
+def test_doctor_accepts_pip_sh_exec_launchers(home: Path, tmp_path: Path) -> None:
+    """pip writes `#!/bin/sh` + `'''exec' "PY"` for long interpreter paths or ones with spaces."""
+    bin_dir = tmp_path / "with space" / "bin"
+    bin_dir.mkdir(parents=True)
+    launcher = bin_dir / "vcr"
+    launcher.write_text(
+        "#!/bin/sh\n"
+        f"'''exec' \"{sys.executable}\" \"$0\" \"$@\"\n"
+        "' '''\n"
+        "import sys\n"
+        f"sys.path.insert(0, {SRC!r})\n"
+        "from agent_vcr.cli import main\n"
+        "sys.exit(main())\n", encoding="utf-8")
+    launcher.chmod(0o755)
+    assert doctor.launcher_python(launcher) == sys.executable
+    check = doctor._launcher_checks(str(bin_dir))[0]
+    assert check.status == "ok" and "rm " not in check.fix, check
+    # Same form, but the Python is gone: now (and only now) it is reported, with the fix.
+    launcher.write_text(launcher.read_text(encoding="utf-8").replace(
+        sys.executable, "/gone/python3"), encoding="utf-8")
+    check = doctor._launcher_checks(str(bin_dir))[0]
+    assert check.status == "fail" and "rm " in check.fix
+
+
+@pytest.mark.skipif(not POSIX, reason="POSIX launcher scripts")
+def test_doctor_never_suggests_removing_a_launcher_that_runs(home: Path, tmp_path: Path) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    odd = bin_dir / "vcr"
+    odd.write_text("#!/bin/sh\necho 'something else' >&2\nexit 3\n", encoding="utf-8")
+    odd.chmod(0o755)
+    check = doctor._launcher_checks(str(bin_dir))[0]
+    assert check.status == "warn" and "rm " not in check.fix
 
 
 def test_doctor_cli_json_and_exit_codes(repo: Path, home: Path, monkeypatch: pytest.MonkeyPatch,
@@ -573,7 +780,7 @@ def test_fresh_home_end_to_end(tmp_path: Path) -> None:
     stores = sorted(p.name for p in (tmp_path / "airbag").iterdir())
     assert stores == [GUARD_DIR_NAME, ShadowStore(project).dir.name]
     status = _vcr("airbag", "status", env=env, cwd=plain)
-    assert "not protected" in status.stdout and "mkdir .vcr" in status.stdout
+    assert "not protected" in status.stdout and "vcr airbag protect" in status.stdout
 
     # 4. The interpreter disappears (pipx reinstall): the hook is a no-op, doctor sees it.
     written = ag.hook_interpreter(command)

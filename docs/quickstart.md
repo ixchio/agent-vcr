@@ -39,8 +39,8 @@ vcr doctor           # everything armed? prints the exact fix if not
 
 From then on, in every git repository, every tool call your agent makes (shell commands
 included) gets a snapshot first, so `vcr undo` can bring files, `.env` and even `.git` back.
-Outside a repository nothing is snapshotted, so destructive commands are stopped for you to
-confirm (`mkdir .vcr` opts a plain folder in). Do the "Required once" steps it prints (Codex:
+Outside a repository nothing is snapshotted: deleting a directory tree is stopped for you to
+confirm, other changes go ahead with a notice (`vcr airbag protect` opts a plain folder in). Do the "Required once" steps it prints (Codex:
 `/hooks`; Gemini: `/trust`). → [Airbag](airbag.md)
 
 ## 2. ⏪ Record and time-travel a run

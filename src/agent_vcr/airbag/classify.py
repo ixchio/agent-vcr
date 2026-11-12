@@ -186,6 +186,10 @@ _SHELLS = frozenset({"bash", "sh", "zsh", "dash", "ksh", "fish", "pwsh", "powers
 _OPERATORS = frozenset({";", "&&", "||", "|", "&", "|&", ";;", "(", ")", "\n"})
 _REDIRECT_WRITE = frozenset({">", ">|", "&>"})
 _SAFE_SINKS = frozenset({"/dev/null", "/dev/stdout", "/dev/stderr", "/dev/tty"})
+#: Category of commands that delete a directory tree or wipe many files at once
+#: (``rm -r``, ``rm *``, ``git clean``, ``find -delete``, ``rsync --delete``). Outside a
+#: protected folder these are stopped for a human; other destructive commands go ahead.
+BULK_DELETE = "bulk-delete"
 _LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "0.0.0.0", ""})
 
 
@@ -420,6 +424,7 @@ def _classify_segment(argv: list[str], redirects: list[tuple[str, str]], ctx: _C
             os.path.basename(a) in {"rm", "shred", "unlink"} for a in args
         ):
             verdict.raise_to("destructive", "find deletes matching files", "files")
+            verdict.raise_to("destructive", category=BULK_DELETE)
             _check_targets([a for a in args if not a.startswith("-")][:1] or ["."],
                            ctx, verdict, "delete")
         elif any(a in {"-exec", "-execdir"} for a in args):
@@ -437,6 +442,13 @@ def _classify_segment(argv: list[str], redirects: list[tuple[str, str]], ctx: _C
             verdict.raise_to("irreversible", "deletes the filesystem root", "system")
             return
         verdict.raise_to("destructive", f"{prog} deletes files", "files")
+        recursive = any(a in {"-r", "-R", "--recursive"} or (
+            a.startswith("-") and not a.startswith("--") and {"r", "R"} & set(a[1:]))
+            for a in args)
+        globbed = any(ch in t for t in targets for ch in "*?[")
+        if prog != "rmdir" and (globbed or recursive and any(
+                not ctx.resolve(t).is_file() for t in targets)):
+            verdict.raise_to("destructive", category=BULK_DELETE)
         _check_targets(targets, ctx, verdict, "delete")
         return
     if prog in {"mv", "cp", "rsync", "install", "ln", "tee", "touch", "mkdir", "dd",
@@ -587,13 +599,16 @@ def _classify_git(args: list[str], ctx: _Context, verdict: Verdict) -> None:
         return
     if sub == "reset" and "--hard" in flags:
         verdict.raise_to("destructive", "git reset --hard discards uncommitted changes", "files")
+        verdict.raise_to("destructive", category=BULK_DELETE)
         return
     if sub == "clean" and any(a.startswith("-") and "f" in a for a in rest):
         verdict.raise_to("destructive", "git clean deletes untracked files", "files")
+        verdict.raise_to("destructive", category=BULK_DELETE)
         return
     if sub in {"checkout", "restore"} and ("." in rest or "--" in rest or "-f" in flags
                                             or "--force" in flags):
         verdict.raise_to("destructive", f"git {sub} discards local edits", "files")
+        verdict.raise_to("destructive", category=BULK_DELETE)
         return
     if sub == "stash" and rest[:1] in (["drop"], ["clear"]):
         verdict.raise_to("irreversible", f"git stash {rest[0]} deletes stashed work", "git")
@@ -616,6 +631,7 @@ def _classify_file_tool(prog: str, args: list[str], ctx: _Context, verdict: Verd
         operands = [out] if out else []
     if prog in {"rsync"} and any(a.startswith("--delete") for a in args):
         verdict.raise_to("destructive", "rsync --delete removes files", "files")
+        verdict.raise_to("destructive", category=BULK_DELETE)
     elif prog in {"mv", "truncate", "dd"}:
         verdict.raise_to("destructive", f"{prog} can overwrite files", "files")
     elif prog in {"chmod", "chown", "chgrp"} and any(a in {"-R", "--recursive"} for a in args):

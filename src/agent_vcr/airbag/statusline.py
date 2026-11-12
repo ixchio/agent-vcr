@@ -117,9 +117,7 @@ def render(directory: str) -> str:
         return f"{ICON} airbag disabled (AGENT_VCR_AIRBAG)"
     scope = resolve(directory)
     if not scope.protected:
-        why = {"plain": "not a git repo", "missing": "folder is gone"}.get(
-            scope.kind, scope.unsafe or scope.kind)
-        return f"{ICON} airbag off here ({why})"
+        return f"{ICON} airbag off here ({scope.short_why})"
     try:
         store = ShadowStore(scope.root)
     except AirbagError:

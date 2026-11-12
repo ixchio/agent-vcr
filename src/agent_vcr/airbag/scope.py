@@ -5,13 +5,18 @@ repository, but also ``~``, ``/`` or a downloads folder. Snapshotting those
 would be slow, huge and pointless, so the rule is:
 
 * **protected** (snapshot before every change, undo with ``vcr undo``):
-  a git repository; a directory with a ``.vcr/`` folder (explicit opt-in,
-  also created by the recorder); a directory that already has an airbag
-  store (so a project whose ``.git`` the agent deleted stays protected);
+  a git repository; a directory opted in with ``vcr airbag protect`` (it
+  writes ``.vcr/airbag.json``; a bare ``.vcr/`` folder, which the recorder
+  creates, does not count); a directory that already has an airbag store
+  (so a project whose ``.git`` the agent deleted stays protected). The
+  nearest of these wins, so a dotfiles repository at ``~`` does not hide a
+  protected project below it;
 * **not protected** (everything else, and always the home directory, the
   filesystem root, Desktop/Documents/Downloads): nothing is snapshotted.
-  Commands are still classified, and anything that would destroy data is
-  stopped for a human, because without a snapshot it cannot be undone.
+  Irreversible commands are stopped exactly as everywhere else, and so are
+  commands that delete a directory tree or wipe many files (``rm -r``,
+  ``git clean``, ``find -delete``, ``rsync --delete``). Everything else goes
+  ahead, with a notice that this folder is not protected.
 
 Standard library only: this runs inside the hook on every tool call.
 """
@@ -19,6 +24,7 @@ Standard library only: this runs inside the hook on every tool call.
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import subprocess
 from dataclasses import dataclass
@@ -35,8 +41,10 @@ from agent_vcr.airbag.store import (
     state_home,
 )
 
-#: Folder that opts a non-git directory in (``mkdir .vcr``).
+#: ``<dir>/.vcr/airbag.json`` opts a non-git directory in (``vcr airbag protect``).
 OPT_IN_DIR = ".vcr"
+OPT_IN_FILE = "airbag.json"
+PROTECT_HINT = "`vcr airbag protect` to enable snapshots"
 #: Shared state (pending approvals, recent decisions) for unprotected directories.
 GUARD_DIR_NAME = "_unprotected"
 #: The guard log only needs recent decisions; trim it past this size.
@@ -44,10 +52,10 @@ GUARD_LOG_MAX_BYTES = 256 * 1024
 
 KIND_TEXT = {
     "git": "git repository",
-    "opt-in": "opted in with a .vcr/ folder",
+    "opt-in": "opted in with `vcr airbag protect`",
     "store": "already has airbag snapshots",
     "unsafe": "never snapshotted",
-    "plain": "not a git repository and no .vcr/ folder",
+    "plain": "not a git repository, not opted in",
     "missing": "directory does not exist",
 }
 
@@ -72,19 +80,36 @@ class Scope:
         return KIND_TEXT.get(self.kind, self.kind)
 
     @property
-    def unprotected_reason(self) -> str:
-        """Why a destructive command here is irreversible (fed to the human and the agent)."""
+    def short_why(self) -> str:
+        """A few words for notices and the status line."""
         if self.kind == "unsafe":
-            return f"{self.unsafe} is never snapshotted by the airbag, so this cannot be undone"
-        return ("this folder is not protected by the airbag (no git repository, no .vcr/), so "
-                "nothing was snapshotted and this cannot be undone (`git init` or "
-                "`mkdir .vcr` protects it)")
+            return self.unsafe or "never snapshotted"
+        return {"plain": "not a git repo", "missing": "folder is gone"}.get(self.kind, self.kind)
+
+    @property
+    def can_opt_in(self) -> bool:
+        """``vcr airbag protect`` would work for the directory itself."""
+        return self.kind != "missing" and _is_unsafe_root(self.path) is None
+
+    @property
+    def unprotected_reason(self) -> str:
+        """Why a tree-deleting command here is stopped (fed to the human and the agent)."""
+        hint = f" ({PROTECT_HINT})" if self.can_opt_in else ""
+        return (f"this folder is not protected by the airbag ({self.short_why}), so nothing was "
+                f"snapshotted and this cannot be undone{hint}")
+
+    @property
+    def notice(self) -> str:
+        """Shown when a change goes ahead without a snapshot."""
+        hint = f" — {PROTECT_HINT}" if self.can_opt_in else ""
+        return f"🛟 Agent VCR airbag: not protected here ({self.short_why}){hint}"
 
     @property
     def opt_in_hint(self) -> str:
-        if self.kind == "unsafe":
-            return "work inside a project folder (a git repository) to get snapshots"
-        return f"run `git init` or `mkdir {OPT_IN_DIR}` in {self.root}"
+        if not self.can_opt_in:
+            return ("work inside a project folder (a git repository, or one you opt in with "
+                    "`vcr airbag protect`) to get snapshots")
+        return f"run `vcr airbag protect` (or `git init`) in {self.path}"
 
     def to_dict(self) -> dict[str, Any]:
         return {"path": str(self.path), "root": str(self.root), "protected": self.protected,
@@ -114,13 +139,17 @@ def _never_walk_into(path: Path) -> bool:
     return path == Path(path.anchor)
 
 
+def marker_path(directory: str | os.PathLike[str]) -> Path:
+    return Path(directory) / OPT_IN_DIR / OPT_IN_FILE
+
+
 def nearest_opt_in(path: Path) -> Path | None:
-    """The nearest directory at or above ``path`` with a ``.vcr/`` folder (below home)."""
+    """The nearest directory at or above ``path`` opted in with ``vcr airbag protect``."""
     for candidate in (path, *path.parents):
         if _never_walk_into(candidate):
             return None
         with contextlib.suppress(OSError):
-            if (candidate / OPT_IN_DIR).is_dir():
+            if marker_path(candidate).is_file():
                 return candidate
     return None
 
@@ -136,11 +165,11 @@ def resolve(start: str | os.PathLike[str]) -> Scope:
         return Scope(path, path, False, "missing")
     path = path.resolve()
     top = _git_toplevel(path)
-    if top is not None:
-        unsafe = _is_unsafe_root(top)
-        if unsafe:
-            return Scope(path, top, False, "unsafe", unsafe)
+    top_unsafe = _is_unsafe_root(top) if top is not None else None
+    if top is not None and top_unsafe is None:
         return Scope(path, top, True, "git")
+    # Not in a usable git repository (none, or a dotfiles repo at ~): the nearest opt-in
+    # or existing store below it wins. Never the unsafe directory itself.
     found: list[tuple[Path, str]] = []
     known = _nearest_known_root(path)
     if known is not None:
@@ -148,16 +177,56 @@ def resolve(start: str | os.PathLike[str]) -> Scope:
     opt_in = nearest_opt_in(path)
     if opt_in is not None:
         found.append((opt_in, "opt-in"))
+    found = [(root, kind) for root, kind in found if _is_unsafe_root(root) is None and
+             (top is None or root != top and top in root.parents)]
     if found:
         root, kind = max(found, key=lambda item: len(item[0].parts))
-        unsafe = _is_unsafe_root(root)
-        if unsafe is None:
-            return Scope(path, root, True, kind)
-        return Scope(path, root, False, "unsafe", unsafe)
+        return Scope(path, root, True, kind)
+    if top is not None:
+        return Scope(path, top, False, "unsafe", top_unsafe)
     unsafe = _is_unsafe_root(path)
     if unsafe:
         return Scope(path, path, False, "unsafe", unsafe)
     return Scope(path, path, False, "plain")
+
+
+def protect(directory: str | os.PathLike[str]) -> tuple[Path, bool]:
+    """Opt ``directory`` in (``.vcr/airbag.json``). Returns (marker, created)."""
+    path = Path(os.path.abspath(Path(directory).expanduser()))
+    if not path.is_dir():
+        raise ValueError(f"{path} is not a directory")
+    unsafe = _is_unsafe_root(path.resolve())
+    if unsafe:
+        raise ValueError(f"refusing to protect {unsafe} ({path}): it is too broad to snapshot")
+    marker = marker_path(path)
+    if marker.is_file():
+        return marker, False
+    marker.parent.mkdir(exist_ok=True)
+    tmp = marker.with_name(f"{OPT_IN_FILE}.{os.getpid()}.tmp")
+    try:
+        tmp.write_text(json.dumps({"protect": True, "created_by": "vcr airbag protect"}) + "\n",
+                       encoding="utf-8")
+        os.replace(tmp, marker)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            tmp.unlink()
+        raise
+    return marker, True
+
+
+def unprotect(directory: str | os.PathLike[str]) -> Path | None:
+    """Remove the opt-in that covers ``directory``; returns the marker removed (or None)."""
+    path = Path(os.path.abspath(Path(directory).expanduser()))
+    root = nearest_opt_in(path.resolve()) if path.exists() else None
+    if root is None:
+        return None
+    marker = marker_path(root)
+    marker.unlink()
+    with contextlib.suppress(OSError):
+        marker.parent.rmdir()  # only when nothing else is in .vcr/
+    return marker
+
+
 
 
 def resolve_first(*candidates: str | None) -> Scope:

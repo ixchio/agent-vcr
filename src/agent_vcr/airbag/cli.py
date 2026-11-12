@@ -10,7 +10,7 @@ import sys
 import time
 from typing import Any
 
-from agent_vcr.airbag.classify import classify
+from agent_vcr.airbag.classify import BULK_DELETE, classify
 from agent_vcr.airbag.core import Airbag, Policy, describe_action
 from agent_vcr.airbag.store import AirbagError, RestoreResult, Snapshot
 
@@ -114,6 +114,16 @@ def register(subparsers: Any) -> None:
 
     status = sub.add_parser("status", parents=[common], help="Show protection status")
     status.set_defaults(func=cmd_status)
+
+    prot = sub.add_parser(
+        "protect", help="Opt a folder that is not a git repository in to snapshots "
+                        "(writes DIR/.vcr/airbag.json)",
+    )
+    prot.add_argument("dir", nargs="?", default=".", help="Folder to protect (default: .)")
+    prot.set_defaults(func=cmd_protect)
+    unprot = sub.add_parser("unprotect", help="Undo `vcr airbag protect` for a folder")
+    unprot.add_argument("dir", nargs="?", default=".", help="Folder (default: .)")
+    unprot.set_defaults(func=cmd_unprotect)
 
     line = sub.add_parser(
         "statusline", help="One-line airbag status for Claude Code's statusLine (reads its "
@@ -377,8 +387,9 @@ def cmd_check(args: argparse.Namespace) -> None:
     scope = resolve(cwd)
     root = scope.root
     verdict = classify(command, cwd=cwd, root=root)
-    if not scope.protected and verdict.level == "destructive":
-        # What the hook does here: no snapshot, so a human decides (see airbag.scope).
+    if not scope.protected and verdict.level == "destructive" and \
+            BULK_DELETE in verdict.categories:
+        # What the hook does here: a whole tree with no snapshot, so a human decides.
         verdict.raise_to("irreversible", scope.unprotected_reason, "unprotected")
     if verdict.db_targets and scope.protected:
         from agent_vcr.airbag.core import downgrade_for_databases
@@ -399,9 +410,14 @@ def cmd_check(args: argparse.Namespace) -> None:
                           "protected": scope.protected}))
         return
     icon = LEVEL_ICON[verdict.level]
-    print(f"{icon} {verdict.level.upper()}: {LEVEL_EXPLAIN[verdict.level]}")
+    explain = LEVEL_EXPLAIN[verdict.level]
+    if not scope.protected and verdict.level in {"write", "destructive"}:
+        explain = "goes ahead, but this folder is not protected: no snapshot, no `vcr undo`"
+    print(f"{icon} {verdict.level.upper()}: {explain}")
     for reason in verdict.reasons:
         print(f"   • {reason}")
+    if not scope.protected and verdict.level in {"write", "destructive"}:
+        print(f"   • {scope.notice.replace('🛟 Agent VCR airbag: ', '')}")
 
 
 def cmd_snapshot(args: argparse.Namespace) -> None:
@@ -459,12 +475,18 @@ def _roots(project_dir: str) -> tuple[Any, list[Any]]:
     return scope, [here] + ([scope.root] if scope.root != here else [])
 
 
+PROTECTION_RULE = (
+    "Protected: git repositories, and folders you opt in with `vcr airbag protect`. "
+    "Elsewhere nothing is snapshotted: irreversible commands and deleting a directory "
+    "tree are stopped for a human, other changes go ahead with a notice.")
+
+
 def protection_line(scope: Any) -> str:
     if scope.protected:
         return f"✓ protected: {scope.root} ({scope.why})"
     return (f"✗ not protected: {scope.root} ({scope.why}). Nothing is snapshotted here; "
-            f"commands that would destroy data are stopped for a human. To protect it, "
-            f"{scope.opt_in_hint}.")
+            f"deleting a directory tree is stopped for a human, other changes go ahead with "
+            f"a notice. To protect it, {scope.opt_in_hint}.")
 
 
 def cmd_status(args: argparse.Namespace) -> None:
@@ -504,9 +526,7 @@ def cmd_status(args: argparse.Namespace) -> None:
         elif site.scope == "project":
             extra = "  (in the project: `vcr doctor --fix` moves it to user level)"
         print(f"  {mark} {site.agent} ({site.scope}): {_short_path(site.path)}{extra}")
-    print("  Protected folders: git repositories, and folders with a .vcr/ folder "
-          "(`mkdir .vcr`). Elsewhere nothing is snapshotted, and destructive commands are "
-          "stopped for a human.")
+    print(f"  {PROTECTION_RULE}")
 
 
 def cmd_install(args: argparse.Namespace) -> None:
@@ -541,12 +561,21 @@ def cmd_install(args: argparse.Namespace) -> None:
         adapter = ag.ADAPTERS[name]
         wants_line = args.statusline and name == "claude"
         try:
-            if user and name in leftovers:
-                moved.extend(migrate(name, roots))
+            # User level first: the project's hooks are only removed once it is in place.
             where, note = ag.install(name, root, user=user, statusline=wants_line)
+            if not ag.installed_ok(name, where):
+                raise ValueError(f"{where}: the airbag hook is not there after writing it")
         except (OSError, ValueError) as err:
-            failed.append({"agent": name, "error": str(err)})
+            kept = " Nothing was changed; the project hook is still there." \
+                if name in leftovers else ""
+            failed.append({"agent": name, "error": f"{err}.{kept}".replace("..", ".")})
             continue
+        if user and name in leftovers:
+            try:
+                moved.extend(migrate(name, roots))
+            except (OSError, ValueError) as err:
+                failed.append({"agent": name, "error": f"installed at the user level, but the "
+                               f"project hook could not be removed: {err}"})
         if wants_line:
             current = ag._read_json(where).get("statusLine")
             statusline = "added" if ag._is_our_statusline(current) else "kept-existing"
@@ -592,8 +621,7 @@ def cmd_install(args: argparse.Namespace) -> None:
     print("What your agent sees: nothing for safe commands; a one-line notice "
           "(\"snapshot #N saved … Undo with `vcr undo`\") before destructive ones; a "
           "confirmation, or a block, before anything a snapshot can't undo.")
-    print(f"Protected: git repositories and folders with a .vcr/ folder. Here: "
-          f"{protection_line(scope)}")
+    print(f"{PROTECTION_RULE}\n  Here: {protection_line(scope)}")
     if steps:
         print("Required once:")
         for step in steps:
@@ -620,6 +648,40 @@ def cmd_uninstall(args: argparse.Namespace) -> None:
             print(f"  ✓ removed {ADAPTERS[name].title} hooks: {_short_path(path)}")
 
 
+def cmd_protect(args: argparse.Namespace) -> None:
+    from agent_vcr.airbag.scope import protect, resolve
+
+    scope = resolve(args.dir)
+    if scope.protected and scope.kind == "git":
+        print(f"✓ {scope.root} is a git repository: it is already protected.")
+        return
+    try:
+        marker, created = protect(args.dir)
+    except ValueError as err:
+        _fail(str(err))
+        return
+    state = "now protected" if created else "already protected"
+    print(f"🛟 {marker.parent.parent} is {state}: agents' changes there are snapshotted "
+          f"first, undo with `vcr undo`. Opt-in file: {marker} (`vcr airbag unprotect` "
+          "removes it).")
+
+
+def cmd_unprotect(args: argparse.Namespace) -> None:
+    from agent_vcr.airbag.scope import resolve, unprotect
+    from agent_vcr.airbag.store import ShadowStore
+
+    marker = unprotect(args.dir)
+    if marker is None:
+        print(f"{os.path.abspath(args.dir)} was not opted in with `vcr airbag protect`.")
+        return
+    print(f"Removed {marker}.")
+    scope = resolve(args.dir)
+    if scope.protected:
+        store = ShadowStore(scope.root)
+        print(f"  It stays protected ({scope.why}): its snapshots are kept so `vcr undo` keeps "
+              f"working. Delete {store.dir} to forget them.")
+
+
 def cmd_statusline(args: argparse.Namespace) -> None:
     from agent_vcr.airbag.statusline import main as statusline_main
 
@@ -637,7 +699,7 @@ def cmd_doctor(args: argparse.Namespace) -> None:
     else:
         if args.fix:
             for line in fixed or ["nothing to fix automatically"]:
-                print(f"🔧 {line}")
+                print(line if line.startswith(doctor.FAILED) else f"🔧 {line}")
         print(doctor.format_report(report))
     raise SystemExit(0 if report.healthy else 1)
 
