@@ -154,28 +154,54 @@ session summary that `scan` shows.
 
 ### Attach to OpenHands
 
-> Needs `pip install "ai-agent-vcr[openhands]"` (the `openhands-ai` event-stream API).
+> Needs the OpenHands SDK 1.x: `pip install openhands-sdk openhands-tools` (verified against
+> 1.7.3). `agent` and `ws` are yours.
 
 ```python
+from openhands.sdk import Conversation
+
 from openhands_sentinel import Sentinel, SentinelConfig
 
-sentinel = Sentinel(SentinelConfig(block_on_blocker=True)).attach(runtime.event_stream)
-# ... run your OpenHands task ...
-sentinel.save()
+sentinel = Sentinel(SentinelConfig(block_on_blocker=True))
+conversation = Conversation(agent=agent, workspace=ws, callbacks=[sentinel])
+sentinel.bind(conversation)          # lets Sentinel reject actions
+
+conversation.send_message("Add a login endpoint")
+conversation.run()
+sentinel.deliver_warnings()          # hand non-blocking findings to the agent...
+conversation.run()                   # ...and let it fix them
+print(sentinel.save())               # .vcr/sentinel-openhands.vcr
 ```
 
-Once attached, Sentinel:
+Once it is a callback, Sentinel:
 
-- records **every** event on the stream as a VCR frame, and shrinks frames over 50 KB to a summary
-  (`max_frame_bytes`, `truncate_large_frames`);
-- analyzes each `FileWriteAction` and `FileEditAction`. Patch-style edits are analyzed when their
-  `FileEditObservation` arrives, reading the file from disk if needed;
-- injects the warning back into the stream as a user `MessageAction`, so the agent reads it as
-  feedback (`warn_agent=False` turns that off; `auto_analyze=False` records events only).
+- analyzes the file after every successful `file_editor` `create`, `str_replace`, `insert` and
+  `undo_edit`, using the observation's `new_content` (or the file on disk). `view` and failed
+  edits are skipped;
+- on a **blocker** (with `block_on_blocker=True`, the default), rejects the agent's **next**
+  action through the SDK's own mechanism, `state.block_action`. The agent gets a
+  `UserRejectObservation` that reads "Action rejected: 🛑 SENTINEL BLOCKED ..." with the findings.
+  Tool calls from the same model response that have not run yet are rejected too;
+- keeps rejecting until the file is clean again. Allowed meanwhile: `file_editor` on the broken
+  file (any command, so the agent can view and fix it) and `think`. A clean re-analysis lifts the
+  gate and counts as a self-correction;
+- queues non-blocking warnings in `sentinel.pending_warnings`. `deliver_warnings()` sends them as
+  one user message — call it **between** `run()` calls, never from a callback (a user message
+  in the middle of a batch of tool calls breaks the order the model expects);
+- records each analysis (`sentinel:analysis`) and each rejection (`sentinel:reject`) as a VCR
+  frame. `stats.rejected_actions` counts real vetoes; `stats.blocked_actions` counts blocker
+  results.
 
-With `block_on_blocker=True` (the default), a blocker marks the result `blocked`, counts it in
-`stats.blocked_actions`, and starts the warning with "🛑 SENTINEL BLOCKED". The agent is told to
-stop. Sentinel does **not** cancel the action — it already ran.
+Forgot `bind()`? Sentinel still analyzes, logs one warning, and rejects nothing.
+`auto_analyze=False` turns the callback off. To record every tool call too, add a
+[`VCRRuntime`](integrations/README.md#openhands) to `callbacks`; pass both the same `VCRRecorder`
+for a single `.vcr` file.
+
+**Legacy V0 (`openhands-ai`, `pip install "ai-agent-vcr[openhands]"`):**
+`Sentinel().attach(runtime.event_stream)` subscribes to the event stream, records every event,
+analyzes each `FileWriteAction` / `FileEditAction` (patch-style edits when their
+`FileEditObservation` arrives) and injects warnings back as a user `MessageAction`. V0 cannot
+veto an action: "blocked" there is a label and a strong message.
 
 Try the whole flow without OpenHands: `python examples/sentinel_demo.py` from a repo checkout
 simulates an agent session.
@@ -185,13 +211,16 @@ simulates an agent session.
 - **Python only.** Other files are ignored.
 - **It reviews, it doesn't undo.** A bad write has already happened. To roll it back, use the
   [airbag](airbag.md) or [ACIDWorkspace](acid-workspace.md).
-- **It doesn't block actions.** "Blocked" is a label and a strong message to the agent, not a
-  veto.
+- **It can't stop the write that broke the file.** With the OpenHands SDK it rejects the *next*
+  action; the bad write itself already happened (the SDK has no "after write, before commit"
+  hook). Shell commands that edit files (`sed -i`, `cat >`) are not analyzed, and a fix made from
+  the terminal is rejected too — the agent must fix the file with `file_editor`. Elsewhere
+  (V0, `scan`, `check_file`) "blocked" is a label, not a veto.
 - **Structure, not correctness.** No type checking, no tests, no security scan. Run your linter
   and test suite too.
 - **Duplicate memory is per session.** A fresh `scan` only compares files within that scan.
-- **The OpenHands hook targets the legacy event stream** (`openhands-ai`). For the newer
-  `openhands-sdk`, call `check_and_warn()` yourself.
+- **OpenHands SDK: local conversations only.** Verified with a local `Conversation`; a
+  `RemoteConversation` against an agent server is untested.
 
 ## Cheat sheet
 
@@ -203,7 +232,9 @@ simulates an agent session.
 | `Sentinel(config, recorder, on_violation)` | Python entry point |
 | `.check_file(path, content)` → `AnalysisResult` | Analyze and record |
 | `.check_and_warn(path, content)` → `(result, warning \| None)` | Plus agent-facing text |
-| `.attach(event_stream)` | Hook into OpenHands |
+| `Conversation(callbacks=[sentinel])` + `.bind(conversation)` | Hook into OpenHands SDK 1.x (rejects after blockers) |
+| `.deliver_warnings()` | Send queued warnings between `run()` calls |
+| `.attach(event_stream)` | Hook into legacy OpenHands V0 |
 | `.stats`, `.get_report()`, `.save()` | Counters, summary, write `.vcr` |
 
 | Exit code | `scan` | `watch` |

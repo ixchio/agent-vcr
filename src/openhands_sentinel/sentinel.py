@@ -16,7 +16,11 @@ Usage:
     # Analyze a file write (standalone mode)
     result = sentinel.check_file("app/auth.py", code_content)
 
-    # Or attach to OpenHands EventStream (native mode)
+    # OpenHands SDK 1.x: a conversation callback, bound for rejections
+    conversation = Conversation(agent=agent, workspace=ws, callbacks=[sentinel])
+    sentinel.bind(conversation)
+
+    # Legacy OpenHands V0: attach to the EventStream
     sentinel.attach(event_stream)
 """
 
@@ -40,6 +44,22 @@ from openhands_sentinel.analyzer import (
 )
 
 logger = logging.getLogger(__name__)
+
+# OpenHands SDK 1.x (openhands-sdk / openhands-tools, verified against 1.7.3).
+_SDK_EVENTS = frozenset({"ActionEvent", "ObservationEvent", "UserRejectObservation",
+                         "AgentErrorEvent"})
+_SDK_EDITOR_TOOLS = frozenset({"file_editor", "planning_file_editor"})
+#: file_editor commands after which the file on disk changed.
+_SDK_WRITE_COMMANDS = frozenset({"create", "str_replace", "insert", "undo_edit"})
+#: Tools that cannot touch the workspace, allowed while a blocker is open.
+_SDK_HARMLESS_TOOLS = frozenset({"think"})
+
+
+def _sdk_action_path(tool: str, action: Any) -> str | None:
+    if tool not in _SDK_EDITOR_TOOLS or action is None:
+        return None
+    path = getattr(action, "path", None)
+    return os.path.normpath(str(path)) if path else None
 
 
 @dataclass
@@ -81,6 +101,8 @@ class SentinelStats:
     self_corrections: int = 0
     agent_warnings_sent: int = 0
     blocked_actions: int = 0
+    # Actions actually vetoed through the OpenHands SDK (``state.block_action``).
+    rejected_actions: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -93,6 +115,7 @@ class SentinelStats:
             "self_corrections": self.self_corrections,
             "agent_warnings_sent": self.agent_warnings_sent,
             "blocked_actions": self.blocked_actions,
+            "rejected_actions": self.rejected_actions,
         }
 
 
@@ -107,7 +130,8 @@ class Sentinel:
     Three modes:
     1. Standalone — call sentinel.check_file() manually
     2. Watch — sentinel.watch_directory() monitors a dir
-    3. Native — sentinel.attach(event_stream) hooks into OpenHands
+    3. Native — ``Conversation(callbacks=[sentinel])`` + ``sentinel.bind(conversation)``
+       (OpenHands SDK 1.x) or ``sentinel.attach(event_stream)`` (legacy V0)
     """
 
     def __init__(
@@ -134,7 +158,16 @@ class Sentinel:
         self._results_history: list[AnalysisResult] = []
         # Paths of FileEditActions without inline content, awaiting their observation.
         self._pending_edits: set[str] = set()
-        self._pending_lock = threading.Lock()
+        self._pending_lock = threading.RLock()
+        # OpenHands SDK 1.x state.
+        self._conversation: Any = None
+        # tool_call_id -> (action_id, tool_name, normalized path) for actions not yet run.
+        self._pending_actions: dict[str, tuple[str, str, str | None]] = {}
+        # Files whose last analysis had blockers -> rejection reason; gates later actions.
+        self._blocked_files: dict[str, str] = {}
+        #: Non-blocking warnings waiting for :meth:`deliver_warnings`.
+        self.pending_warnings: list[str] = []
+        self._unbound_warned = False
 
     def start_session(self, session_id: str | None = None) -> None:
         """Start a Sentinel monitoring session."""
@@ -301,22 +334,172 @@ class Sentinel:
         return str(path)
 
     # ──────────────────────────────────────────────
-    #  OpenHands EventStream Integration
+    #  OpenHands SDK 1.x (Conversation callbacks)
+    # ──────────────────────────────────────────────
+
+    def bind(self, conversation: Any) -> Sentinel:
+        """Bind to an OpenHands SDK 1.x ``Conversation`` so blockers can reject actions.
+
+        Pass the Sentinel as a callback and bind it once the conversation exists::
+
+            sentinel = Sentinel()
+            conversation = Conversation(agent=agent, workspace=ws, callbacks=[sentinel])
+            sentinel.bind(conversation)
+
+        Without ``bind`` Sentinel still analyzes edits, but cannot reject anything.
+        """
+        self._conversation = conversation
+        if not self._session_started:
+            self.start_session("sentinel-openhands")
+        return self
+
+    def __call__(self, event: Any) -> None:
+        """OpenHands SDK 1.x conversation callback (runs before each action executes)."""
+        name = type(event).__name__
+        if name not in _SDK_EVENTS or not self.config.auto_analyze:
+            return
+        try:
+            if name == "ActionEvent":
+                self._on_sdk_action(event)
+            else:
+                self._on_sdk_result(event)
+        except Exception:  # noqa: BLE001 - a callback exception would abort the agent run
+            logger.warning("[sentinel] Failed to handle %s", name, exc_info=True)
+
+    @property
+    def blocked_files(self) -> dict[str, str]:
+        """Files with blocker issues that gate the agent (path -> agent-facing reason)."""
+        with self._pending_lock:
+            return dict(self._blocked_files)
+
+    def deliver_warnings(self, conversation: Any = None) -> int:
+        """Send queued non-blocking warnings to the agent as one user message.
+
+        Call it between ``conversation.run()`` calls, never from a callback: a user
+        message inserted while a batch of tool calls is still running would break
+        the tool-call/result order the LLM expects. Returns the number delivered.
+        """
+        target = conversation or self._conversation
+        with self._pending_lock:
+            warnings = list(self.pending_warnings)
+        if not warnings or target is None:
+            return 0
+        target.send_message("\n\n".join(warnings))
+        with self._pending_lock:
+            del self.pending_warnings[: len(warnings)]
+        return len(warnings)
+
+    def _on_sdk_action(self, event: Any) -> None:
+        action = getattr(event, "action", None)
+        tool = str(getattr(event, "tool_name", "") or "")
+        path = _sdk_action_path(tool, action)
+        action_id = str(getattr(event, "id", "") or "")
+        key = str(getattr(event, "tool_call_id", "") or action_id)
+        with self._pending_lock:
+            if action is not None and action_id:
+                self._pending_actions[key] = (action_id, tool, path)
+            gate = dict(self._blocked_files)
+        if action is None or not action_id or not gate or self._allowed_while_blocked(tool, path):
+            return
+        self._reject(action_id, tool, gate)
+
+    def _on_sdk_result(self, event: Any) -> None:
+        key = str(getattr(event, "tool_call_id", "") or getattr(event, "action_id", "") or "")
+        with self._pending_lock:
+            pending = self._pending_actions.pop(key, None)
+        if type(event).__name__ != "ObservationEvent":
+            return  # rejected or failed: nothing was written
+        tool = str(getattr(event, "tool_name", "") or "")
+        observation = getattr(event, "observation", None)
+        if tool not in _SDK_EDITOR_TOOLS or observation is None:
+            return
+        if getattr(observation, "command", None) not in _SDK_WRITE_COMMANDS:
+            return
+        if getattr(observation, "is_error", False):
+            return  # the edit failed, the file is unchanged
+        raw_path = getattr(observation, "path", None) or (pending[2] if pending else None)
+        if not raw_path:
+            return
+        file_path = os.path.normpath(str(raw_path))
+        content = getattr(observation, "new_content", None)
+        if content is None:
+            content = self._read_from_disk(file_path)
+        if content is None:
+            logger.warning("[sentinel] No post-edit content available for %s", file_path)
+            return
+        result, warning = self.check_and_warn(file_path, content)
+        if result.blocked:
+            reason = (
+                f"Sentinel rejected this action: {file_path} has blocker issues. "
+                f"Fix {file_path} with file_editor before doing anything else.\n\n{warning}"
+            )
+            with self._pending_lock:
+                self._blocked_files[file_path] = reason
+                gate = dict(self._blocked_files)
+                # Tool calls from the same LLM response are emitted before any of them
+                # runs: reject the ones still waiting so nothing runs on the broken file.
+                waiting = [p for p in self._pending_actions.values()
+                           if not self._allowed_while_blocked(p[1], p[2])]
+            for action_id, waiting_tool, _ in waiting:
+                self._reject(action_id, waiting_tool, gate)
+            return
+        with self._pending_lock:
+            self._blocked_files.pop(file_path, None)
+            if warning and self.config.warn_agent:
+                self.pending_warnings.append(warning)
+
+    def _allowed_while_blocked(self, tool: str, path: str | None) -> bool:
+        if tool in _SDK_HARMLESS_TOOLS:
+            return True
+        with self._pending_lock:
+            return tool in _SDK_EDITOR_TOOLS and path is not None and path in self._blocked_files
+
+    def _reject(self, action_id: str, tool: str, gate: dict[str, str]) -> None:
+        state = getattr(self._conversation, "state", None)
+        if state is None or not hasattr(state, "block_action"):
+            if not self._unbound_warned:
+                self._unbound_warned = True
+                logger.warning(
+                    "[sentinel] Blocker found but Sentinel is not bound to the conversation; "
+                    "call sentinel.bind(conversation) so it can reject actions"
+                )
+            return
+        reason = "\n\n".join(gate.values())
+        state.block_action(action_id, reason)
+        self.stats.rejected_actions += 1
+        logger.warning("[sentinel] Rejected %s action %s: blocker in %s",
+                       tool or "unknown", action_id, ", ".join(gate))
+        if self.config.record_to_vcr:
+            try:
+                self.recorder.record_step(
+                    node_name="sentinel:reject",
+                    input_state={"action_id": action_id, "tool": tool},
+                    output_state={"rejected": True, "blocked_files": sorted(gate)},
+                    metadata=FrameMetadata(custom={"sentinel_check": True, "rejected": True}),
+                    frame_type=FrameType.TOOL_CALL,
+                )
+            except Exception:  # noqa: BLE001
+                logger.warning("[sentinel] Failed to record rejection", exc_info=True)
+
+    # ──────────────────────────────────────────────
+    #  Legacy OpenHands V0 EventStream Integration
     # ──────────────────────────────────────────────
 
     def attach(self, event_stream: Any) -> Sentinel:
         """
-        Attach to an OpenHands EventStream for native integration.
+        Attach to an OpenHands event source.
 
-        Once attached, Sentinel will automatically analyze every
-        FileWriteAction and FileEditAction that flows through the stream.
-
-        Args:
-            event_stream: An OpenHands EventStream instance.
+        * Legacy V0 ``EventStream`` (has ``subscribe``): Sentinel analyzes every
+          FileWriteAction and FileEditAction that flows through the stream.
+        * OpenHands SDK 1.x ``Conversation``: same as :meth:`bind` (Sentinel must
+          also be in the conversation's ``callbacks``).
 
         Returns:
             self (for chaining)
         """
+        if not hasattr(event_stream, "subscribe") and hasattr(event_stream, "state"):
+            return self.bind(event_stream)
+
         try:
             from openhands.events.stream import EventStreamSubscriber
             subscriber_id = EventStreamSubscriber.RUNTIME
