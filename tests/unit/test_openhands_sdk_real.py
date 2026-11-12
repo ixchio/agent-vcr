@@ -138,3 +138,68 @@ def test_sentinel_warning_delivered_as_user_message(workspace: Path, tmp_path: P
         assert "Wildcard import" in last.llm_message.content[0].text
     finally:
         conv.close()
+
+
+LONG_FUNCTION = "def big():\n" + "".join(f"    x{i} = {i}\n" for i in range(260)) + "    return 0\n"
+
+
+def _sentinel_conv(ws: Path, tmp_path: Path) -> tuple[Sentinel, Agent, Any]:
+    sentinel = Sentinel(recorder=VCRRecorder(output_dir=str(tmp_path / ".vcr")))
+    agent, conv = _conversation(ws, [sentinel])
+    sentinel.bind(conv)
+    return sentinel, agent, conv
+
+
+def test_sentinel_does_not_gate_pre_existing_blockers(workspace: Path, tmp_path: Path) -> None:
+    legacy = workspace / "legacy.py"
+    legacy.write_text(LONG_FUNCTION + "VERSION = '1'\n")
+    sentinel, agent, conv = _sentinel_conv(workspace, tmp_path)
+    try:
+        with conv.state:
+            _step(agent, conv, _event("file_editor", FileEditorAction(
+                command="str_replace", path=str(legacy), old_str="VERSION = '1'",
+                new_str="VERSION = '2'"), 1))
+            assert sentinel.blocked_files == {}
+            (run,) = _step(agent, conv, _event("terminal", TerminalAction(command="true"), 2))
+            assert type(run).__name__ == "ObservationEvent"
+    finally:
+        conv.close()
+    assert "already had blocker-level issues" in sentinel.pending_warnings[0]
+
+
+def test_sentinel_gate_drops_when_fixed_outside_and_caps(workspace: Path,
+                                                         tmp_path: Path) -> None:
+    sentinel, agent, conv = _sentinel_conv(workspace, tmp_path)
+    target = workspace / "bad.py"
+    try:
+        with conv.state:
+            _step(agent, conv, _event("file_editor", FileEditorAction(
+                command="create", path=str(target), file_text=SYNTAX_ERROR), 1))
+            target.write_text("def ok():\n    pass\n")  # e.g. `git checkout bad.py`
+            (run,) = _step(agent, conv, _event("terminal", TerminalAction(command="true"), 2))
+            assert type(run).__name__ == "ObservationEvent"
+
+            _step(agent, conv, _event("file_editor", FileEditorAction(
+                command="create", path=str(workspace / "bad2.py"), file_text=SYNTAX_ERROR), 3))
+            kinds = [type(_step(agent, conv, _event(
+                "terminal", TerminalAction(command="true"), 10 + i))[0]).__name__
+                for i in range(4)]
+        assert kinds == ["UserRejectObservation"] * 3 + ["ObservationEvent"]
+    finally:
+        conv.close()
+
+
+def test_sentinel_gate_cleared_by_new_user_message(workspace: Path, tmp_path: Path) -> None:
+    sentinel, agent, conv = _sentinel_conv(workspace, tmp_path)
+    try:
+        with conv.state:
+            _step(agent, conv, _event("file_editor", FileEditorAction(
+                command="create", path=str(workspace / "bad.py"), file_text=SYNTAX_ERROR), 1))
+        assert sentinel.blocked_files
+        conv.send_message("Never mind, leave bad.py and update the README")
+        assert sentinel.blocked_files == {}
+        with conv.state:
+            (run,) = _step(agent, conv, _event("terminal", TerminalAction(command="true"), 2))
+        assert type(run).__name__ == "ObservationEvent"
+    finally:
+        conv.close()

@@ -412,3 +412,160 @@ def test_sentinel_and_runtime_share_one_recording(tmp_path: Path) -> None:
     assert [f.node_name for f in frames] == [
         "openhands:file_editor", "sentinel:analysis", "sentinel:reject", "openhands:terminal"]
     assert frames[-1].output_state["status"] == "rejected"
+
+
+# ── Sentinel gate: only new blockers, never wedges ──────────────────────────
+
+LONG_FUNCTION = "def big():\n" + "".join(f"    x{i} = {i}\n" for i in range(260)) + "    return 0\n"
+
+
+class MessageEvent:
+    def __init__(self, source: str = "user") -> None:
+        self.source = source
+
+
+def _edit(path: Path, before: str | None, after: str,
+          command: str = "str_replace") -> tuple[ActionEvent, _Observation]:
+    """A file_editor edit: the action, then the file changes on disk, then the observation."""
+    action = ActionEvent("file_editor", _Action(command=command, path=str(path)))
+    return action, _Observation("edited", command=command, path=str(path),
+                                old_content=before, new_content=after)
+
+
+def _apply(sentinel: Sentinel, conv: FakeConversation, path: Path, before: str | None,
+           after: str, command: str = "str_replace") -> Any:
+    action, obs = _edit(path, before, after, command)
+    sentinel(action)
+    path.write_text(after)
+    return conv.run_tool(sentinel, action, obs)
+
+
+def _gated(tmp_path: Path, **config: Any) -> tuple[Sentinel, FakeConversation, Path]:
+    sentinel, conv = _sentinel(tmp_path, **config)
+    bad = tmp_path / "bad.py"
+    _apply(sentinel, conv, bad, None, SYNTAX_ERROR, command="create")
+    assert str(bad) in sentinel.blocked_files
+    return sentinel, conv, bad
+
+
+def test_pre_existing_blocker_does_not_gate(tmp_path: Path) -> None:
+    legacy = tmp_path / "legacy.py"
+    before = LONG_FUNCTION + "VERSION = '1'\n"
+    legacy.write_text(before)
+    sentinel, conv = _sentinel(tmp_path)
+    _apply(sentinel, conv, legacy, before, LONG_FUNCTION + "VERSION = '2'\n")
+    assert sentinel.blocked_files == {}
+    assert sentinel._results_history[-1].blocker_count == 1
+    assert not sentinel._results_history[-1].blocked
+    assert "already had blocker-level issues" in sentinel.pending_warnings[0]
+    run, run_obs = _terminal("pytest -q")
+    sentinel(run)
+    assert isinstance(conv.run_tool(sentinel, run, run_obs), ObservationEvent)
+
+
+def test_pre_edit_snapshot_used_when_observation_has_no_old_content(tmp_path: Path) -> None:
+    legacy = tmp_path / "legacy.py"
+    legacy.write_text(LONG_FUNCTION)
+    sentinel, conv = _sentinel(tmp_path)
+    action = ActionEvent("file_editor", _Action(command="insert", path=str(legacy)))
+    sentinel(action)  # Sentinel reads the file here, before the edit runs
+    legacy.write_text(LONG_FUNCTION + "X = 1\n")
+    conv.run_tool(sentinel, action, _Observation("ok", command="insert", path=str(legacy)))
+    assert sentinel.blocked_files == {}
+
+
+def test_edit_that_creates_a_blocker_gates(tmp_path: Path) -> None:
+    mod = tmp_path / "mod.py"
+    before = "def f():\n    return 1\n"
+    mod.write_text(before)
+    sentinel, conv = _sentinel(tmp_path)
+    _apply(sentinel, conv, mod, before, LONG_FUNCTION)
+    assert "function_too_long" in sentinel.blocked_files[str(mod)]
+
+
+def test_still_broken_after_second_edit_stays_gated(tmp_path: Path) -> None:
+    sentinel, conv, bad = _gated(tmp_path)
+    _apply(sentinel, conv, bad, SYNTAX_ERROR, SYNTAX_ERROR + "# tweak\n")
+    assert str(bad) in sentinel.blocked_files  # compared with the file before it broke
+    _apply(sentinel, conv, bad, SYNTAX_ERROR, "def broken():\n    pass\n")
+    assert sentinel.blocked_files == {}
+
+
+def test_gate_released_after_max_rejections(tmp_path: Path,
+                                            caplog: pytest.LogCaptureFixture) -> None:
+    sentinel, conv, bad = _gated(tmp_path)
+    results = []
+    with caplog.at_level(logging.WARNING):
+        for _ in range(4):
+            run, run_obs = _terminal("pytest")
+            sentinel(run)
+            results.append(type(conv.run_tool(sentinel, run, run_obs)).__name__)
+    assert results == ["UserRejectObservation"] * 3 + ["ObservationEvent"]
+    assert sentinel.blocked_files == {} and sentinel.stats.rejected_actions == 3
+    assert "still in the file" in caplog.text
+    assert any("stopped rejecting" in w for w in sentinel.pending_warnings)
+    frames = VCRPlayer.load(sentinel.save()).frames
+    assert frames[-1].node_name == "sentinel:release"
+
+
+def test_max_rejections_is_configurable(tmp_path: Path) -> None:
+    sentinel, conv, _ = _gated(tmp_path, max_rejections_per_file=1)
+    first, first_obs = _terminal("ls")
+    sentinel(first)
+    assert isinstance(conv.run_tool(sentinel, first, first_obs), UserRejectObservation)
+    second, second_obs = _terminal("ls")
+    sentinel(second)
+    assert isinstance(conv.run_tool(sentinel, second, second_obs), ObservationEvent)
+
+
+def test_unblock_releases_one_or_all(tmp_path: Path) -> None:
+    sentinel, conv, bad = _gated(tmp_path)
+    assert sentinel.unblock(str(tmp_path / "nope.py")) == []
+    assert sentinel.unblock(str(bad)) == [str(bad)]
+    other = tmp_path / "other.py"
+    _apply(sentinel, conv, other, None, SYNTAX_ERROR, command="create")
+    assert list(sentinel.blocked_files) == [str(other)]
+    assert sentinel.unblock() == [str(other)]
+    run, run_obs = _terminal("ls")
+    sentinel(run)
+    assert isinstance(conv.run_tool(sentinel, run, run_obs), ObservationEvent)
+
+
+def test_new_user_message_clears_gate_but_own_warnings_do_not(tmp_path: Path) -> None:
+    sentinel, conv, _ = _gated(tmp_path)
+
+    def send_message(message: str) -> None:  # the real SDK emits a user MessageEvent
+        conv.messages.append(message)
+        sentinel(MessageEvent("user"))
+
+    conv.send_message = send_message  # type: ignore[method-assign]
+    sentinel.pending_warnings.append("note")
+    assert sentinel.deliver_warnings() == 1
+    assert sentinel.blocked_files != {}
+    sentinel(MessageEvent("agent"))
+    assert sentinel.blocked_files != {}
+    sentinel(MessageEvent("user"))
+    assert sentinel.blocked_files == {}
+
+
+def test_gate_dropped_when_fixed_or_deleted_outside_file_editor(tmp_path: Path) -> None:
+    sentinel, conv, bad = _gated(tmp_path)
+    bad.write_text("def ok():\n    pass\n")  # git checkout / the user / the airbag
+    run, run_obs = _terminal("ls")
+    sentinel(run)
+    assert isinstance(conv.run_tool(sentinel, run, run_obs), ObservationEvent)
+
+    sentinel, conv, bad = _gated(tmp_path / "again")
+    bad.unlink()
+    run, run_obs = _terminal("ls")
+    sentinel(run)
+    assert isinstance(conv.run_tool(sentinel, run, run_obs), ObservationEvent)
+    assert sentinel.blocked_files == {}
+
+
+def test_check_file_previous_content(tmp_path: Path) -> None:
+    sentinel, _ = _sentinel(tmp_path)
+    old = LONG_FUNCTION
+    assert not sentinel.check_file("m.py", old + "Y = 1\n", previous_content=old).blocked
+    assert sentinel.check_file("m.py", SYNTAX_ERROR, previous_content=old).blocked
+    assert sentinel.check_file("m.py", old).blocked  # no baseline: every blocker counts

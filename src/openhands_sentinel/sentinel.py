@@ -31,7 +31,8 @@ import logging
 import os
 import threading
 import time
-from dataclasses import dataclass
+from collections import Counter
+from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from agent_vcr import VCRRecorder
@@ -53,6 +54,23 @@ _SDK_EDITOR_TOOLS = frozenset({"file_editor", "planning_file_editor"})
 _SDK_WRITE_COMMANDS = frozenset({"create", "str_replace", "insert", "undo_edit"})
 #: Tools that cannot touch the workspace, allowed while a blocker is open.
 _SDK_HARMLESS_TOOLS = frozenset({"think"})
+
+
+def _blocker_keys(result: AnalysisResult) -> Counter[tuple[str, str]]:
+    """Blockers by identity, ignoring line numbers (an edit above shifts them)."""
+    return Counter((v.rule, v.function_name or "") for v in result.violations
+                   if v.severity == Severity.BLOCKER)
+
+
+@dataclass
+class _Gate:
+    """A file whose edit introduced blockers; later actions are rejected until it's fixed."""
+
+    reason: str
+    baseline: Counter[tuple[str, str]]  # blockers the file had before the gating edit
+    on_disk: bool  # the file was readable here when gated (so "missing" means deleted)
+    rejections: int = 0
+    introduced: list[str] = field(default_factory=list)
 
 
 def _sdk_action_path(tool: str, action: Any) -> str | None:
@@ -86,6 +104,10 @@ class SentinelConfig:
     # Frame size guardrail (addresses OpenHands issue #7402)
     max_frame_bytes: int = 50_000  # Warn if any recorded frame > 50KB
     truncate_large_frames: bool = True
+
+    # OpenHands SDK gate: after this many rejected actions for one file, Sentinel
+    # releases the gate (with a loud warning) instead of wedging the agent.
+    max_rejections_per_file: int = 3
 
 
 @dataclass
@@ -163,8 +185,11 @@ class Sentinel:
         self._conversation: Any = None
         # tool_call_id -> (action_id, tool_name, normalized path) for actions not yet run.
         self._pending_actions: dict[str, tuple[str, str, str | None]] = {}
-        # Files whose last analysis had blockers -> rejection reason; gates later actions.
-        self._blocked_files: dict[str, str] = {}
+        # tool_call_id -> file content read just before a file_editor write ran.
+        self._pre_edit: dict[str, str | None] = {}
+        # Files whose last edit introduced blockers; gates later actions.
+        self._gates: dict[str, _Gate] = {}
+        self._delivering = False
         #: Non-blocking warnings waiting for :meth:`deliver_warnings`.
         self.pending_warnings: list[str] = []
         self._unbound_warned = False
@@ -179,12 +204,35 @@ class Sentinel:
         self._session_started = True
         logger.info("[sentinel] Session started")
 
-    def check_file(self, file_path: str, content: str) -> AnalysisResult:
+    def check_file(
+        self, file_path: str, content: str, *, previous_content: str | None = None
+    ) -> AnalysisResult:
         """
         Analyze a single file and record the result.
 
         This is the core method. Everything else calls this.
+
+        With ``previous_content`` (the file before the edit), only blockers the
+        edit *introduced* mark the result ``blocked``; blockers that were already
+        there are reported but do not block.
         """
+        baseline = None if previous_content is None else self._probe(file_path, previous_content)
+        return self._check(file_path, content, baseline)
+
+    def _probe(self, file_path: str, content: str) -> Counter[tuple[str, str]]:
+        """Blockers of ``content`` without touching stats, history or trajectory memory."""
+        probe = CodeAnalyzer(
+            max_function_lines=self.config.max_function_lines,
+            max_complexity=self.config.max_complexity,
+            max_file_lines=self.config.max_file_lines,
+            max_class_methods=self.config.max_class_methods,
+            max_function_params=self.config.max_function_params,
+        )
+        return _blocker_keys(probe.analyze(file_path, content))
+
+    def _check(
+        self, file_path: str, content: str, baseline: Counter[tuple[str, str]] | None
+    ) -> AnalysisResult:
         if not self._session_started:
             self.start_session()
 
@@ -211,7 +259,10 @@ class Sentinel:
             and not result.violations
         ):
             self.stats.self_corrections += 1
-        if self.config.block_on_blocker and result.blocker_count > 0:
+        introduced = _blocker_keys(result)
+        if baseline is not None:
+            introduced = introduced - baseline
+        if self.config.block_on_blocker and introduced:
             result.blocked = True
             self.stats.blocked_actions += 1
 
@@ -253,14 +304,24 @@ class Sentinel:
         """Drop trajectory memory for a deleted file so it no longer counts as a duplicate."""
         self.analyzer.forget_file(file_path)
 
-    def check_and_warn(self, file_path: str, content: str) -> tuple[AnalysisResult, str | None]:
+    def check_and_warn(
+        self, file_path: str, content: str, *, previous_content: str | None = None
+    ) -> tuple[AnalysisResult, str | None]:
         """
         Analyze a file and generate an agent-facing warning string.
+
+        ``previous_content`` works as in :meth:`check_file`.
 
         Returns:
             Tuple of (AnalysisResult, warning_message_or_None)
         """
-        result = self.check_file(file_path, content)
+        baseline = None if previous_content is None else self._probe(file_path, previous_content)
+        return self._check_and_warn(file_path, content, baseline)
+
+    def _check_and_warn(
+        self, file_path: str, content: str, baseline: Counter[tuple[str, str]] | None
+    ) -> tuple[AnalysisResult, str | None]:
+        result = self._check(file_path, content, baseline)
 
         if not result.violations:
             return result, None
@@ -270,6 +331,11 @@ class Sentinel:
             lines = [
                 "🛑 SENTINEL BLOCKED — This change has blocker-level issues and must "
                 "not proceed. Please fix before proceeding:\n"
+            ]
+        elif result.blocker_count:
+            lines = [
+                "🛡️ SENTINEL CODE REVIEW — This file already had blocker-level issues before "
+                "this edit (not blocking). Issues detected:\n"
             ]
         else:
             lines = [
@@ -356,21 +422,40 @@ class Sentinel:
     def __call__(self, event: Any) -> None:
         """OpenHands SDK 1.x conversation callback (runs before each action executes)."""
         name = type(event).__name__
-        if name not in _SDK_EVENTS or not self.config.auto_analyze:
+        if not self.config.auto_analyze:
             return
         try:
             if name == "ActionEvent":
                 self._on_sdk_action(event)
-            else:
+            elif name in _SDK_EVENTS:
                 self._on_sdk_result(event)
+            elif name == "MessageEvent" and getattr(event, "source", None) == "user":
+                self._on_user_message()
         except Exception:  # noqa: BLE001 - a callback exception would abort the agent run
             logger.warning("[sentinel] Failed to handle %s", name, exc_info=True)
 
     @property
     def blocked_files(self) -> dict[str, str]:
-        """Files with blocker issues that gate the agent (path -> agent-facing reason)."""
+        """Files whose last edit introduced blockers (path -> agent-facing reason)."""
         with self._pending_lock:
-            return dict(self._blocked_files)
+            return {path: gate.reason for path, gate in self._gates.items()}
+
+    def unblock(self, file_path: str | None = None) -> list[str]:
+        """Release the gate for one file (or all files). Returns the paths released.
+
+        Use it when you have decided a blocker is acceptable and the agent should
+        carry on. The findings stay in the recording.
+        """
+        with self._pending_lock:
+            if file_path is None:
+                released = sorted(self._gates)
+                self._gates.clear()
+            else:
+                path = os.path.normpath(file_path)
+                released = [path] if self._gates.pop(path, None) is not None else []
+        for path in released:
+            self._record_release(path, "unblocked by caller")
+        return released
 
     def deliver_warnings(self, conversation: Any = None) -> int:
         """Send queued non-blocking warnings to the agent as one user message.
@@ -384,10 +469,24 @@ class Sentinel:
             warnings = list(self.pending_warnings)
         if not warnings or target is None:
             return 0
-        target.send_message("\n\n".join(warnings))
+        self._delivering = True  # our own message must not count as the user moving on
+        try:
+            target.send_message("\n\n".join(warnings))
+        finally:
+            self._delivering = False
         with self._pending_lock:
             del self.pending_warnings[: len(warnings)]
         return len(warnings)
+
+    def _on_user_message(self) -> None:
+        """A new user message means a new instruction: drop the gate."""
+        if self._delivering:
+            return
+        with self._pending_lock:
+            released = sorted(self._gates)
+            self._gates.clear()
+        for path in released:
+            self._record_release(path, "new user message")
 
     def _on_sdk_action(self, event: Any) -> None:
         action = getattr(event, "action", None)
@@ -395,18 +494,27 @@ class Sentinel:
         path = _sdk_action_path(tool, action)
         action_id = str(getattr(event, "id", "") or "")
         key = str(getattr(event, "tool_call_id", "") or action_id)
+        if action is None or not action_id:
+            return  # failed validation: OpenHands will not execute it
+        pre_edit: str | None = None
+        if path is not None and getattr(action, "command", None) in _SDK_WRITE_COMMANDS:
+            pre_edit = self._read_from_disk(path)  # baseline for "did this edit break it?"
         with self._pending_lock:
-            if action is not None and action_id:
-                self._pending_actions[key] = (action_id, tool, path)
-            gate = dict(self._blocked_files)
-        if action is None or not action_id or not gate or self._allowed_while_blocked(tool, path):
+            self._pending_actions[key] = (action_id, tool, path)
+            if path is not None:
+                self._pre_edit[key] = pre_edit
+            has_gate = bool(self._gates)
+        if not has_gate or self._allowed_while_blocked(tool, path):
             return
-        self._reject(action_id, tool, gate)
+        gate = self._active_gate()
+        if gate and not self._allowed_while_blocked(tool, path):
+            self._reject(action_id, tool, gate)
 
     def _on_sdk_result(self, event: Any) -> None:
         key = str(getattr(event, "tool_call_id", "") or getattr(event, "action_id", "") or "")
         with self._pending_lock:
             pending = self._pending_actions.pop(key, None)
+            pre_edit = self._pre_edit.pop(key, None)
         if type(event).__name__ != "ObservationEvent":
             return  # rejected or failed: nothing was written
         tool = str(getattr(event, "tool_name", "") or "")
@@ -422,37 +530,110 @@ class Sentinel:
             return
         file_path = os.path.normpath(str(raw_path))
         content = getattr(observation, "new_content", None)
+        on_disk = False
         if content is None:
             content = self._read_from_disk(file_path)
+            on_disk = content is not None
+        else:
+            on_disk = os.path.isfile(file_path)
         if content is None:
             logger.warning("[sentinel] No post-edit content available for %s", file_path)
             return
-        result, warning = self.check_and_warn(file_path, content)
+
+        before = getattr(observation, "old_content", None)
+        if before is None:
+            before = pre_edit
+        with self._pending_lock:
+            existing = self._gates.get(file_path)
+        if existing is not None:
+            baseline = existing.baseline  # still compare with the file before it broke
+        elif before is not None:
+            baseline = self._probe(file_path, before)
+        else:
+            baseline = Counter()  # new file: every blocker is new
+
+        result, warning = self._check_and_warn(file_path, content, baseline)
         if result.blocked:
+            introduced = sorted({rule for rule, _ in _blocker_keys(result) - baseline})
             reason = (
-                f"Sentinel rejected this action: {file_path} has blocker issues. "
-                f"Fix {file_path} with file_editor before doing anything else.\n\n{warning}"
+                f"Sentinel rejected this action: your edit of {file_path} introduced "
+                f"blocker issues ({', '.join(introduced)}). Fix {file_path} with file_editor "
+                f"before doing anything else.\n\n{warning}"
             )
             with self._pending_lock:
-                self._blocked_files[file_path] = reason
-                gate = dict(self._blocked_files)
+                self._gates[file_path] = _Gate(
+                    reason=reason, baseline=baseline, on_disk=on_disk,
+                    rejections=existing.rejections if existing else 0, introduced=introduced)
                 # Tool calls from the same LLM response are emitted before any of them
                 # runs: reject the ones still waiting so nothing runs on the broken file.
                 waiting = [p for p in self._pending_actions.values()
                            if not self._allowed_while_blocked(p[1], p[2])]
             for action_id, waiting_tool, _ in waiting:
-                self._reject(action_id, waiting_tool, gate)
+                gate = self._active_gate(refresh=False)
+                if gate:
+                    self._reject(action_id, waiting_tool, gate)
             return
         with self._pending_lock:
-            self._blocked_files.pop(file_path, None)
+            self._gates.pop(file_path, None)
             if warning and self.config.warn_agent:
                 self.pending_warnings.append(warning)
+
+    def _active_gate(self, refresh: bool = True) -> dict[str, str]:
+        """The gate to enforce now: stale entries dropped, over-cap entries released."""
+        with self._pending_lock:
+            gates = dict(self._gates)
+        released: list[tuple[str, str]] = []
+        for path, gate in gates.items():
+            if refresh and gate.on_disk:
+                content = self._read_from_disk(path)
+                if content is None:
+                    released.append((path, "file no longer exists"))
+                    continue
+                if not (self._probe(path, content) - gate.baseline):
+                    released.append((path, "fixed outside file_editor"))
+                    continue
+            if gate.rejections >= max(1, self.config.max_rejections_per_file):
+                released.append((path, f"released after {gate.rejections} rejected actions"))
+        with self._pending_lock:
+            for path, _ in released:
+                self._gates.pop(path, None)
+            active = {path: gate.reason for path, gate in self._gates.items()}
+        for path, why in released:
+            self._record_release(path, why)
+        return active
+
+    def _record_release(self, path: str, why: str) -> None:
+        loud = why.startswith("released after")
+        message = f"[sentinel] Gate on {path} lifted: {why}"
+        if loud:
+            message += (". The blocker is still in the file; Sentinel stopped rejecting "
+                        "actions so the agent is not wedged")
+            logger.warning(message)
+            if self.config.warn_agent:
+                with self._pending_lock:
+                    self.pending_warnings.append(
+                        f"🛑 SENTINEL: {path} still has blocker issues. Sentinel stopped "
+                        f"rejecting actions after {self.config.max_rejections_per_file} "
+                        "attempts — fix it before you finish.")
+        else:
+            logger.info(message)
+        if self.config.record_to_vcr:
+            try:
+                self.recorder.record_step(
+                    node_name="sentinel:release",
+                    input_state={"file_path": path},
+                    output_state={"released": True, "reason": why},
+                    metadata=FrameMetadata(custom={"sentinel_check": True}),
+                    frame_type=FrameType.TOOL_CALL,
+                )
+            except Exception:  # noqa: BLE001
+                logger.warning("[sentinel] Failed to record gate release", exc_info=True)
 
     def _allowed_while_blocked(self, tool: str, path: str | None) -> bool:
         if tool in _SDK_HARMLESS_TOOLS:
             return True
         with self._pending_lock:
-            return tool in _SDK_EDITOR_TOOLS and path is not None and path in self._blocked_files
+            return tool in _SDK_EDITOR_TOOLS and path is not None and path in self._gates
 
     def _reject(self, action_id: str, tool: str, gate: dict[str, str]) -> None:
         state = getattr(self._conversation, "state", None)
@@ -466,6 +647,10 @@ class Sentinel:
             return
         reason = "\n\n".join(gate.values())
         state.block_action(action_id, reason)
+        with self._pending_lock:
+            for path in gate:
+                if path in self._gates:
+                    self._gates[path].rejections += 1
         self.stats.rejected_actions += 1
         logger.warning("[sentinel] Rejected %s action %s: blocker in %s",
                        tool or "unknown", action_id, ", ".join(gate))

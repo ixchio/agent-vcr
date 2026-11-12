@@ -178,19 +178,37 @@ Once it is a callback, Sentinel:
 - analyzes the file after every successful `file_editor` `create`, `str_replace`, `insert` and
   `undo_edit`, using the observation's `new_content` (or the file on disk). `view` and failed
   edits are skipped;
-- on a **blocker** (with `block_on_blocker=True`, the default), rejects the agent's **next**
-  action through the SDK's own mechanism, `state.block_action`. The agent gets a
-  `UserRejectObservation` that reads "Action rejected: 🛑 SENTINEL BLOCKED ..." with the findings.
-  Tool calls from the same model response that have not run yet are rejected too;
-- keeps rejecting until the file is clean again. Allowed meanwhile: `file_editor` on the broken
-  file (any command, so the agent can view and fix it) and `think`. A clean re-analysis lifts the
-  gate and counts as a self-correction;
+- on a blocker **this edit introduced** (with `block_on_blocker=True`, the default), rejects
+  the agent's **next** action through the SDK's own mechanism, `state.block_action`. The agent
+  gets a `UserRejectObservation` that reads "Action rejected: Sentinel rejected this action: your
+  edit of ... introduced blocker issues ..." with the findings. Tool calls from the same model
+  response that have not run yet are rejected too;
+- compares with the file **before** the edit (the observation's `old_content`, or the file read
+  just before the edit ran). A blocker that was already there — say a 260-line legacy function
+  next to the line the agent changed — is reported as a warning ("already had blocker-level
+  issues"), never a rejection;
+- keeps rejecting until the file no longer has blockers the edit added. Allowed meanwhile:
+  `file_editor` on the broken file (any command, so the agent can view and fix it) and `think`.
+  A clean re-analysis lifts the gate and counts as a self-correction;
+- never wedges the agent. Before each rejection it re-reads blocked files from disk and drops
+  any that were fixed or deleted some other way (you, `git checkout`, `vcr undo`). A new user
+  message (`conversation.send_message(...)`) clears the gate. After
+  `max_rejections_per_file` rejections (default 3) for one file it lets actions through, logs a
+  warning, and queues a "still has blocker issues" note for the agent;
 - queues non-blocking warnings in `sentinel.pending_warnings`. `deliver_warnings()` sends them as
   one user message — call it **between** `run()` calls, never from a callback (a user message
   in the middle of a batch of tool calls breaks the order the model expects);
-- records each analysis (`sentinel:analysis`) and each rejection (`sentinel:reject`) as a VCR
-  frame. `stats.rejected_actions` counts real vetoes; `stats.blocked_actions` counts blocker
+- records each analysis (`sentinel:analysis`), rejection (`sentinel:reject`) and gate release
+  (`sentinel:release`) as a VCR frame. `stats.rejected_actions` counts real vetoes; `stats.blocked_actions` counts blocker
   results.
+
+You decide a blocker is fine? `sentinel.blocked_files` shows the gate (path → reason);
+`sentinel.unblock("app/x.py")` releases one file and `sentinel.unblock()` all of them.
+
+```python
+print(sentinel.blocked_files)   # {'/ws/app/x.py': 'Sentinel rejected this action: ...'}
+sentinel.unblock()              # ['/ws/app/x.py'] — the agent can carry on
+```
 
 Forgot `bind()`? Sentinel still analyzes, logs one warning, and rejects nothing.
 `auto_analyze=False` turns the callback off. To record every tool call too, add a
@@ -214,7 +232,8 @@ simulates an agent session.
 - **It can't stop the write that broke the file.** With the OpenHands SDK it rejects the *next*
   action; the bad write itself already happened (the SDK has no "after write, before commit"
   hook). Shell commands that edit files (`sed -i`, `cat >`) are not analyzed, and a fix made from
-  the terminal is rejected too — the agent must fix the file with `file_editor`. Elsewhere
+  the terminal is rejected too — the agent must use `file_editor`. Fixes made outside the agent
+  are picked up only when the file is on this machine (not in a remote workspace). Elsewhere
   (V0, `scan`, `check_file`) "blocked" is a label, not a veto.
 - **Structure, not correctness.** No type checking, no tests, no security scan. Run your linter
   and test suite too.
@@ -234,6 +253,8 @@ simulates an agent session.
 | `.check_and_warn(path, content)` → `(result, warning \| None)` | Plus agent-facing text |
 | `Conversation(callbacks=[sentinel])` + `.bind(conversation)` | Hook into OpenHands SDK 1.x (rejects after blockers) |
 | `.deliver_warnings()` | Send queued warnings between `run()` calls |
+| `.blocked_files` / `.unblock([path])` | See / release the OpenHands gate |
+| `.check_file(path, content, previous_content=old)` | Only blockers new since `old` mark it `blocked` |
 | `.attach(event_stream)` | Hook into legacy OpenHands V0 |
 | `.stats`, `.get_report()`, `.save()` | Counters, summary, write `.vcr` |
 
