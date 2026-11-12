@@ -41,7 +41,7 @@ def _airbag_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 def _git(cwd: Path, *args: str) -> str:
     env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
     return subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True,
-                          env=env).stdout
+                          env=env, encoding="utf-8", errors="replace").stdout
 
 
 @pytest.fixture
@@ -51,8 +51,8 @@ def project(tmp_path: Path) -> Path:
     _git(proj, "init", "-q", "-b", "main")
     _git(proj, "config", "user.email", "u@example.com")
     _git(proj, "config", "user.name", "u")
-    (proj / "calc.py").write_text("def add(a, b):\n    return a + b\n")
-    (proj / ".gitignore").write_text("node_modules/\n")
+    (proj / "calc.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
+    (proj / ".gitignore").write_text("node_modules/\n", encoding="utf-8")
     _git(proj, "add", "-A")
     _git(proj, "commit", "-qm", "init")
     return proj
@@ -109,7 +109,7 @@ def test_rewind_command_goes_to_just_before_the_culprit(project: Path) -> None:
     report = bisect(bag, ADD_TEST)
     assert report.before is not None
     bag.rewind(report.before)
-    assert "a + b" in (project / "calc.py").read_text()
+    assert "a + b" in (project / "calc.py").read_text(encoding="utf-8")
     assert (project / "util.py").exists()  # the state right before action #3
 
 
@@ -159,7 +159,7 @@ def test_timeout_counts_as_failure(project: Path) -> None:
 def test_copy_ignored_symlinks_dependencies(project: Path) -> None:
     deps = project / "node_modules" / "left-pad"
     deps.mkdir(parents=True)
-    (deps / "index.js").write_text("module.exports = 1\n")
+    (deps / "index.js").write_text("module.exports = 1\n", encoding="utf-8")
     bag = _break_it(project)
     needs_deps = [PY, "-c", "import os\nfrom calc import add\n"
                   "ok = os.path.exists('node_modules/left-pad/index.js') and add(2, 2) == 4\n"
@@ -167,7 +167,8 @@ def test_copy_ignored_symlinks_dependencies(project: Path) -> None:
     assert bisect(bag, needs_deps).status == "good-fails"  # deps are not in snapshots
     report = bisect(bag, needs_deps, copy_ignored=True)
     assert report.status == "found" and report.before == 3
-    assert (deps / "index.js").read_text() == "module.exports = 1\n"  # cleanup kept the real dir
+    assert (deps / "index.js").read_text(
+        encoding="utf-8") == "module.exports = 1\n"  # cleanup kept the real dir
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX shell background job")
@@ -183,10 +184,10 @@ def test_background_child_holding_stdout_is_not_a_timeout(project: Path) -> None
 
 
 def test_copy_ignored_links_dependencies_not_build_output(project: Path) -> None:
-    (project / ".gitignore").write_text("node_modules/\ndist/\n")
+    (project / ".gitignore").write_text("node_modules/\ndist/\n", encoding="utf-8")
     (project / "node_modules").mkdir()
     (project / "dist").mkdir()
-    (project / "dist" / "app.js").write_text("built\n")
+    (project / "dist" / "app.js").write_text("built\n", encoding="utf-8")
     bag = _break_it(project)
     # The test wipes dist/ in its checkout: it must never reach the real project's dist/.
     wipe = [PY, "-c", "import os, shutil\n"
@@ -197,7 +198,7 @@ def test_copy_ignored_links_dependencies_not_build_output(project: Path) -> None
             "from calc import add\nraise SystemExit(0 if add(2, 2) == 4 else 1)"]
     report = bisect(bag, wipe, copy_ignored=True)
     assert report.status == "found" and report.before == 3
-    assert (project / "dist" / "app.js").read_text() == "built\n"
+    assert (project / "dist" / "app.js").read_text(encoding="utf-8") == "built\n"
 
     probe = [PY, "-c", "import os\nraise SystemExit(0 if os.path.islink('dist') else 1)"]
     assert bisect(bag, probe, copy_ignored=True).status == "good-fails"
@@ -207,7 +208,7 @@ def test_copy_ignored_links_dependencies_not_build_output(project: Path) -> None
 
 
 def test_cli_copy_ignored_with_extra_dir(project: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    (project / ".gitignore").write_text("node_modules/\ndist/\n")
+    (project / ".gitignore").write_text("node_modules/\ndist/\n", encoding="utf-8")
     (project / "dist").mkdir()
     _break_it(project)
     probe = [PY, "-c", "import os\nraise SystemExit(0 if os.path.islink('dist') else 1)"]

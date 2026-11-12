@@ -38,8 +38,8 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     proj = tmp_path / "proj"
     proj.mkdir()
     subprocess.run(["git", "init", "-q", str(proj)], check=True, timeout=30)
-    (proj / "a.txt").write_text("precious work\n")
-    (proj / "b.txt").write_text("b\n")
+    (proj / "a.txt").write_text("precious work\n", encoding="utf-8")
+    (proj / "b.txt").write_text("b\n", encoding="utf-8")
     return proj
 
 
@@ -218,7 +218,7 @@ def test_status_check_and_snapshot(pipe: Pipe, project: Path) -> None:
     same = _payload(pipe.call("airbag_snapshot", message="again"))
     assert same["snapshot"] == 1 and same["new"] is False  # nothing changed: idempotent
     assert _payload(pipe.call("airbag_status"))["snapshots"] == 1
-    assert (project / "a.txt").read_text() == "precious work\n"
+    assert (project / "a.txt").read_text(encoding="utf-8") == "precious work\n"
     assert pipe.close() == 0
 
 
@@ -248,7 +248,7 @@ def test_undo_previews_by_default_and_requires_confirm(pipe: Pipe, project: Path
 
     done = _payload(pipe.call("airbag_undo", dry_run=False, confirm=True))
     assert done["dry_run"] is False and "a.txt" in done["written"]
-    assert (project / "a.txt").read_text() == "precious work\n"
+    assert (project / "a.txt").read_text(encoding="utf-8") == "precious work\n"
     assert "vcr redo" in done["redo"]
     assert pipe.close() == 0
 
@@ -256,13 +256,13 @@ def test_undo_previews_by_default_and_requires_confirm(pipe: Pipe, project: Path
 def test_rewind_previews_and_requires_confirm(pipe: Pipe, project: Path) -> None:
     pipe.initialize()
     first = _payload(pipe.call("airbag_snapshot", message="start"))["snapshot"]
-    (project / "b.txt").write_text("changed by the agent\n")
-    (project / "new.txt").write_text("new\n")
+    (project / "b.txt").write_text("changed by the agent\n", encoding="utf-8")
+    (project / "new.txt").write_text("new\n", encoding="utf-8")
     preview = _payload(pipe.call("airbag_rewind", snapshot=first))
     assert preview["dry_run"] is True
     changes = {(c["change"], c["path"]) for c in preview["changes"]}
     assert ("rewrite", "b.txt") in changes and ("remove", "new.txt") in changes
-    assert (project / "b.txt").read_text() == "changed by the agent\n"
+    assert (project / "b.txt").read_text(encoding="utf-8") == "changed by the agent\n"
 
     refused = pipe.call("airbag_rewind", snapshot=first, dry_run=False)
     assert refused["isError"] is True and (project / "new.txt").exists()
@@ -271,7 +271,8 @@ def test_rewind_previews_and_requires_confirm(pipe: Pipe, project: Path) -> None
     assert missing["isError"] is True and "#999" in missing["content"][0]["text"]
 
     done = _payload(pipe.call("airbag_rewind", snapshot=first, dry_run=False, confirm=True))
-    assert (project / "b.txt").read_text() == "b\n" and not (project / "new.txt").exists()
+    assert (project / "b.txt").read_text(
+        encoding="utf-8") == "b\n" and not (project / "new.txt").exists()
     assert "b.txt" in done["written"] and "new.txt" in done["deleted"]
     assert pipe.close() == 0
 
@@ -322,7 +323,7 @@ def test_recordings_list_and_summary(pipe: Pipe, project: Path) -> None:
     path = _record(project / ".vcr")
     junk = project / "node_modules" / "x"
     junk.mkdir(parents=True)
-    (junk / "ignored.vcr").write_text("{}\n")
+    (junk / "ignored.vcr").write_text("{}\n", encoding="utf-8")
     pipe.initialize()
     listing = _payload(pipe.call("recordings_list"))
     assert listing["count"] == 1
@@ -344,7 +345,7 @@ def test_recordings_list_and_summary(pipe: Pipe, project: Path) -> None:
 
 
 def test_recording_summary_of_garbage_file_is_tool_error(pipe: Pipe, project: Path) -> None:
-    (project / "bad.vcr").write_text("not json at all\n")
+    (project / "bad.vcr").write_text("not json at all\n", encoding="utf-8")
     pipe.initialize()
     result = pipe.call("recording_summary", path="bad.vcr")
     assert result["isError"] is True and "session header" in result["content"][0]["text"]
@@ -393,11 +394,12 @@ def test_cli_registers_mcp_and_keeps_it_lazy(tmp_path: Path) -> None:
         "assert 'pydantic' not in sys.modules, 'mcp server import pulled in pydantic'"
     )
     proc = subprocess.run([sys.executable, "-c", code], env=_env(), capture_output=True,
-                          text=True, timeout=60)
+                          text=True, timeout=60, encoding="utf-8", errors="replace")
     assert proc.returncode == 0, proc.stderr
     missing = subprocess.run(
         [sys.executable, "-m", "agent_vcr.cli", "mcp", "--project-dir", str(tmp_path / "nope")],
         env=_env(), capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL,
+            encoding="utf-8", errors="replace",
     )
     assert missing.returncode == 2 and missing.stdout == ""
     assert "does not exist" in missing.stderr
@@ -448,7 +450,7 @@ def test_official_sdk_client_round_trip(project: Path) -> None:
             assert refused.isError is True and not (project / "a.txt").exists()
             done = await session.call_tool("airbag_undo", {"dry_run": False, "confirm": True})
             assert done.isError is False
-            assert (project / "a.txt").read_text() == "precious work\n"
+            assert (project / "a.txt").read_text(encoding="utf-8") == "precious work\n"
             unicode = await session.call_tool("airbag_check", {"command": "echo héllo 🎉"})
             assert unicode.structuredContent is not None
             assert unicode.structuredContent["command"] == "echo héllo 🎉"
@@ -519,7 +521,7 @@ def other_project(tmp_path: Path, project: Path) -> Path:
     other = tmp_path / "other"
     other.mkdir()
     subprocess.run(["git", "init", "-q", str(other)], check=True, timeout=30)
-    (other / "secret.txt").write_text("other project\n")
+    (other / "secret.txt").write_text("other project\n", encoding="utf-8")
     _agent_rm(other, "secret.txt")
     return other
 
@@ -571,7 +573,7 @@ def test_allow_any_project_flag_lifts_the_scope(project: Path, other_project: Pa
         done = _payload(pipe.call("airbag_undo", project_dir=str(other_project),
                                   dry_run=False, confirm=True))
         assert "secret.txt" in done["written"]
-        assert (other_project / "secret.txt").read_text() == "other project\n"
+        assert (other_project / "secret.txt").read_text(encoding="utf-8") == "other project\n"
         assert pipe.close() == 0
     finally:
         if pipe.proc.poll() is None:
@@ -579,7 +581,7 @@ def test_allow_any_project_flag_lifts_the_scope(project: Path, other_project: Pa
 
 
 def test_recording_summary_requires_a_recording_suffix(pipe: Pipe, project: Path) -> None:
-    (project / "notes.txt").write_text("not a recording\n")
+    (project / "notes.txt").write_text("not a recording\n", encoding="utf-8")
     pipe.initialize()
     for path in ("notes.txt", "/etc/passwd", str(project / "a.txt")):
         result = pipe.call("recording_summary", path=path)
@@ -597,10 +599,11 @@ def test_null_arguments_mean_not_given(pipe: Pipe, project: Path) -> None:
     first = _payload(pipe.call("airbag_snapshot", message=None))
     assert first["label"] == "manual snapshot (MCP)"
     assert _payload(pipe.call("airbag_timeline", limit=None))["total"] == 1
-    (project / "b.txt").write_text("changed\n")
+    (project / "b.txt").write_text("changed\n", encoding="utf-8")
     preview = _payload(pipe.call("airbag_rewind", snapshot=first["snapshot"], dry_run=None,
                                  confirm=None))
-    assert preview["dry_run"] is True and (project / "b.txt").read_text() == "changed\n"
+    assert preview["dry_run"] is True and (project / "b.txt").read_text(
+        encoding="utf-8") == "changed\n"
     assert pipe.close() == 0
 
 

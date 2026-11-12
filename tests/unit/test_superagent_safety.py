@@ -98,7 +98,7 @@ class TestRedaction:
         assert report.status == "committed"
         assert report.outcomes[0].output["password"] == "hunter2"  # caller still gets raw
         path = rec_dir / f"{report.session_id}.vcr"
-        raw = path.read_text()
+        raw = path.read_text(encoding="utf-8")
         assert "hunter2" not in raw and "abcdef123" not in raw
         mem = InMemoryVectorStore()
         mem.index_vcr_session(path)
@@ -118,7 +118,7 @@ class TestRedaction:
         mem = MemoryStore()
         mem.put("password", "hunter2")
         out = mem.save(tmp_path / "m.json")
-        assert "hunter2" not in out.read_text()
+        assert "hunter2" not in out.read_text(encoding="utf-8")
         assert not list(tmp_path.glob("*.tmp"))
 
 
@@ -377,7 +377,7 @@ class TestLocalSandbox:
         del sb
         gc.collect()
         try:
-            assert (root / "artifact.txt").read_text() == "keep me"
+            assert (root / "artifact.txt").read_text(encoding="utf-8") == "keep me"
         finally:
             shutil.rmtree(root, ignore_errors=True)
 

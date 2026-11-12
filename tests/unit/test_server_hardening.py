@@ -420,10 +420,11 @@ class TestTokenStore:
         raw = json.loads(before)
         stale = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
         raw["tokens"][0]["last_used_at"] = stale
-        tokens_file.write_text(json.dumps(raw))
+        tokens_file.write_text(json.dumps(raw), encoding="utf-8")
         refreshed = store.verify_token(secret)
         assert refreshed is not None and refreshed.last_used_at != stale
-        assert json.loads(tokens_file.read_text())["tokens"][0]["last_used_at"] != stale
+        assert json.loads(tokens_file.read_text(
+            encoding="utf-8"))["tokens"][0]["last_used_at"] != stale
 
     def test_revoked_tokens_still_rejected(self, tmp_path: Path) -> None:
         store = CloudStore(tmp_path)

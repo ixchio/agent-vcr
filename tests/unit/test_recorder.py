@@ -65,7 +65,7 @@ class TestVCRRecorder:
             assert path.exists()
             assert path.name == "test-save.vcr"
 
-            with open(path) as f:
+            with open(path, encoding="utf-8") as f:
                 lines = f.readlines()
                 assert len(lines) == 3  # header + 2 frames
 

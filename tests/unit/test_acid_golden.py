@@ -5,6 +5,7 @@ import os
 import shutil
 import stat
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -14,6 +15,14 @@ from agent_vcr.golden_cache import CostLedger, GoldenRunCache
 from agent_vcr.integrations.openhands import ACIDWorkspace
 from agent_vcr.models import FrameMetadata
 from agent_vcr.recorder import VCRRecorder
+
+#: Unix permission bits. NTFS has none (only a read-only flag), so the mode
+#: assertions run on POSIX only; the content/restore assertions run everywhere.
+POSIX_MODES = sys.platform != "win32"
+
+
+def _mode_is(path: Path, mode: int) -> bool:
+    return not POSIX_MODES or stat.S_IMODE(path.stat().st_mode) == mode
 
 # ──────────────────────────────────────────────
 #  ACIDWorkspace Tests
@@ -38,7 +47,7 @@ class TestACIDWorkspace:
         subprocess.run(
             ["git", "config", "user.email", "vcr@example.com"], cwd=workspace, check=True
         )
-        (workspace / "tracked.py").write_text("VALUE = 1\n")
+        (workspace / "tracked.py").write_text("VALUE = 1\n", encoding="utf-8")
         subprocess.run(["git", "add", "-A"], cwd=workspace, check=True)
         subprocess.run(["git", "commit", "-m", "baseline"], cwd=workspace, check=True)
         return workspace
@@ -54,7 +63,7 @@ class TestACIDWorkspace:
     def test_new_workspace_does_not_write_preexisting_secret_to_git_objects(self):
         workspace = Path(self.workspace)
         env_file = workspace / ".env"
-        env_file.write_text("VCR_ESCROW_SENTINEL=baseline-only\n")
+        env_file.write_text("VCR_ESCROW_SENTINEL=baseline-only\n", encoding="utf-8")
 
         acid = ACIDWorkspace(str(workspace))
         acid.begin(session_id="new-workspace-local-file")
@@ -65,7 +74,7 @@ class TestACIDWorkspace:
             cwd=workspace,
             capture_output=True,
             text=True,
-            check=True,
+            check=True, encoding="utf-8", errors="replace",
         ).stdout
         git_objects = subprocess.run(
             ["git", "cat-file", "--batch-all-objects", "--batch"],
@@ -105,7 +114,7 @@ class TestACIDWorkspace:
         recorder.save()
 
         vcr_file = os.path.join(self.workspace, ".vcr", "flush-hash.vcr")
-        with open(vcr_file) as f:
+        with open(vcr_file, encoding="utf-8") as f:
             contents = f.read()
         assert "acid_commit_hash" in contents
 
@@ -118,7 +127,7 @@ class TestACIDWorkspace:
 
         # Create a file that shouldn't exist after rollback
         bad_file = os.path.join(self.workspace, "bad_code.py")
-        with open(bad_file, "w") as f:
+        with open(bad_file, "w", encoding="utf-8") as f:
             f.write("# This should be rolled back\n" * 100)
 
         # Savepoint 1: bad file exists
@@ -137,14 +146,14 @@ class TestACIDWorkspace:
 
         # Create a good file
         good_file = os.path.join(self.workspace, "good.py")
-        with open(good_file, "w") as f:
+        with open(good_file, "w", encoding="utf-8") as f:
             f.write("# Good code\n")
 
         acid.savepoint({"step": "good file"})
 
         # Create a bad file
         bad_file = os.path.join(self.workspace, "bad.py")
-        with open(bad_file, "w") as f:
+        with open(bad_file, "w", encoding="utf-8") as f:
             f.write("# Bad code\n")
 
         acid.savepoint({"step": "bad file"})
@@ -161,12 +170,12 @@ class TestACIDWorkspace:
         acid.begin(session_id="ignored-files")
 
         gitignore = os.path.join(self.workspace, ".gitignore")
-        with open(gitignore, "w") as f:
+        with open(gitignore, "w", encoding="utf-8") as f:
             f.write("ignored.txt\n")
         acid.savepoint({"step": "ignore rule"})
 
         ignored_file = os.path.join(self.workspace, "ignored.txt")
-        with open(ignored_file, "w") as f:
+        with open(ignored_file, "w", encoding="utf-8") as f:
             f.write("agent generated ignored junk\n")
         acid.savepoint({"step": "ignored junk"})
         assert os.path.exists(ignored_file)
@@ -178,11 +187,11 @@ class TestACIDWorkspace:
 
     def test_rollback_preserves_preexisting_ignored_files(self):
         gitignore = os.path.join(self.workspace, ".gitignore")
-        with open(gitignore, "w") as f:
+        with open(gitignore, "w", encoding="utf-8") as f:
             f.write(".env\nignored-generated.txt\n")
 
         env_file = os.path.join(self.workspace, ".env")
-        with open(env_file, "w") as f:
+        with open(env_file, "w", encoding="utf-8") as f:
             f.write("TOKEN=keep-me\n")
 
         recorder = VCRRecorder(output_dir=os.path.join(self.workspace, ".vcr"), auto_save=False)
@@ -191,7 +200,7 @@ class TestACIDWorkspace:
         acid.savepoint({"step": "baseline"})
 
         generated = os.path.join(self.workspace, "ignored-generated.txt")
-        with open(generated, "w") as f:
+        with open(generated, "w", encoding="utf-8") as f:
             f.write("agent junk\n")
         acid.savepoint({"step": "generated ignored junk"})
 
@@ -206,13 +215,13 @@ class TestACIDWorkspace:
         subprocess.run(["git", "config", "user.email", "vcr@example.com"], cwd=self.workspace, check=True)
 
         tracked = os.path.join(self.workspace, "tracked.py")
-        with open(tracked, "w") as f:
+        with open(tracked, "w", encoding="utf-8") as f:
             f.write("VALUE = 1\n")
         subprocess.run(["git", "add", "-A"], cwd=self.workspace, check=True)
         subprocess.run(["git", "commit", "-m", "baseline"], cwd=self.workspace, check=True)
 
         local_notes = os.path.join(self.workspace, "notes.local")
-        with open(local_notes, "w") as f:
+        with open(local_notes, "w", encoding="utf-8") as f:
             f.write("keep this local\n")
 
         acid = ACIDWorkspace(self.workspace)
@@ -220,7 +229,7 @@ class TestACIDWorkspace:
         acid.savepoint({"step": "baseline"})
 
         generated = os.path.join(self.workspace, "generated.local")
-        with open(generated, "w") as f:
+        with open(generated, "w", encoding="utf-8") as f:
             f.write("agent junk\n")
         acid.savepoint({"step": "generated untracked junk"})
 
@@ -232,7 +241,7 @@ class TestACIDWorkspace:
             cwd=self.workspace,
             capture_output=True,
             text=True,
-            check=True,
+            check=True, encoding="utf-8", errors="replace",
         ).stdout.strip()
         assert os.path.exists(local_notes), "Pre-existing untracked files must survive rollback"
         assert not os.path.exists(generated), "Agent-generated untracked files must be removed"
@@ -249,10 +258,10 @@ class TestACIDWorkspace:
         acid.begin(session_id="restore-env")
 
         assert acid._escrow_dir is not None
-        assert stat.S_IMODE(acid._escrow_dir.stat().st_mode) == 0o700
+        assert _mode_is(acid._escrow_dir, 0o700)
         blobs = list((acid._escrow_dir / "blobs").iterdir())
         assert blobs
-        assert all(stat.S_IMODE(blob.stat().st_mode) == 0o600 for blob in blobs)
+        assert all(_mode_is(blob, 0o600) for blob in blobs)
 
         acid.savepoint({"step": "baseline"})
         env_file.write_bytes(b"VCR_ESCROW_SENTINEL=agent-overwrite\n")
@@ -267,7 +276,7 @@ class TestACIDWorkspace:
             cwd=workspace,
             capture_output=True,
             text=True,
-            check=True,
+            check=True, encoding="utf-8", errors="replace",
         ).stdout
         assert "VCR_ESCROW_SENTINEL=baseline-only" not in git_log
         assert "VCR_ESCROW_SENTINEL=agent-overwrite" not in git_log
@@ -300,12 +309,12 @@ class TestACIDWorkspace:
         acid.rollback(to_frame_index=0)
 
         assert local_file.read_bytes() == original
-        assert stat.S_IMODE(local_file.stat().st_mode) == 0o640
+        assert _mode_is(local_file, 0o640)
 
     def test_rollback_removes_renamed_untracked_path_and_restores_original(self):
         workspace = self._init_repo()
         original = workspace / "original.local"
-        original.write_text("original content\n")
+        original.write_text("original content\n", encoding="utf-8")
 
         acid = ACIDWorkspace(str(workspace))
         acid.begin(session_id="restore-rename")
@@ -319,7 +328,7 @@ class TestACIDWorkspace:
 
         acid.rollback(to_frame_index=0)
 
-        assert original.read_text() == "original content\n"
+        assert original.read_text(encoding="utf-8") == "original content\n"
         assert not moved.exists()
         assert not moved_directory.exists()
 
@@ -328,7 +337,7 @@ class TestACIDWorkspace:
         subprocess.run(
             ["git", "config", "--local", "core.fileMode", "true"], cwd=workspace, check=True
         )
-        (workspace / ".gitignore").write_text("scratch/\n")
+        (workspace / ".gitignore").write_text("scratch/\n", encoding="utf-8")
         subprocess.run(["git", "add", ".gitignore"], cwd=workspace, check=True)
         subprocess.run(["git", "commit", "-m", "ignore scratch"], cwd=workspace, check=True)
 
@@ -353,38 +362,38 @@ class TestACIDWorkspace:
         acid.rollback(to_frame_index=0)
 
         assert executable.read_bytes() == b"#!/bin/sh\necho original\n"
-        assert stat.S_IMODE(executable.stat().st_mode) == 0o751
+        assert _mode_is(executable, 0o751)
         assert link.is_symlink()
         assert os.readlink(link) == "tool.sh"
 
     def test_rollback_restores_local_file_and_removes_hallucinated_sibling(self):
         workspace = self._init_repo()
-        (workspace / ".gitignore").write_text("local/\n")
+        (workspace / ".gitignore").write_text("local/\n", encoding="utf-8")
         subprocess.run(["git", "add", ".gitignore"], cwd=workspace, check=True)
         subprocess.run(["git", "commit", "-m", "ignore local files"], cwd=workspace, check=True)
 
         local_directory = workspace / "local"
         local_directory.mkdir()
         existing = local_directory / "settings.json"
-        existing.write_text('{"safe": true}\n')
+        existing.write_text('{"safe": true}\n', encoding="utf-8")
 
         acid = ACIDWorkspace(str(workspace))
         acid.begin(session_id="mixed-local-files")
         acid.savepoint({"step": "baseline"})
 
-        existing.write_text('{"safe": false}\n')
+        existing.write_text('{"safe": false}\n', encoding="utf-8")
         hallucinated = local_directory / "hallucinated.json"
-        hallucinated.write_text('{"invented": true}\n')
+        hallucinated.write_text('{"invented": true}\n', encoding="utf-8")
         acid.savepoint({"step": "bad local edits"})
 
         acid.rollback(to_frame_index=0)
 
-        assert existing.read_text() == '{"safe": true}\n'
+        assert existing.read_text(encoding="utf-8") == '{"safe": true}\n'
         assert not hallucinated.exists()
 
     def test_rollback_preserves_oversized_files_and_excluded_directories(self):
         workspace = self._init_repo()
-        (workspace / ".gitignore").write_text("*.large\n")
+        (workspace / ".gitignore").write_text("*.large\n", encoding="utf-8")
         subprocess.run(["git", "add", ".gitignore"], cwd=workspace, check=True)
         subprocess.run(["git", "commit", "-m", "ignore large files"], cwd=workspace, check=True)
 
@@ -402,38 +411,38 @@ class TestACIDWorkspace:
         node_file = workspace / "node_modules" / "package" / "index.js"
         venv_file.parent.mkdir(parents=True)
         node_file.parent.mkdir(parents=True)
-        venv_file.write_text("keep virtualenv data\n")
-        node_file.write_text("keep dependency data\n")
+        venv_file.write_text("keep virtualenv data\n", encoding="utf-8")
+        node_file.write_text("keep dependency data\n", encoding="utf-8")
         acid.savepoint({"step": "large and excluded output"})
 
         acid.rollback(to_frame_index=0)
 
         assert preexisting_large.exists()
         assert generated_large.read_bytes() == b"b" * 65
-        assert venv_file.read_text() == "keep virtualenv data\n"
-        assert node_file.read_text() == "keep dependency data\n"
+        assert venv_file.read_text(encoding="utf-8") == "keep virtualenv data\n"
+        assert node_file.read_text(encoding="utf-8") == "keep dependency data\n"
 
     def test_savepoint_local_snapshots_support_repeated_rollback_and_cleanup(self):
         workspace = self._init_repo()
-        (workspace / ".gitignore").write_text(".env\n")
+        (workspace / ".gitignore").write_text(".env\n", encoding="utf-8")
         subprocess.run(["git", "add", ".gitignore"], cwd=workspace, check=True)
         subprocess.run(["git", "commit", "-m", "ignore env"], cwd=workspace, check=True)
         env_file = workspace / ".env"
-        env_file.write_text("VALUE=begin\n")
+        env_file.write_text("VALUE=begin\n", encoding="utf-8")
 
         acid = ACIDWorkspace(str(workspace))
         acid.begin(session_id="repeat-rollback")
-        env_file.write_text("VALUE=savepoint-zero\n")
+        env_file.write_text("VALUE=savepoint-zero\n", encoding="utf-8")
         acid.savepoint({"step": 0})
         escrow_dir = acid._escrow_dir
 
-        env_file.write_text("VALUE=bad-change\n")
+        env_file.write_text("VALUE=bad-change\n", encoding="utf-8")
         acid.rollback(to_frame_index=0)
-        assert env_file.read_text() == "VALUE=savepoint-zero\n"
+        assert env_file.read_text(encoding="utf-8") == "VALUE=savepoint-zero\n"
 
-        env_file.write_text("VALUE=another-bad-change\n")
+        env_file.write_text("VALUE=another-bad-change\n", encoding="utf-8")
         acid.rollback(to_frame_index=0)
-        assert env_file.read_text() == "VALUE=savepoint-zero\n"
+        assert env_file.read_text(encoding="utf-8") == "VALUE=savepoint-zero\n"
 
         acid.commit()
         assert escrow_dir is not None
@@ -493,12 +502,12 @@ class TestACIDWorkspace:
         subprocess.run(["git", "config", "user.email", "vcr@example.com"], cwd=self.workspace, check=True)
 
         tracked = os.path.join(self.workspace, "tracked.py")
-        with open(tracked, "w") as f:
+        with open(tracked, "w", encoding="utf-8") as f:
             f.write("VALUE = 1\n")
         subprocess.run(["git", "add", "-A"], cwd=self.workspace, check=True)
         subprocess.run(["git", "commit", "-m", "baseline"], cwd=self.workspace, check=True)
 
-        with open(tracked, "w") as f:
+        with open(tracked, "w", encoding="utf-8") as f:
             f.write("VALUE = 2\n")
 
         acid = ACIDWorkspace(self.workspace)
@@ -512,7 +521,7 @@ class TestACIDWorkspace:
         subprocess.run(["git", "branch", "-m", "trunk"], cwd=self.workspace, check=True)
 
         tracked = os.path.join(self.workspace, "tracked.py")
-        with open(tracked, "w") as f:
+        with open(tracked, "w", encoding="utf-8") as f:
             f.write("VALUE = 1\n")
         subprocess.run(["git", "add", "-A"], cwd=self.workspace, check=True)
         subprocess.run(["git", "commit", "-m", "baseline"], cwd=self.workspace, check=True)
@@ -527,7 +536,7 @@ class TestACIDWorkspace:
             cwd=self.workspace,
             capture_output=True,
             text=True,
-            check=True,
+            check=True, encoding="utf-8", errors="replace",
         ).stdout.strip()
         assert branch == "trunk"
 
@@ -536,7 +545,7 @@ class TestACIDWorkspace:
         acid.begin(session_id="test-006")
 
         result_file = os.path.join(self.workspace, "result.py")
-        with open(result_file, "w") as f:
+        with open(result_file, "w", encoding="utf-8") as f:
             f.write("# Final result\n")
 
         acid.savepoint({"step": "final"})
@@ -553,9 +562,9 @@ class TestACIDWorkspace:
         acid.begin(session_id="finalize-after-savepoint")
         acid.savepoint({"step": "last savepoint"})
 
-        tracked.write_text("VALUE = 2\n")
+        tracked.write_text("VALUE = 2\n", encoding="utf-8")
         generated = workspace / "generated.py"
-        generated.write_text("FINAL = True\n")
+        generated.write_text("FINAL = True\n", encoding="utf-8")
         acid.commit()
 
         committed = subprocess.run(
@@ -563,25 +572,25 @@ class TestACIDWorkspace:
             cwd=workspace,
             capture_output=True,
             text=True,
-            check=True,
+            check=True, encoding="utf-8", errors="replace",
         ).stdout
         status = subprocess.run(
             ["git", "status", "--porcelain=v1", "--untracked-files=no"],
             cwd=workspace,
             capture_output=True,
             text=True,
-            check=True,
+            check=True, encoding="utf-8", errors="replace",
         ).stdout
         committed_generated = subprocess.run(
             ["git", "show", "HEAD:generated.py"],
             cwd=workspace,
             capture_output=True,
             text=True,
-            check=True,
+            check=True, encoding="utf-8", errors="replace",
         ).stdout
-        assert tracked.read_text() == "VALUE = 2\n"
+        assert tracked.read_text(encoding="utf-8") == "VALUE = 2\n"
         assert committed == "VALUE = 2\n"
-        assert generated.read_text() == "FINAL = True\n"
+        assert generated.read_text(encoding="utf-8") == "FINAL = True\n"
         assert committed_generated == "FINAL = True\n"
         assert status == ""
 
@@ -595,7 +604,7 @@ class TestACIDWorkspace:
 
         # Phase 2: bad work
         bad = os.path.join(self.workspace, "monolith.py")
-        with open(bad, "w") as f:
+        with open(bad, "w", encoding="utf-8") as f:
             f.write("class GodObject:\n" + "    pass\n" * 200)
         acid.savepoint({"phase": "bad"})
 
@@ -605,7 +614,7 @@ class TestACIDWorkspace:
 
         # Phase 3: good work
         good = os.path.join(self.workspace, "clean.py")
-        with open(good, "w") as f:
+        with open(good, "w", encoding="utf-8") as f:
             f.write("class CleanService:\n    pass\n")
         acid.savepoint({"phase": "good"})
 

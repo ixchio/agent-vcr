@@ -122,7 +122,7 @@ class TestAsyncVCRRecorder:
             await asyncio.gather(*(write_frame(index) for index in range(100)))
             path = await recorder.save()
 
-            records = [json.loads(line) for line in path.read_text().splitlines()]
+            records = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
             assert records[0]["type"] == "session"
             assert len([record for record in records if record["type"] == "frame"]) == 100
 

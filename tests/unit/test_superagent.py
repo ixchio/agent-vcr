@@ -207,7 +207,7 @@ class TestMemory:
         assert hits and all("[REDACTED]" in json.dumps(v) for _, v in hits)
         assert "sk-abcdef" not in json.dumps(mem.redacted())
         path = mem.save(tmp_path / "mem.json")
-        assert "sk-abcdef" not in path.read_text()
+        assert "sk-abcdef" not in path.read_text(encoding="utf-8")
         assert MemoryStore.load(path).get("goal") == "refund"
 
     def test_redact_text(self):
@@ -592,7 +592,7 @@ class TestSuperAgentCLI:
 
         monkeypatch.chdir(tmp_path)
         plan_path = tmp_path / "plan.json"
-        plan_path.write_text(json.dumps(REFUND_PLAN))
+        plan_path.write_text(json.dumps(REFUND_PLAN), encoding="utf-8")
         handlers = tmp_path / "handlers.py"
         handlers.write_text(
             "def classify(text=''):\n"
@@ -601,7 +601,7 @@ class TestSuperAgentCLI:
             "    return {'order_id': order_id, 'total': 10.0}\n"
             "def refund(order_id='', amount=0.0):\n"
             "    return {'refunded': True, 'order_id': order_id, 'amount': amount}\n"
-            "TOOLS = {'classify': classify, 'lookup': lookup, 'refund': refund}\n"
+            "TOOLS = {'classify': classify, 'lookup': lookup, 'refund': refund}\n", encoding="utf-8"
         )
         monkeypatch.setattr("builtins.input", lambda prompt="": "y")
         main(["superagent", "run", "--plan", str(plan_path),

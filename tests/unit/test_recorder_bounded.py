@@ -100,7 +100,7 @@ def test_save_rewrites_the_header_from_disk_not_the_cache(
     for i in range(50):
         _record(rec, i)
     path = rec.save()
-    lines = path.read_text().splitlines()
+    lines = path.read_text(encoding="utf-8").splitlines()
     header = json.loads(lines[0])
     assert header["type"] == "session"
     assert header["data"]["frame_count"] == 50
@@ -118,7 +118,8 @@ def test_unbounded_default_keeps_everything_and_repairs_a_truncated_file(tmp_pat
     path = tmp_path / "default.vcr"
     # Lose flushed frames underneath the recorder: with every frame still cached, the
     # header rewrite falls back to the cache instead of keeping the damaged file.
-    path.write_text("\n".join(path.read_text().splitlines()[:6]) + "\n")
+    path.write_text("\n".join(path.read_text(
+        encoding="utf-8").splitlines()[:6]) + "\n", encoding="utf-8")
     rec.save()
     player = VCRPlayer.load(path)
     assert [f.node_name for f in player.frames] == [f"step_{i}" for i in range(25)]

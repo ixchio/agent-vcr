@@ -79,7 +79,7 @@ class TestReplayDataset:
     def test_corrupt_dataset_file(self, tmp_path):
         d = tmp_path / "datasets"
         d.mkdir()
-        (d / "bad.json").write_text("{broken")
+        (d / "bad.json").write_text("{broken", encoding="utf-8")
         with pytest.raises(ValueError, match="Corrupt dataset"):
             ReplayDataset.load("bad", datasets_dir=d)
 
@@ -187,7 +187,7 @@ class TestRunRegression:
         _, ok_path = _record(tmp_path / "ok", "ok", cost=0.10)
         report = run_regression(ds, {"pass-task": str(ok_path)}, cache)
         out = report.save(tmp_path / "report.json")
-        assert json.loads(out.read_text())["dataset"] == "ci-demo"
+        assert json.loads(out.read_text(encoding="utf-8"))["dataset"] == "ci-demo"
 
     def test_public_api(self):
         assert agent_vcr.__version__ == "1.7.0"
@@ -241,7 +241,7 @@ class TestDatasetAndCICLI:
                        "--candidates", str(cand_dir), "--report", "r.json")
         out = capsys.readouterr().out
         assert "1 passed" in out and "Risk: LOW" in out
-        assert json.loads((tmp_path / "r.json").read_text())["passed"] == 1
+        assert json.loads((tmp_path / "r.json").read_text(encoding="utf-8"))["passed"] == 1
 
         # error-frame candidate breaches the default failed gate
         _, bad = _record(tmp_path / "bad", "bad", error=RuntimeError("boom"))
@@ -269,4 +269,4 @@ class TestDatasetAndCICLI:
         shutil.copy(ok, cand_dir / "refund.vcr")
         self._run_cli(tmp_path, monkeypatch, "ci", "run", "--dataset", "shop",
                        "--candidates", str(cand_dir), "--quiet")
-        assert "Agent CI" in summary.read_text()
+        assert "Agent CI" in summary.read_text(encoding="utf-8")

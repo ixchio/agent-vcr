@@ -152,7 +152,7 @@ def _sentinel_conv(ws: Path, tmp_path: Path) -> tuple[Sentinel, Agent, Any]:
 
 def test_sentinel_does_not_gate_pre_existing_blockers(workspace: Path, tmp_path: Path) -> None:
     legacy = workspace / "legacy.py"
-    legacy.write_text(LONG_FUNCTION + "VERSION = '1'\n")
+    legacy.write_text(LONG_FUNCTION + "VERSION = '1'\n", encoding="utf-8")
     sentinel, agent, conv = _sentinel_conv(workspace, tmp_path)
     try:
         with conv.state:
@@ -175,7 +175,8 @@ def test_sentinel_gate_drops_when_fixed_outside_and_caps(workspace: Path,
         with conv.state:
             _step(agent, conv, _event("file_editor", FileEditorAction(
                 command="create", path=str(target), file_text=SYNTAX_ERROR), 1))
-            target.write_text("def ok():\n    pass\n")  # e.g. `git checkout bad.py`
+            target.write_text("def ok():\n    pass\n",
+                              encoding="utf-8")  # e.g. `git checkout bad.py`
             (run,) = _step(agent, conv, _event("terminal", TerminalAction(command="true"), 2))
             assert type(run).__name__ == "ObservationEvent"
 

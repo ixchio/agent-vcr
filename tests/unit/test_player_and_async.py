@@ -85,7 +85,7 @@ def test_async_save_fixes_header_totals(tmp_path: Path) -> None:
         await rec.save()
 
     asyncio.run(run())
-    header = json.loads((tmp_path / "hdr.vcr").read_text().splitlines()[0])["data"]
+    header = json.loads((tmp_path / "hdr.vcr").read_text(encoding="utf-8").splitlines()[0])["data"]
     assert header["frame_count"] == 2 and header["total_tokens"] == 12
     player = asyncio.run(AsyncVCRPlayer.load(tmp_path / "hdr.vcr"))
     assert player.verify_integrity()["ok"]
@@ -120,7 +120,7 @@ def test_manifest_survives_parallel_processes(tmp_path: Path) -> None:
     ctx = multiprocessing.get_context("spawn")
     with ctx.Pool(4) as pool:
         pool.map(_record_many, [(str(tmp_path), w) for w in range(4)])
-    manifest = json.loads((tmp_path / "manifest.json").read_text())
+    manifest = json.loads((tmp_path / "manifest.json").read_text(encoding="utf-8"))
     ids = {s["session_id"] for s in manifest["sessions"]}
     assert len(ids) == 40
 
@@ -134,7 +134,7 @@ def test_manifest_update_keeps_entry_position(tmp_path: Path) -> None:
     rec_b.save()
     rec_a.record_step("later", {}, {})
     rec_a.save()
-    manifest = json.loads((tmp_path / "manifest.json").read_text())
+    manifest = json.loads((tmp_path / "manifest.json").read_text(encoding="utf-8"))
     assert [s["session_id"] for s in manifest["sessions"]] == ["a", "b"]
     assert manifest["sessions"][0]["frame_count"] == 1
     assert datetime.fromisoformat(manifest["updated_at"])

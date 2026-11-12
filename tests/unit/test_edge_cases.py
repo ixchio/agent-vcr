@@ -3,6 +3,7 @@
 import json
 import tempfile
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -53,7 +54,7 @@ class TestCorruptFile:
     def test_corrupt_json_lines(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "corrupt.vcr"
-            with open(path, "w") as f:
+            with open(path, "w", encoding="utf-8") as f:
                 # Valid session header
                 f.write(json.dumps({
                     "type": "session",
@@ -75,7 +76,7 @@ class TestCorruptFile:
     def test_missing_session_header(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "no_header.vcr"
-            with open(path, "w") as f:
+            with open(path, "w", encoding="utf-8") as f:
                 # A valid frame line but no session header
                 f.write(json.dumps({
                     "type": "frame",
@@ -181,8 +182,12 @@ class TestGotoTime:
             recorder = VCRRecorder(output_dir=tmpdir, auto_save=False)
             recorder.start_session()
 
+            # Distinct timestamps: the Windows clock may tick only every ~16ms, and
+            # frames sharing an instant are equally close (goto_time picks the first).
             recorder.record_step("n1", {}, {"v": 1})
+            time.sleep(0.05)
             recorder.record_step("n2", {}, {"v": 2})
+            time.sleep(0.05)
             recorder.record_step("n3", {}, {"v": 3})
 
             path = recorder.save()

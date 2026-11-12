@@ -107,7 +107,7 @@ class TestReplayBundle:
 
     def test_refuses_corrupt_session(self, tmp_path):
         bad = tmp_path / "bad.vcr"
-        bad.write_text("not json\n")
+        bad.write_text("not json\n", encoding="utf-8")
         with pytest.raises(ValueError):
             export_bundle(bad)
 
@@ -199,7 +199,7 @@ class TestACIDHardening:
         subprocess.run(["git", "init", "-q"], cwd=work, check=True)
         subprocess.run(["git", "config", "user.name", "t"], cwd=work, check=True)
         subprocess.run(["git", "config", "user.email", "t@t"], cwd=work, check=True)
-        (work / "base.txt").write_text("base")
+        (work / "base.txt").write_text("base", encoding="utf-8")
         subprocess.run(["git", "add", "-A"], cwd=work, check=True)
         subprocess.run(["git", "commit", "-qm", "init"], cwd=work, check=True)
         return work
@@ -211,7 +211,7 @@ class TestACIDHardening:
         ws = ACIDWorkspace(str(work), recorder=VCRRecorder(
             output_dir=str(tmp_path / "vcr"), auto_save=False))
         ws.begin("aborttest")
-        (work / "agent.txt").write_text("v1")
+        (work / "agent.txt").write_text("v1", encoding="utf-8")
         ws.savepoint({"v": 1}, node_name="write")
         assert len(ws.savepoints()) == 1
         assert ws.savepoints()[0]["acid_commit_hash"]
@@ -219,7 +219,7 @@ class TestACIDHardening:
 
         ws.abort()
         assert not (work / "agent.txt").exists()
-        assert (work / "base.txt").read_text() == "base"
+        assert (work / "base.txt").read_text(encoding="utf-8") == "base"
 
     def test_context_manager_commits_and_aborts(self, tmp_path):
         from agent_vcr.integrations.openhands import ACIDWorkspace
@@ -227,15 +227,15 @@ class TestACIDHardening:
         work = self._repo(tmp_path)
         with ACIDWorkspace(str(work), recorder=VCRRecorder(
                 output_dir=str(tmp_path / "vcr1"), auto_save=False)) as ws:
-            (work / "keep.txt").write_text("keep")
+            (work / "keep.txt").write_text("keep", encoding="utf-8")
             ws.savepoint({"v": 1})
-        assert (work / "keep.txt").read_text() == "keep"
+        assert (work / "keep.txt").read_text(encoding="utf-8") == "keep"
 
         with pytest.raises(RuntimeError, match="boom"), ACIDWorkspace(
             str(work),
             recorder=VCRRecorder(output_dir=str(tmp_path / "vcr2"), auto_save=False),
         ) as ws:
-            (work / "drop.txt").write_text("drop")
+            (work / "drop.txt").write_text("drop", encoding="utf-8")
             ws.savepoint({"v": 2})
             raise RuntimeError("boom")
         assert not (work / "drop.txt").exists()

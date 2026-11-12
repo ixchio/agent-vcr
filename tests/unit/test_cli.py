@@ -16,7 +16,7 @@ def test_init_claude_code_writes_expected_hooks(tmp_path, monkeypatch):
     settings_path = write_claude_code_hooks(tmp_path)
 
     assert settings_path == tmp_path / ".claude" / "settings.json"
-    data = json.loads(settings_path.read_text())
+    data = json.loads(settings_path.read_text(encoding="utf-8"))
     assert set(CLAUDE_CODE_EVENTS).issubset(data["hooks"])
 
     for event in CLAUDE_CODE_EVENTS:
@@ -30,7 +30,7 @@ def test_init_claude_code_is_idempotent(tmp_path):
     write_claude_code_hooks(tmp_path)
     write_claude_code_hooks(tmp_path)
 
-    data = json.loads((tmp_path / ".claude" / "settings.json").read_text())
+    data = json.loads((tmp_path / ".claude" / "settings.json").read_text(encoding="utf-8"))
     for event in CLAUDE_CODE_EVENTS:
         commands = [hook["command"] for entry in data["hooks"][event] for hook in entry["hooks"]]
         assert sum(f"-m agent_vcr.hooks.claude_code {event}" in c for c in commands) == 1

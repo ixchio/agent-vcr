@@ -547,8 +547,8 @@ class TestSentinelCLI:
     """Test the scan_directory function directly."""
 
     def test_scan_clean_directory(self, tmp_path):
-        (tmp_path / "app.py").write_text("def hello():\n    return 1\n")
-        (tmp_path / "utils.py").write_text("def add(a, b):\n    return a + b\n")
+        (tmp_path / "app.py").write_text("def hello():\n    return 1\n", encoding="utf-8")
+        (tmp_path / "utils.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
 
         from openhands_sentinel.cli import scan_directory
 
@@ -562,7 +562,7 @@ class TestSentinelCLI:
         for i in range(120):
             lines.append(f"    x_{i} = {i}")
         lines.append("    return x_0")
-        (tmp_path / "bad.py").write_text("\n".join(lines) + "\n")
+        (tmp_path / "bad.py").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
         from openhands_sentinel.cli import scan_directory
 
@@ -584,10 +584,10 @@ class TestSentinelCLI:
 
     def test_scan_skips_hidden_and_venv(self, tmp_path):
         (tmp_path / ".hidden").mkdir()
-        (tmp_path / ".hidden" / "secret.py").write_text("from os import *\n")
+        (tmp_path / ".hidden" / "secret.py").write_text("from os import *\n", encoding="utf-8")
         (tmp_path / "__pycache__").mkdir()
-        (tmp_path / "__pycache__" / "cache.py").write_text("from os import *\n")
-        (tmp_path / "app.py").write_text("x = 1\n")
+        (tmp_path / "__pycache__" / "cache.py").write_text("from os import *\n", encoding="utf-8")
+        (tmp_path / "app.py").write_text("x = 1\n", encoding="utf-8")
 
         from openhands_sentinel.cli import scan_directory
 
@@ -595,7 +595,7 @@ class TestSentinelCLI:
         assert exit_code == 0  # only app.py scanned, which is clean
 
     def test_watch_directory_once(self, tmp_path):
-        (tmp_path / "app.py").write_text("def hello():\n    return 1\n")
+        (tmp_path / "app.py").write_text("def hello():\n    return 1\n", encoding="utf-8")
 
         from openhands_sentinel.cli import watch_directory
 
