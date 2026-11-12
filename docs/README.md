@@ -5,7 +5,8 @@ file, or nuked a SQLite table? Rewind it. Want to replay a run that worked witho
 model again, or stop a pull request that makes your agent worse? That's here too.
 
 ```bash
-pip install ai-agent-vcr
+pipx install ai-agent-vcr      # the vcr command (or: uv tool install ai-agent-vcr)
+pip install ai-agent-vcr       # the Python library, inside your project's venv
 ```
 
 No API key. No account. Nothing leaves your machine. Python 3.9–3.13.

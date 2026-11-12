@@ -175,10 +175,28 @@ with [Agent CI](agent-ci.md).
 That's a different project by a different developer. This one is **`ai-agent-vcr`**:
 
 ```bash
-pip install ai-agent-vcr
+pipx install ai-agent-vcr      # the vcr command
+pip install ai-agent-vcr       # the Python library, in a venv
 ```
 
 The import is still `agent_vcr`, and the CLI is `vcr`.
+
+### `pip install` says "externally-managed-environment".
+
+Your system Python (most current Linux distros, Homebrew) doesn't allow `pip install` into it.
+For the `vcr` command, use `pipx install ai-agent-vcr` or `uv tool install ai-agent-vcr`: it
+gets its own environment and works in every project. For the Python library, install it inside
+your project's virtual environment.
+
+### `vcr` fails with `ModuleNotFoundError: No module named 'agent_vcr'`.
+
+An old `pip install --user` left a `vcr` launcher behind without its package. Remove the old
+install and reinstall as a tool:
+
+```bash
+python3 -m pip uninstall --break-system-packages ai-agent-vcr
+pipx install ai-agent-vcr
+```
 
 ### What's the license?
 

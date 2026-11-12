@@ -12,9 +12,9 @@ Your coding agent just ran `rm -rf`. Or `git reset --hard`. Or `DROP TABLE users
 database. **`vcr undo` brings it all back**: files, `.env`, git history, even the rows.
 
 ```bash
-pip install ai-agent-vcr
-vcr airbag install        # arms every coding agent on your PATH
-vcr undo                  # oops? un-oops.
+pipx install ai-agent-vcr     # or: uv tool install ai-agent-vcr
+vcr airbag install            # arms every coding agent on your PATH
+vcr undo                      # oops? un-oops.
 ```
 
 No API key. No account. No cloud. Everything stays on your machine.
@@ -284,8 +284,22 @@ Anything else: call `record_step`, `record_llm_call`, `record_tool_call`, `recor
 
 ## Install
 
+**The `vcr` command** (airbag, undo, bisect, MCP): install it once as a tool, so it works in
+every project and stays out of your project's dependencies.
+
 ```bash
-pip install ai-agent-vcr                  # core: airbag, recorder, replay, CI, pytest plugin, MCP
+pipx install ai-agent-vcr          # or: uv tool install ai-agent-vcr
+pipx upgrade ai-agent-vcr          # later: get the newest fixes
+```
+
+Plain `pip install` into the system Python is blocked on most current Linux distros and on
+Homebrew Python ("externally-managed-environment"); pipx and uv are the clean way around it.
+
+**The Python library** (recorder, replay, pytest plugin, integrations): add it to your
+project's virtual environment like any other dependency.
+
+```bash
+pip install ai-agent-vcr                  # core: recorder, replay, CI, pytest plugin
 pip install "ai-agent-vcr[tui]"          # terminal debugger
 pip install "ai-agent-vcr[dashboard]"    # local web dashboard and server
 pip install "ai-agent-vcr[langgraph]"    # LangGraph
