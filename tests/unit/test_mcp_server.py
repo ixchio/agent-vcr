@@ -12,6 +12,7 @@ from typing import Any
 
 import pytest
 
+from agent_vcr import __version__
 from agent_vcr.airbag.core import Airbag, ToolCall
 from agent_vcr.cli import COMMANDS
 from agent_vcr.mcp_server import (
@@ -61,6 +62,11 @@ class Pipe:
         raw = message if isinstance(message, str) else json.dumps(message)
         assert self.proc.stdin is not None
         self.proc.stdin.write(raw.encode() + b"\n")
+        self.proc.stdin.flush()
+
+    def send_raw(self, data: bytes) -> None:
+        assert self.proc.stdin is not None
+        self.proc.stdin.write(data)
         self.proc.stdin.flush()
 
     def recv(self) -> dict[str, Any]:
@@ -140,7 +146,7 @@ def test_initialize_negotiates_version_and_declares_tools(pipe: Pipe) -> None:
     assert result["protocolVersion"] == "2025-06-18"  # supported: echoed
     assert result["capabilities"] == {"tools": {}}
     assert result["serverInfo"]["name"] == "agent-vcr"
-    assert result["serverInfo"]["version"]
+    assert result["serverInfo"]["version"] == __version__
     again = pipe.request("initialize", {"protocolVersion": "1999-01-01", "capabilities": {},
                                         "clientInfo": {"name": "old", "version": "0"}})
     assert again["result"]["protocolVersion"] == LATEST_PROTOCOL_VERSION
@@ -428,6 +434,7 @@ def test_official_sdk_client_round_trip(project: Path) -> None:
         async with stdio_client(params) as (read, write), ClientSession(read, write) as session:
             init = await session.initialize()
             assert init.serverInfo.name == "agent-vcr"
+            assert init.serverInfo.version == __version__
             assert init.capabilities.tools is not None
             tools = await session.list_tools()
             assert {t.name for t in tools.tools} == TOOL_NAMES
@@ -442,6 +449,197 @@ def test_official_sdk_client_round_trip(project: Path) -> None:
             done = await session.call_tool("airbag_undo", {"dry_run": False, "confirm": True})
             assert done.isError is False
             assert (project / "a.txt").read_text() == "precious work\n"
+            unicode = await session.call_tool("airbag_check", {"command": "echo héllo 🎉"})
+            assert unicode.structuredContent is not None
+            assert unicode.structuredContent["command"] == "echo héllo 🎉"
             await session.send_ping()
 
     asyncio.run(asyncio.wait_for(scenario(), timeout=120))
+
+
+# ── review regressions: odd strings, scope, limits ───────────────────────
+
+def _ping_still_works(pipe: Pipe) -> None:
+    assert pipe.request("ping")["result"] == {}
+
+
+def _make_non_utf8_file(directory: Path, name: bytes) -> Path:
+    if sys.platform != "linux":
+        pytest.skip("non-UTF-8 file names need a byte-oriented file system")
+    raw = os.path.join(os.fsencode(str(directory)), name)
+    try:
+        with open(raw, "wb") as f:
+            f.write(b"x\n")
+    except OSError:
+        pytest.skip("file system rejects non-UTF-8 names")
+    return Path(os.fsdecode(raw))
+
+
+def test_unencodable_tool_name_and_id_do_not_kill_the_server(pipe: Pipe) -> None:
+    pipe.initialize()
+    pipe.send_raw(b'{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"\\ud800"}}\n')
+    reply = pipe.recv()
+    assert reply["id"] == 7 and reply["error"]["code"] == -32602
+    pipe.send_raw(b'{"jsonrpc":"2.0","id":"\\ud800","method":"ping"}\n')
+    reply = pipe.recv()
+    assert reply["id"] == "\ud800" and reply["result"] == {}
+    pipe.send_raw(b'{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"airbag_check",'
+                  b'"arguments":{"command":"echo \\udcff \\ud800"}}}\n')
+    result = pipe.recv()["result"]
+    assert result["isError"] is False
+    _ping_still_works(pipe)
+    assert pipe.close() == 0
+
+
+def test_non_utf8_recording_name_does_not_kill_the_server(pipe: Pipe, project: Path) -> None:
+    _make_non_utf8_file(project, b"bad\xff.vcr")
+    pipe.initialize()
+    listing = _payload(pipe.call("recordings_list"))
+    assert listing["count"] == 1
+    assert listing["recordings"][0]["relative"] == "bad\\xff.vcr"  # bytes shown as text
+    _ping_still_works(pipe)
+    assert pipe.close() == 0
+
+
+def test_non_utf8_file_in_rewind_preview_does_not_kill_the_server(
+    pipe: Pipe, project: Path,
+) -> None:
+    pipe.initialize()
+    first = _payload(pipe.call("airbag_snapshot", message="clean"))["snapshot"]
+    bad = _make_non_utf8_file(project, b"caf\xe9.txt")
+    preview = _payload(pipe.call("airbag_rewind", snapshot=first))
+    assert {"change": "remove", "path": "caf\\xe9.txt"} in preview["changes"]
+    assert bad.exists()
+    _ping_still_works(pipe)
+    assert pipe.close() == 0
+
+
+@pytest.fixture
+def other_project(tmp_path: Path, project: Path) -> Path:
+    other = tmp_path / "other"
+    other.mkdir()
+    subprocess.run(["git", "init", "-q", str(other)], check=True, timeout=30)
+    (other / "secret.txt").write_text("other project\n")
+    _agent_rm(other, "secret.txt")
+    return other
+
+
+def test_restoring_tools_stay_inside_the_server_project(
+    pipe: Pipe, project: Path, other_project: Path,
+) -> None:
+    pipe.initialize()
+    for name, args in (
+        ("airbag_undo", {"dry_run": False, "confirm": True}),
+        ("airbag_undo", {}),
+        ("airbag_rewind", {"snapshot": 1, "dry_run": False, "confirm": True}),
+        ("airbag_snapshot", {"message": "x"}),
+    ):
+        result = pipe.call(name, project_dir=str(other_project), **args)
+        assert result["isError"] is True, (name, result)
+        assert "outside this server's project" in result["content"][0]["text"]
+    assert not (other_project / "secret.txt").exists()
+    # read-only tools may still look elsewhere
+    status = _payload(pipe.call("airbag_status", project_dir=str(other_project)))
+    assert status["snapshots"] >= 1
+    timeline = _payload(pipe.call("airbag_timeline", project_dir=str(other_project)))
+    assert timeline["total"] == 1
+    # subdirectories of the server's project are fine
+    (project / "sub").mkdir()
+    sub = _payload(pipe.call("airbag_snapshot", project_dir="sub", message="from sub"))
+    assert sub["project"] == str(project.resolve())
+    assert pipe.close() == 0
+
+
+def test_symlink_out_of_the_project_is_refused(
+    pipe: Pipe, project: Path, other_project: Path,
+) -> None:
+    try:
+        (project / "link").symlink_to(other_project, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks not available")
+    pipe.initialize()
+    result = pipe.call("airbag_undo", project_dir="link", dry_run=False, confirm=True)
+    assert result["isError"] is True and not (other_project / "secret.txt").exists()
+    assert pipe.close() == 0
+
+
+def test_allow_any_project_flag_lifts_the_scope(project: Path, other_project: Path) -> None:
+    pipe = Pipe(project, [sys.executable, "-m", "agent_vcr.cli", "mcp", "--project-dir",
+                          str(project), "--allow-any-project"])
+    try:
+        pipe.initialize()
+        done = _payload(pipe.call("airbag_undo", project_dir=str(other_project),
+                                  dry_run=False, confirm=True))
+        assert "secret.txt" in done["written"]
+        assert (other_project / "secret.txt").read_text() == "other project\n"
+        assert pipe.close() == 0
+    finally:
+        if pipe.proc.poll() is None:
+            pipe.proc.kill()
+
+
+def test_recording_summary_requires_a_recording_suffix(pipe: Pipe, project: Path) -> None:
+    (project / "notes.txt").write_text("not a recording\n")
+    pipe.initialize()
+    for path in ("notes.txt", "/etc/passwd", str(project / "a.txt")):
+        result = pipe.call("recording_summary", path=path)
+        assert result["isError"] is True
+        assert "not a recording" in result["content"][0]["text"]
+    recorded = _record(project / ".vcr")
+    jsonl = recorded.with_suffix(".jsonl")
+    jsonl.write_bytes(recorded.read_bytes())
+    assert _payload(pipe.call("recording_summary", path=str(jsonl)))["frames"] == 4
+    assert pipe.close() == 0
+
+
+def test_null_arguments_mean_not_given(pipe: Pipe, project: Path) -> None:
+    pipe.initialize()
+    first = _payload(pipe.call("airbag_snapshot", message=None))
+    assert first["label"] == "manual snapshot (MCP)"
+    assert _payload(pipe.call("airbag_timeline", limit=None))["total"] == 1
+    (project / "b.txt").write_text("changed\n")
+    preview = _payload(pipe.call("airbag_rewind", snapshot=first["snapshot"], dry_run=None,
+                                 confirm=None))
+    assert preview["dry_run"] is True and (project / "b.txt").read_text() == "changed\n"
+    assert pipe.close() == 0
+
+
+def test_bom_on_first_line_and_oversized_lines(pipe: Pipe) -> None:
+    pipe.send_raw(b'\xef\xbb\xbf{"jsonrpc":"2.0","id":1,"method":"ping"}\r\n')
+    assert pipe.recv() == {"jsonrpc": "2.0", "id": 1, "result": {}}
+    huge = b'{"jsonrpc":"2.0","id":2,"method":"ping","params":{"x":"' + b"a" * (5 << 20) + b'"}}\n'
+    pipe.send_raw(huge)
+    reply = pipe.recv()
+    assert reply["id"] is None and reply["error"]["code"] == -32600
+    assert "larger than 4 MB" in reply["error"]["message"]
+    pipe.next_id = 2
+    _ping_still_works(pipe)
+    assert pipe.close() == 0
+
+
+def test_check_cwd_resolves_against_project_dir(
+    pipe: Pipe, project: Path, other_project: Path,
+) -> None:
+    pipe.initialize()
+    check = _payload(pipe.call("airbag_check", command="ls", project_dir=str(other_project),
+                               cwd="src"))
+    assert check["cwd"] == str(other_project / "src")
+    default = _payload(pipe.call("airbag_check", command="ls"))
+    assert default["cwd"] == str(project)
+    assert pipe.close() == 0
+
+
+def test_recording_summary_caps_long_lists(project: Path) -> None:
+    recorder = VCRRecorder(output_dir=str(project / ".vcr"), auto_save=False)
+    recorder.start_session(session_id="many-nodes")
+    for i in range(250):
+        recorder.record_step(node_name=f"node-{i}", input_state={}, output_state={"i": i},
+                             metadata=FrameMetadata(model=f"model-{i}"))
+    path = recorder.save()
+    server = MCPServer(project)
+    reply = server.handle({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
+        "name": "recording_summary", "arguments": {"path": str(path)}}})
+    assert reply is not None
+    summary = reply["result"]["structuredContent"]
+    assert summary["node_count"] == 250 and len(summary["nodes"]) == 200
+    assert len(summary["models"]) == 200 and summary["lists_truncated"] is True

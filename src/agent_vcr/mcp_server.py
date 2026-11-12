@@ -64,6 +64,10 @@ SCAN_MAX_ENTRIES = 200_000
 SCAN_MAX_SECONDS = 10.0
 MAX_RECORDING_BYTES = 512 * 1024 * 1024
 MAX_CHANGES_SHOWN = 200
+MAX_LIST_ITEMS = 200
+#: Longest JSON-RPC line accepted; longer lines are discarded with an error.
+MAX_LINE_BYTES = 4 * 1024 * 1024
+RECORDING_SUFFIXES = (".vcr", ".jsonl")
 
 AGENT_ADVICE = {
     "read": "Safe: nothing to snapshot.",
@@ -146,7 +150,9 @@ def _validate(tool: Tool, args: dict[str, Any]) -> dict[str, Any]:
             raise ToolError(f"missing required argument {name!r}")
     out: dict[str, Any] = {}
     for name, spec in tool.properties.items():
-        value = args.get(name, spec.get("default"))
+        value = args.get(name)
+        if value is None:  # JSON null counts as "not given"
+            value = spec.get("default")
         if value is None:
             out[name] = None
             continue
@@ -169,6 +175,37 @@ def _validate(tool: Tool, args: dict[str, Any]) -> dict[str, Any]:
             raise ToolError(f"{name} must not be empty")
         out[name] = value
     return out
+
+
+def _within(path: Path, parent: Path) -> bool:
+    """``path`` is ``parent`` or below it, after resolving symlinks and ``..``."""
+    real, base = Path(os.path.realpath(path)), Path(os.path.realpath(parent))
+    return real == base or base in real.parents
+
+
+def _clean(data: Any) -> Any:
+    """Make every string valid UTF-8 so strict JSON parsers accept the output.
+
+    File names that are not UTF-8 arrive as lone surrogates (``surrogateescape``);
+    their bytes are shown as ``\\xNN`` text. Other lone surrogates become
+    ``\\uNNNN`` text.
+    """
+    if isinstance(data, str):
+        try:
+            data.encode("utf-8")
+            return data
+        except UnicodeEncodeError:
+            pass
+        try:
+            raw = data.encode("utf-8", "surrogateescape")
+        except UnicodeEncodeError:
+            return data.encode("utf-8", "backslashreplace").decode("utf-8")
+        return raw.decode("utf-8", "backslashreplace")
+    if isinstance(data, dict):
+        return {_clean(k): _clean(v) for k, v in data.items()}
+    if isinstance(data, (list, tuple)):
+        return [_clean(v) for v in data]
+    return data
 
 
 def _iso(ts: float) -> str:
@@ -222,8 +259,13 @@ def _restore_info(result: RestoreResult) -> dict[str, Any]:
 class MCPServer:
     """Protocol handling, independent of the transport (see :func:`serve`)."""
 
-    def __init__(self, project_dir: str | Path = ".") -> None:
+    def __init__(self, project_dir: str | Path = ".", *, allow_any_project: bool = False) -> None:
         self.project_dir = Path(os.path.abspath(Path(project_dir).expanduser()))
+        #: Off by default: tools that write (snapshot, undo, rewind) only act on
+        #: ``project_dir`` and its subdirectories, so a prompt-injected agent
+        #: cannot restore files in some other protected project.
+        self.allow_any_project = allow_any_project
+        self._own_root: Path | None = None
         self.client_info: dict[str, Any] = {}
         self.protocol_version = LATEST_PROTOCOL_VERSION
         self.tools = {tool.name: tool for tool in TOOLS}
@@ -236,11 +278,28 @@ class MCPServer:
         path = Path(raw).expanduser()
         return Path(os.path.abspath(path if path.is_absolute() else self.project_dir / path))
 
-    def bag(self, args: dict[str, Any]) -> Airbag:
+    def bag(self, args: dict[str, Any], *, writes: bool = False) -> Airbag:
+        """The airbag for ``project_dir``; ``writes`` tools must stay in the server's project."""
+        target = self.resolve(args.get("project_dir"))
         try:
-            return Airbag(self.resolve(args.get("project_dir")), policy=Policy.from_env())
+            bag = Airbag(target, policy=Policy.from_env())
         except AirbagError as err:
             raise ToolError(str(err)) from None
+        if writes and not self.allow_any_project and not self._in_scope(target, bag.root):
+            raise ToolError(
+                f"{bag.root} is outside this server's project ({self.project_dir}). Tools that "
+                "snapshot or restore only act on the project `vcr mcp` was started for; start "
+                "it with --project-dir for another project, or with --allow-any-project.")
+        return bag
+
+    def _in_scope(self, target: Path, root: Path) -> bool:
+        from agent_vcr.airbag.store import find_project_root
+
+        if _within(target, self.project_dir):
+            return True
+        if self._own_root is None:
+            self._own_root = Path(os.path.realpath(find_project_root(self.project_dir)))
+        return Path(os.path.realpath(root)) == self._own_root
 
     # JSON-RPC
 
@@ -327,6 +386,7 @@ class MCPServer:
             return _tool_error(f"{name} failed unexpectedly: {err!r}")
         except SystemExit as err:  # defensive: reused helpers must not stop the server
             return _tool_error(f"{name} stopped: exit {err.code}")
+        result = _clean(result)
         return {
             "content": [{"type": "text", "text": _dump(result, indent=2)}],
             "structuredContent": result,
@@ -335,8 +395,9 @@ class MCPServer:
 
 
 def _dump(data: Any, indent: int | None = None) -> str:
+    """JSON that is always pure ASCII, so writing it can never fail on odd strings."""
     separators = None if indent else (",", ":")
-    return json.dumps(data, ensure_ascii=False, default=str, indent=indent,
+    return json.dumps(data, ensure_ascii=True, default=str, indent=indent,
                       separators=separators)
 
 
@@ -348,9 +409,9 @@ def _error(msg_id: Any, code: int, message: str, data: Any = None) -> dict[str, 
 
 
 def _tool_error(message: str, data: dict[str, Any] | None = None) -> dict[str, Any]:
-    text = f"Error: {message}"
+    text = f"Error: {_clean(message)}"
     if data:
-        text += "\n" + _dump(data, indent=2)
+        text += "\n" + _dump(_clean(data), indent=2)
     return {"content": [{"type": "text", "text": text}], "isError": True}
 
 
@@ -404,12 +465,16 @@ def _tool_check(server: MCPServer, args: dict[str, Any]) -> dict[str, Any]:
     from agent_vcr.airbag.store import find_project_root
 
     project = server.resolve(args.get("project_dir"))
-    cwd = server.resolve(args["cwd"]) if args.get("cwd") else project
+    cwd = project
+    if args.get("cwd"):
+        raw = Path(args["cwd"]).expanduser()
+        cwd = Path(os.path.abspath(raw if raw.is_absolute() else project / raw))
     command = str(args["command"]).strip()
     verdict = classify(command, cwd=str(cwd), root=find_project_root(project))
     policy = Policy.from_env()
     return {
         "command": _clip(command, 2000),
+        "cwd": str(cwd),
         "level": verdict.level,
         "reasons": verdict.reasons,
         "categories": verdict.categories,
@@ -422,7 +487,7 @@ def _tool_check(server: MCPServer, args: dict[str, Any]) -> dict[str, Any]:
 
 
 def _tool_snapshot(server: MCPServer, args: dict[str, Any]) -> dict[str, Any]:
-    bag = server.bag(args)
+    bag = server.bag(args, writes=True)
     before = bag.store.latest()
     snap = bag.manual_snapshot(_clip(args["message"], 200), agent="mcp")
     new = before is None or snap.seq != before.seq
@@ -448,7 +513,7 @@ def _require_confirmation(args: dict[str, Any], what: str, preview: dict[str, An
 
 
 def _tool_undo(server: MCPServer, args: dict[str, Any]) -> dict[str, Any]:
-    bag = server.bag(args)
+    bag = server.bag(args, writes=True)
     steps = int(args["steps"])
     preview = bag.preview_undo(steps)
     if preview is None:
@@ -469,7 +534,7 @@ def _tool_undo(server: MCPServer, args: dict[str, Any]) -> dict[str, Any]:
 
 
 def _tool_rewind(server: MCPServer, args: dict[str, Any]) -> dict[str, Any]:
-    bag = server.bag(args)
+    bag = server.bag(args, writes=True)
     seq = int(args["snapshot"])
     try:
         target, changes = bag.preview_rewind(seq)
@@ -537,6 +602,8 @@ def _tool_recording_summary(server: MCPServer, args: dict[str, Any]) -> dict[str
     from agent_vcr.player import VCRPlayer
 
     path = server.resolve(args["path"])
+    if path.suffix.lower() not in RECORDING_SUFFIXES:
+        raise ToolError(f"not a recording: {path} (expected a .vcr or .jsonl file)")
     if not path.is_file():
         raise ToolError(f"recording not found: {path}")
     if path.stat().st_size > MAX_RECORDING_BYTES:
@@ -559,18 +626,23 @@ def _tool_recording_summary(server: MCPServer, args: dict[str, Any]) -> dict[str
     limit = int(args["errors_limit"])
     integrity = player.verify_integrity()
     session = player.session
+    nodes = player.list_nodes()
+    checkpoints = [str(c["label"]) for c in player.list_checkpoints()]
     return {
         "path": str(path),
         "session_id": session.session_id,
         "parent_session_id": session.parent_session_id,
         "created_at": session.created_at.isoformat(),
-        "tags": session.tags,
+        "tags": session.tags[:50],
         "metadata": (session.metadata if len(_dump(session.metadata)) <= 4000
                      else {"truncated": True, "keys": sorted(session.metadata)[:50]}),
         "frames": len(frames),
         "frame_types": kinds,
-        "nodes": [{"name": n, "executions": executions[n]} for n in player.list_nodes()],
-        "checkpoints": [c["label"] for c in player.list_checkpoints()],
+        "node_count": len(nodes),
+        "nodes": [{"name": _clip(n, 200), "executions": executions[n]}
+                  for n in nodes[:MAX_LIST_ITEMS]],
+        "checkpoint_count": len(checkpoints),
+        "checkpoints": [_clip(c, 200) for c in checkpoints[:MAX_LIST_ITEMS]],
         "error_count": len(errors),
         "errors": errors[:limit],
         "tokens": player.get_total_tokens(),
@@ -578,7 +650,8 @@ def _tool_recording_summary(server: MCPServer, args: dict[str, Any]) -> dict[str
         "tokens_output": sum(f.metadata.tokens_output or 0 for f in frames),
         "cost_usd": round(player.get_total_cost(), 6),
         "latency_ms": round(player.get_total_latency(), 3),
-        "models": models,
+        "models": [_clip(m, 200) for m in models[:MAX_LIST_ITEMS]],
+        "lists_truncated": max(len(nodes), len(checkpoints), len(models)) > MAX_LIST_ITEMS,
         "integrity": {"ok": integrity["ok"], "issues": integrity["issues"][:20]},
         "skipped_lines": player.skipped_lines,
     }
@@ -708,31 +781,45 @@ TOOLS: tuple[Tool, ...] = (
 
 def serve(server: MCPServer, stdin: IO[bytes], stdout: IO[bytes]) -> int:
     """Read newline-delimited JSON-RPC from ``stdin`` until EOF; answer on ``stdout``."""
+    first = True
     while True:
         try:
-            line = stdin.readline()
+            line = stdin.readline(MAX_LINE_BYTES + 1)
+            too_long = len(line) > MAX_LINE_BYTES
+            while line and not line.endswith(b"\n") and too_long:
+                line = stdin.readline(MAX_LINE_BYTES)  # discard the rest of that line
         except KeyboardInterrupt:
             return 0
-        if not line:
+        if not line and not too_long:
             return 0
-        if not line.strip():
+        if first and line.startswith(b"\xef\xbb\xbf"):
+            line = line[3:]  # a UTF-8 byte order mark before the first message
+        first = False
+        response: dict[str, Any] | None
+        if too_long:
+            response = _error(None, INVALID_REQUEST,
+                              f"message larger than {MAX_LINE_BYTES // 1048576} MB")
+        elif not line.strip():
             continue
-        try:
-            message = json.loads(line.decode("utf-8"))
-        except (UnicodeDecodeError, ValueError) as err:
-            response: dict[str, Any] | None = _error(None, PARSE_ERROR, f"parse error: {err}")
         else:
-            response = server.handle(message)
+            try:
+                message = json.loads(line.decode("utf-8"))
+            except (UnicodeDecodeError, ValueError) as err:
+                response = _error(None, PARSE_ERROR, f"parse error: {err}")
+            else:
+                response = server.handle(message)
         if response is None:
             continue
         try:
-            stdout.write(_dump(response).encode("utf-8") + b"\n")
+            stdout.write(_dump(response).encode("ascii") + b"\n")
             stdout.flush()
-        except (BrokenPipeError, ValueError):
-            return 0  # the client went away
+        except OSError:  # BrokenPipeError included: the client went away
+            return 0
+        if not line:
+            return 0  # EOF while discarding an oversized line
 
 
-def run(project_dir: str | Path = ".") -> int:
+def run(project_dir: str | Path = ".", *, allow_any_project: bool = False) -> int:
     """Entry point for ``vcr mcp``: serve on the real stdin/stdout."""
     root = logging.getLogger("agent_vcr")
     if not root.handlers:
@@ -742,7 +829,7 @@ def run(project_dir: str | Path = ".") -> int:
         level = os.environ.get("AGENT_VCR_MCP_LOG", "WARNING").upper()
         root.setLevel(getattr(logging, level, logging.WARNING))
         root.propagate = False
-    server = MCPServer(project_dir)
+    server = MCPServer(project_dir, allow_any_project=allow_any_project)
     proto_in, proto_out = _claim_stdio()
     logger.info("serving %s on stdio", server.project_dir)
     try:
