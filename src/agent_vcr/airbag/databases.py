@@ -123,7 +123,13 @@ def _quote(value: str) -> str:
 
 def redact(url: str) -> str:
     """``url`` with any password replaced by ``***`` (for messages)."""
-    url = re.sub(r"(://[^/@:?#]*):[^@/?#]*@", r"\1:***@", url)
+    match = re.match(r"^([a-z0-9+.-]*://)([^/?#]*)(.*)$", url, re.I | re.S)
+    if match:
+        scheme, netloc, rest = match.groups()
+        userinfo, at, hostport = netloc.rpartition("@")  # the host follows the LAST "@"
+        if at and ":" in userinfo:
+            netloc = f"{userinfo.partition(':')[0]}:***@{hostport}"
+        url = scheme + netloc + rest
     return re.sub(r"(?i)([?&]password=)[^&#]*", r"\1***", url)
 
 
@@ -222,14 +228,16 @@ def load_databases(root: str | Path | None) -> tuple[list[PgDatabase], list[str]
 # ── which configured database does a command hit? ───────────────────────
 
 def _same_server(a: str | None, b: str | None) -> bool:
+    """Same local server for certain: both loopback TCP, or the same socket directory."""
     a_sock = a is None or a.startswith("/")
     b_sock = b is None or b.startswith("/")
-    if a_sock and b_sock:
+    if a_sock != b_sock:
+        return False
+    if a_sock:
         if a is None or b is None:
-            other = a or b
-            return other is None or other in DEFAULT_SOCKET_DIRS
+            return a is None and b is None
         return os.path.normpath(a) == os.path.normpath(b)
-    return True  # TCP localhost vs. socket on the same machine: the port decides
+    return True  # localhost / 127.0.0.1 / ::1: the port decides
 
 
 def _parse_conninfo(text: str) -> dict[str, str]:
@@ -241,9 +249,54 @@ def _parse_conninfo(text: str) -> dict[str, str]:
     return out
 
 
-def _psql_target(args: list[str], env: dict[str, str]) -> PgDatabase | None:
-    """Where ``psql``/``pgcli`` with these arguments connects (None = unknown/remote)."""
-    opts: dict[str, str] = {}
+_LONG_OPTS = {"--host": "-h", "--port": "-p", "--username": "-U", "--dbname": "-d",
+              "--command": "-c", "--file": "-f"}
+#: libpq variables that can send a client somewhere its arguments don't say.
+_REDIRECT_VARS = ("PGHOST", "PGHOSTADDR", "PGPORT", "PGDATABASE", "PGSERVICE", "PGSERVICEFILE",
+                  "PGSYSCONFDIR")
+_REDIRECT_RE = re.compile(r"\b(" + "|".join(_REDIRECT_VARS) + r")\b")
+
+
+def _url_params(url: str) -> dict[str, str] | None:
+    """The connection parameters a ``postgresql://`` URL *sets* (no defaults filled in)."""
+    match = _URL.match(url.strip())
+    if not match:
+        return None
+    out: dict[str, str] = {}
+    userinfo, _, hostport = (match.group("netloc") or "").rpartition("@")
+    user = unquote(userinfo.partition(":")[0])
+    if user:
+        out["user"] = user
+    if hostport.startswith("["):
+        host, _, rest = hostport[1:].partition("]")
+        port = rest[1:] if rest.startswith(":") else ""
+    elif ":" in hostport and "," not in hostport:
+        host, _, port = hostport.rpartition(":")
+    else:
+        host, port = hostport, ""
+    if unquote(host):
+        out["host"] = unquote(host)
+    if port:
+        out["port"] = port
+    dbname = unquote((match.group("path") or "").lstrip("/"))
+    if dbname:
+        out["dbname"] = dbname
+    out.update(dict(parse_qsl(match.group("query") or "", keep_blank_values=True)))
+    return out
+
+
+def _psql_target(args: list[str], inline_env: dict[str, str],
+                 command: str = "") -> tuple[PgDatabase | None, bool]:
+    """Where ``psql`` with these arguments connects, and whether that is *certain*.
+
+    Follows libpq: parameters inside a conninfo/URL database argument override
+    ``-h``/``-p``/``-U``, which override ``PG*`` environment variables. The
+    target is certain only when host, database and port come from the command
+    itself, every host named anywhere is local, nothing (``PGHOSTADDR``,
+    ``PGSERVICE``, a service file) can redirect it, and the SQL is in ``-c``
+    (not a file or stdin). ``(None, False)`` = unknown or not local.
+    """
+    opts: dict[str, list[str]] = {}
     positional: list[str] = []
     i = 0
     while i < len(args):
@@ -253,49 +306,81 @@ def _psql_target(args: list[str], env: dict[str, str]) -> PgDatabase | None:
             break
         if arg.startswith("--") and "=" in arg:
             name, _, value = arg.partition("=")
-            opts.setdefault(name, value)
+            opts.setdefault(_LONG_OPTS.get(name, name), []).append(value)
         elif arg in _VALUE_OPTS:
             if i + 1 < len(args):
-                opts.setdefault(arg, args[i + 1])
+                opts.setdefault(_LONG_OPTS.get(arg, arg), []).append(args[i + 1])
             i += 1
-        elif re.match(r"^-[hpUd].+", arg):
-            opts.setdefault(arg[:2], arg[2:])
+        elif re.match(r"^-[hpUdcf].+", arg):
+            opts.setdefault(arg[:2], []).append(arg[2:])
         elif not arg.startswith("-"):
             positional.append(arg)
         i += 1
-    host = opts.get("-h") or opts.get("--host")
-    port = opts.get("-p") or opts.get("--port")
-    user = opts.get("-U") or opts.get("--username") or (positional[1] if len(positional) > 1
-                                                        else None)
-    dbname = opts.get("-d") or opts.get("--dbname") or (positional[0] if positional else None)
+    certain = all(len(opts.get(k, [])) <= 1 for k in ("-h", "-p", "-U", "-d"))
+    certain = certain and bool(opts.get("-c")) and not opts.get("-f") and len(positional) <= 2
+    def last(key: str) -> str | None:
+        values = opts.get(key)
+        return values[-1] if values else None
+
+    host = last("-h")
+    port = last("-p")
+    user = last("-U") or (positional[1] if len(positional) > 1 else None)
+    dbname = last("-d")
+    if dbname and positional:
+        certain = False
+    dbname = dbname or (positional[0] if positional else None)
+    hosts: list[str | None] = [host]
     if dbname and re.match(r"^postgres(ql)?://", dbname, re.I):
-        try:
-            parsed = parse_url(dbname)
-        except ValueError:
-            return None
-        host, port, dbname = host or parsed.host, port or str(parsed.port), parsed.dbname
-        user = user or parsed.user
+        conn = _url_params(dbname)
+        if conn is None:
+            return None, False
     elif dbname and "=" in dbname:
-        info = _parse_conninfo(dbname)
-        if "service" in info or "hostaddr" in info:
-            return None
-        host, port, user = host or info.get("host"), port or info.get("port"), \
-            user or info.get("user")
-        dbname = info.get("dbname")
-    if not host and (env.get("PGHOSTADDR") or env.get("PGSERVICE")):
-        return None
-    host = host or env.get("PGHOST") or None
-    if not is_local_host(host):
-        return None
+        conn = _parse_conninfo(dbname)
+    else:
+        conn = None
+    if conn is not None:
+        if "service" in conn:
+            return None, False
+        hosts += [conn.get("host"), conn.get("hostaddr")]
+        host = conn.get("hostaddr") or conn.get("host") or host
+        port = conn.get("port") or port
+        user = conn.get("user") or user
+        dbname = conn.get("dbname")  # the expanded argument replaces the database name
+    env = {**os.environ, **inline_env}
+    if any(env.get(v) for v in ("PGSERVICE", "PGSERVICEFILE")):
+        return None, False
+    if env.get("PGHOSTADDR") and not (conn and conn.get("hostaddr")):
+        hosts.append(env["PGHOSTADDR"])
+        certain = False
+    if not host:
+        host = env.get("PGHOST") or None
+        hosts.append(host)
+        certain = certain and "PGHOST" in inline_env
+    for name in set(_REDIRECT_RE.findall(command)):
+        if name not in inline_env:
+            certain = False  # e.g. `export PGHOST=prod && psql ...`
+    for candidate in hosts:
+        if candidate and ("," in candidate or not is_local_host(candidate)):
+            return None, False
+    if not host:
+        certain = False  # libpq's default socket: local, but not stated
+    if not port:
+        port = env.get("PGPORT")
+        if port and "PGPORT" not in inline_env:
+            certain = False
     user = user or env.get("PGUSER") or _os_user()
-    dbname = dbname or env.get("PGDATABASE") or user
-    try:
-        port_num = int(port or env.get("PGPORT") or 5432)
-    except ValueError:
-        return None
     if not dbname:
-        return None
-    return PgDatabase(dbname=dbname, host=host, port=port_num, user=user)
+        dbname = env.get("PGDATABASE") or user
+        certain = certain and "PGDATABASE" in inline_env
+    try:
+        port_num = int(port or 5432)
+    except ValueError:
+        return None, False
+    if not dbname:
+        return None, False
+    if host and host.startswith("/"):
+        host = os.path.normpath(host)
+    return PgDatabase(dbname=dbname, host=host, port=port_num, user=user), certain
 
 
 def _os_user() -> str | None:
@@ -319,47 +404,62 @@ def _dotenv_url(root: Path | None) -> str | None:
     return None
 
 
-def match_target(target: dict[str, Any], configs: list[PgDatabase],
-                 root: str | Path | None = None) -> PgDatabase | None:
-    """The configured database a recorded client call (``Verdict.db_targets``) acts on."""
+def _find(dest: PgDatabase, configs: list[PgDatabase]) -> PgDatabase | None:
+    for db in configs:
+        if db.dbname == dest.dbname and db.port == dest.port and _same_server(db.host, dest.host):
+            return db
+    return None
+
+
+def resolve_target(target: dict[str, Any], configs: list[PgDatabase],
+                   root: str | Path | None = None,
+                   command: str = "") -> tuple[PgDatabase | None, bool]:
+    """The configured database a recorded client call (``Verdict.db_targets``) acts on.
+
+    The second value is True only when that is certain from the command itself
+    (a ``psql`` call whose target is fully stated and local); only then may the
+    airbag stop asking. Best guesses (ORM commands, the only configured
+    database) are good enough for taking a dump, never for skipping the prompt.
+    """
     if not configs:
-        return None
+        return None, False
     prog = os.path.basename(str(target.get("prog") or ""))
     args = [str(a) for a in target.get("args") or []]
-    env = {**os.environ, **{str(k): str(v) for k, v in (target.get("env") or {}).items()}}
+    inline = {str(k): str(v) for k, v in (target.get("env") or {}).items()}
+    env = {**os.environ, **inline}
     if prog in OTHER_CLIENTS:
-        return None
+        return None, False
     if prog in PG_CLIENTS:
-        dest = _psql_target(args, env)
+        dest, certain = _psql_target(args, inline, command)
         if dest is None:
-            return None
-        for db in configs:
-            if db.dbname == dest.dbname and db.port == dest.port and \
-                    _same_server(db.host, dest.host):
-                return db
-        return None
-    # ORMs and framework commands (prisma migrate reset, rails db:drop, ...).
+            return None, False
+        db = _find(dest, configs)
+        return db, certain and db is not None and prog == "psql"
+    # ORMs and framework commands (prisma migrate reset, rails db:drop, ...) read their own
+    # configuration (schema files, database.yml, --env, linked projects): never certain.
     from agent_vcr.airbag.classify import _db_host
 
-    host = _db_host([prog, *args], target.get("env") or {})
+    host = _db_host([prog, *args], inline)
     if host and not is_local_host(host):
-        return None
+        return None, False
     url = next((a for a in args if re.match(r"^postgres(ql)?://", a, re.I)), None) or \
         env.get("DATABASE_URL") or env.get("POSTGRES_URL") or \
         _dotenv_url(Path(root) if root is not None else None)
     if url:
         if not re.match(r"^postgres(ql)?://", url, re.I):
-            return None  # mysql://, sqlite:, ... — not a Postgres database
+            return None, False  # mysql://, sqlite:, ... — not a Postgres database
         try:
             dest = parse_url(url)
         except ValueError:
-            return None
-        for db in configs:
-            if db.dbname == dest.dbname and db.port == dest.port and \
-                    _same_server(db.host, dest.host):
-                return db
-        return None
-    return configs[0] if len(configs) == 1 else None
+            return None, False
+        return _find(dest, configs), False
+    return (configs[0] if len(configs) == 1 else None), False
+
+
+def match_target(target: dict[str, Any], configs: list[PgDatabase],
+                 root: str | Path | None = None) -> PgDatabase | None:
+    """The configured database a client call probably acts on (see :func:`resolve_target`)."""
+    return resolve_target(target, configs, root)[0]
 
 
 @dataclass
@@ -368,7 +468,8 @@ class DumpPlan:
 
     #: Configured databases to dump before the command runs.
     databases: list[PgDatabase] = field(default_factory=list)
-    #: True when, once dumped, nothing else about the command is irreversible.
+    #: True only when every database the command can reach is certainly a configured local
+    #: one being dumped, and nothing else about the command is irreversible.
     covers_all: bool = False
     #: Why no dump is possible (shown to the user), when a configured database is hit.
     problem: str | None = None
@@ -377,9 +478,14 @@ class DumpPlan:
 
 
 #: SQL that acts on the whole cluster or another database: a dump of one database can't undo it.
+#: Also psql meta-commands that switch connection or run unseen SQL/shell (\connect, \c, \i,
+#: \!), and SQL that reaches other servers or the shell (dblink, foreign servers, COPY PROGRAM).
 _BEYOND_ONE_DB = re.compile(
     r"\bdrop\s+(database|role|user|group|tablespace|owned)\b|\balter\s+(system|role|user)\b"
-    r"|\bcreate\s+or\s+replace\s+database\b", re.I)
+    r"|\bcreate\s+or\s+replace\s+database\b"
+    r"|\\(c|connect|i|ir|include|include_relative)\b|\\!"
+    r"|\bdblink\w*\s*\(|\bcreate\s+server\b|\bimport\s+foreign\s+schema\b"
+    r"|\bcopy\b[^;]*\bprogram\b|\blo_(import|export)\b", re.I)
 #: Commands that delete the database itself: the restore needs it to exist.
 _DROPS_DATABASE = frozenset({"dropdb", "rails db:drop", "rake db:drop", "sequelize db:drop"})
 
@@ -394,19 +500,21 @@ def plan_dumps(verdict: Any, root: str | Path | None, command: str | None = None
         return DumpPlan()
     chosen: dict[str, PgDatabase] = {}
     covered: set[str] = set()
-    all_matched = True
+    all_certain = True
     for target in targets:
-        db = match_target(target, configs, root)
+        db, certain = resolve_target(target, configs, root, command or "")
+        if not certain:
+            all_certain = False
         if db is None:
-            all_matched = False
             continue
         chosen.setdefault(db.key, db)
-        covered.add(str(target.get("reason") or ""))
+        if certain:
+            covered.add(str(target.get("reason") or ""))
     plan = DumpPlan(databases=list(chosen.values()))
     if not plan.databases:
         return plan
     irreversible = dict(getattr(verdict, "irreversible_reasons", None) or {})
-    plan.covers_all = all_matched and bool(irreversible) and all(
+    plan.covers_all = all_certain and bool(irreversible) and all(
         category == "database" and reason in covered for reason, category in irreversible.items()
     )
     texts = [command or ""] + [" ".join(str(a) for a in t.get("args") or []) for t in targets]
@@ -478,10 +586,11 @@ _DROP_RELATIONS = """
 DO $airbag$
 DECLARE r record;
 BEGIN
+  -- Tables, views and foreign tables first: CASCADE takes their serial/identity sequences along.
   FOR r IN
     SELECT n.nspname, c.relname, c.relkind
       FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
-     WHERE c.relkind IN ('r', 'p', 'v', 'm', 'S', 'f') AND NOT c.relispartition
+     WHERE c.relkind IN ('r', 'p', 'v', 'm', 'f') AND NOT c.relispartition
        AND n.nspname !~ '^pg_' AND n.nspname <> 'information_schema'
        AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend d
                         WHERE d.classid = 'pg_catalog.pg_class'::regclass
@@ -489,8 +598,20 @@ BEGIN
   LOOP
     EXECUTE format('DROP %s IF EXISTS %I.%I CASCADE',
       CASE r.relkind WHEN 'v' THEN 'VIEW' WHEN 'm' THEN 'MATERIALIZED VIEW'
-                     WHEN 'S' THEN 'SEQUENCE' WHEN 'f' THEN 'FOREIGN TABLE' ELSE 'TABLE' END,
+                     WHEN 'f' THEN 'FOREIGN TABLE' ELSE 'TABLE' END,
       r.nspname, r.relname);
+  END LOOP;
+  -- Then free-standing sequences only (owned 'a' / identity 'i' ones cannot be dropped alone).
+  FOR r IN
+    SELECT n.nspname, c.relname
+      FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+     WHERE c.relkind = 'S'
+       AND n.nspname !~ '^pg_' AND n.nspname <> 'information_schema'
+       AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend d
+                        WHERE d.classid = 'pg_catalog.pg_class'::regclass
+                          AND d.objid = c.oid AND d.deptype IN ('a', 'i', 'e'))
+  LOOP
+    EXECUTE format('DROP SEQUENCE IF EXISTS %I.%I CASCADE', r.nspname, r.relname);
   END LOOP;
 END
 $airbag$;
