@@ -257,6 +257,165 @@ vcr airbag uninstall         # every agent; your own hooks are left alone
 
 Every command takes `--project-dir PATH` if you're not inside the project, and most take `--json`.
 
+## Find the action that broke it: `vcr bisect`
+
+Your tests passed at lunch. The agent has made 40 tool calls since, nothing is committed, and
+now `pytest` is red. Which call did it? The airbag has a snapshot from just before every one of
+them, so it can find out the way `git bisect` would: no model tokens, no guessing.
+
+```bash
+vcr bisect -- pytest -q
+# 🔍 Bisecting the airbag timeline of /home/you/myapp
+#    test: pytest -q   (each run in a temporary checkout)
+#   #6 (current)   ✗ fail   (0.4s)
+#   #1             ✓ pass   (0.4s)
+#   #3             ✓ pass   (0.4s)
+#   #4             ✗ fail   (0.4s)
+#
+# 🎯 First bad action: sed -i 's/round(sum(prices), 2)/int(sum(prices))/' billing.py
+#    claude · Bash · 2026-11-12 12:50:24 (2s ago)
+#    snapshot #3 passes → #4 fails   (4 test runs)
+#    files it changed (+ added, - deleted, ~ modified):
+#      ~ billing.py
+#    failing run (last lines):
+#      E       assert 3 == 3.75
+#      …
+#    Go back to just before it:  vcr rewind 3
+```
+
+`vcr rewind 3` puts the project back to just before that action, and `vcr redo` takes you
+forward again if you'd rather fix it by hand. Exit code: `0` when it found the action, `1` when
+there was nothing to find, `2` for a usage error.
+
+**How it works.** The timeline is the one `vcr rewind` shows. Each action turns its
+before-snapshot into the next action's before-snapshot (the last one into the current state,
+which is snapshotted first). `vcr bisect` checks out a snapshot into a **temporary directory**,
+runs your command there (cwd = that checkout), and binary-searches for the first action whose
+before-state passes and whose after-state fails. Six states took four runs above; 100 actions
+take about nine. States with identical files are tested once. Your project, its `.git` and
+the existing snapshots are never modified, and the checkouts are deleted afterwards.
+
+```bash
+vcr bisect --good 2 --bad 5 -- pytest -q        # only search between snapshots #2 and #5
+vcr bisect --timeout 60 -- pytest -q            # per run; a timeout counts as a failure
+vcr bisect -- "pytest -q && ruff check ."       # one quoted string runs through the shell
+vcr bisect --copy-ignored -- pytest -q          # bring node_modules/.venv into each checkout
+vcr bisect --json -- pytest -q                  # status, culprit, snapshots, runs, changes, rewind
+```
+
+Without `--good`, the search starts at the oldest recorded action; without `--bad`, it ends at
+the current state. If the test already fails at the good end, or still passes at the bad end,
+it tells you so and stops instead of guessing. A run that hits `--timeout` (default 300 s) is
+killed with its whole process group, counted as a failure, and the report says so.
+
+**Limits.**
+
+- **Ignored dependencies aren't in snapshots** (`node_modules/`, `.venv/`, build output), so a
+  bare checkout may not be able to run your tests. `--copy-ignored` symlinks the project's
+  *top-level* ignored directories into each checkout. They are shared, not copied: a test that
+  writes into them writes into the real ones, and nested ones (`web/node_modules`) aren't linked.
+- **Editable installs point back at your project.** If your package is installed with
+  `pip install -e`, a test in the checkout may import the project's copy instead. Configure the
+  import path in the test (`pythonpath = ["src"]` in pytest's config does this) or prefix
+  `PYTHONPATH=src`.
+- **Flaky tests confuse any bisect.** Make the command deterministic and fast; it runs about
+  log2(actions) + 2 times.
+- **Only what the airbag snapshotted is searched**: changes made between two hooked tool calls
+  (by you, or a process without hooks) are attributed to the action before them.
+- Each run sees `VCR_BISECT_SNAPSHOT=<n>` in its environment, and no `GIT_DIR`-style variables.
+
+## Rewind your local Postgres too
+
+A file snapshot can't undo `DROP TABLE` on a database server: the data isn't in your project.
+For a **local development database you name explicitly**, the airbag can: it runs `pg_dump`
+right before the destructive SQL, and `vcr undo` puts the database back.
+
+```bash
+export AGENT_VCR_AIRBAG_DATABASES=postgresql://localhost:5433/app_dev   # comma-separated
+```
+
+…or per project, in `.vcr/airbag-databases.json`:
+
+```json
+{"databases": ["postgresql://localhost:5433/app_dev"]}
+```
+
+Both are read. Keep passwords out of that file (it's in your project): use the environment
+variable, `~/.pgpass`, or a local socket with peer auth. Then:
+
+```bash
+vcr airbag db list
+#   ✓ app_dev (localhost:5433)
+vcr airbag check "psql -h localhost -p 5433 -d app_dev -c 'DROP TABLE users'"
+# 🛟 DESTRUCTIVE: destroys project data — snapshot first, undo with `vcr undo`
+#    • SQL DROP on local database app_dev (dumped with pg_dump before it runs)
+```
+
+Without the config, the same command is *irreversible* and the agent has to ask you. With it,
+the agent's `DROP TABLE` goes ahead, you see
+`🛟 Agent VCR airbag: snapshot #9 saved before … (database app_dev snapshotted)`, and:
+
+```bash
+vcr undo
+# ↩ Undid: psql -h localhost -p 5433 -d app_dev -c 'DROP TABLE users'  (claude, 0s ago)
+#   restored database app_dev — back to snapshot #9.
+#     ⟲ database app_dev
+#   Changed your mind? `vcr redo`
+```
+
+`vcr rewind <#>` brings the database back to how it was at that snapshot too, and
+`vcr undo --dry-run` lists `⟲ database …` among the changes. Dumped actions show
+`[db: app_dev]` in `vcr rewind`.
+
+**Only local databases, ever.** URLs must point at `localhost`, `127.0.0.1`, `::1` or a unix
+socket (`postgresql:///app?host=/var/run/postgresql`). Anything else is refused, never dumped:
+
+```bash
+AGENT_VCR_AIRBAG_DATABASES=postgresql://admin:pw@db.prod.internal/app vcr airbag db list
+#   ✗ refused: postgresql://admin:***@db.prod.internal/app: db.prod.internal is not a local database. …
+```
+
+A command against a remote database is still stopped for a human, even when a local one is
+configured. So is a command that is irreversible for another reason too
+(`… && git push --force`), and one that reaches past the dumped database: `DROP DATABASE`,
+`DROP ROLE`, `dropdb`, `rails db:drop`. Those still get a dump, but you're asked first.
+
+**How it works.** A command's target (`-h`, `-p`, `-d`, a URL or conninfo argument, `PGHOST`/
+`PGPORT`/`PGDATABASE`) must match a configured database: same database name and port, same
+machine. ORM commands (`prisma migrate reset`, `rails db:drop`, …) use `DATABASE_URL` from the
+environment or the project's `.env`, or the only configured database. `pg_dump --format=custom`
+writes into the airbag store (`<store>/db/<snapshot>-<db>.dump`, mode `0600`) and the dump is
+recorded in that snapshot. The password goes to `pg_dump` through `PGPASSWORD`, never the
+command line, and is never stored. Undo first dumps the database's *current* state (so the undo
+is undoable), then, in one transaction, drops the user tables, views and sequences and replays
+the dump with `psql`. If `psql` is missing or that fails, it falls back to
+`pg_restore --clean --if-exists --no-owner`, which keeps tables created after the dump, and says
+so.
+
+```bash
+vcr airbag db snapshot -m "before trying the migration"  # dump now (a save point)
+# 🗄  Snapshot #11: dumped database app_dev. Restore with `vcr airbag db restore 11`.
+vcr airbag db restore 11      # only the database back to #11; files untouched
+# ⏪ Restored database app_dev to snapshot #11. Undo with `vcr airbag db restore 12`.
+vcr airbag gc --keep-days 7   # also deletes the dumps of deleted snapshots
+```
+
+**Limits.**
+
+- **Postgres only**, through `pg_dump`/`pg_restore`/`psql` on your PATH (or
+  `AGENT_VCR_AIRBAG_PG_BIN=/usr/lib/postgresql/16/bin`). Use client tools at least as new as
+  the server. If `pg_dump` is missing or fails, the command is stopped for confirmation as before,
+  with the reason.
+- **Dumps happen only before SQL the classifier flags as destructive** (`DROP`, `TRUNCATE`,
+  `DELETE`/`UPDATE` without `WHERE`, `ALTER TABLE … DROP`, ORM resets). `psql -f migrate.sql`
+  isn't inspected. Take a save point first with `vcr airbag db snapshot`.
+- **A restore puts the whole database back**, including rows your app wrote since the dump. The
+  pre-restore dump means you can go forward again.
+- **A dropped database isn't recreated.** After an approved `dropdb app_dev`, run
+  `createdb app_dev` first, then `vcr airbag db restore <#>`.
+- The dump runs inside the hook: big databases make tool calls slow. The default timeout is
+  20 s (`AGENT_VCR_AIRBAG_DB_TIMEOUT`); past it, the command is stopped for confirmation.
+
 ## What it can't do
 
 - **Anything outside the project directory**: other folders, `~`, system files. Deletes and
@@ -265,7 +424,8 @@ Every command takes `--project-dir PATH` if you're not inside the project, and m
   passes as a plain `write`.
 - **Remote state**: databases on a server (including a Postgres/MySQL server on localhost — its
   data isn't in your project), cloud resources, pushed commits, published packages, sent
-  requests. Classified *irreversible* and stopped for confirmation.
+  requests. Classified *irreversible* and stopped for confirmation. The one exception is a
+  local Postgres database you configure ([above](#rewind-your-local-postgres-too)).
 - **Ignored dependency/build directories and files over the size limit** (25 MB,
   `AGENT_VCR_AIRBAG_MAX_FILE_MB`). A restore never overwrites such a file; it's left as-is and
   listed as "left untouched".
@@ -288,6 +448,9 @@ Every command takes `--project-dir PATH` if you're not inside the project, and m
 | `AGENT_VCR_AIRBAG_HOME=/path` | Where snapshot stores live. |
 | `AGENT_VCR_AIRBAG_MAX_FILE_MB=25` | Files larger than this aren't snapshotted. |
 | `AGENT_VCR_AIRBAG_MAX_FILES=200000` | Refuse to protect trees with more files than this (stops you from accidentally snapshotting your home directory). |
+| `AGENT_VCR_AIRBAG_DATABASES=postgresql://localhost/app_dev` | Local Postgres databases to dump before destructive SQL (comma-separated; also `.vcr/airbag-databases.json`). |
+| `AGENT_VCR_AIRBAG_PG_BIN=/usr/lib/postgresql/16/bin` | Where `pg_dump`, `pg_restore` and `psql` are (default: PATH). |
+| `AGENT_VCR_AIRBAG_DB_TIMEOUT=20` | Seconds a `pg_dump` inside a hook may take. |
 
 ## Airbag FAQ
 
@@ -334,11 +497,15 @@ finding has a regression test in `tests/unit/test_airbag_core.py`.
 | `vcr redo` | Undo the last undo/rewind. |
 | `vcr rewind` / `vcr airbag log` | Timeline of protected actions with snapshot numbers (`-n` to limit). |
 | `vcr rewind 12` | Restore snapshot #12 (undoable with `vcr redo`). |
+| `vcr bisect -- <test cmd>` | Find the agent action that broke the tests (`--good N`, `--bad N`, `--timeout S`, `--copy-ignored`, `--json`). |
+| `vcr airbag db list` | Configured local Postgres databases and their dumps. |
+| `vcr airbag db snapshot [--db NAME]` | Dump the configured database(s) now. |
+| `vcr airbag db restore 12 [--db NAME]` | Put only the database(s) back to snapshot #12. |
 | `vcr airbag check "<cmd>"` | Classify a command without running it. |
 | `vcr airbag allow` | Approve the last stopped command for one retry within 10 minutes. |
 | `vcr airbag snapshot -m "msg"` | Manual snapshot. |
 | `vcr airbag status` | Policy, store location, installed hooks. |
-| `vcr airbag gc --keep-days 7 [--keep-last 50]` | Delete old snapshots. |
+| `vcr airbag gc --keep-days 7 [--keep-last 50]` | Delete old snapshots (and their database dumps). |
 | `vcr airbag run -- <cmd>` | Periodic snapshots for agents without hooks. |
 | `vcr airbag uninstall [agent…]` | Remove only the airbag's hook entries. |
 
