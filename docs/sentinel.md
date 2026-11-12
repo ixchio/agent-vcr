@@ -197,7 +197,7 @@ Forgot `bind()`? Sentinel still analyzes, logs one warning, and rejects nothing.
 [`VCRRuntime`](integrations/README.md#openhands) to `callbacks`; pass both the same `VCRRecorder`
 for a single `.vcr` file.
 
-**Legacy V0 (`openhands-ai`, `pip install "ai-agent-vcr[openhands]"`):**
+**Legacy V0 (`openhands-ai`, `pip install "ai-agent-vcr[openhands-legacy]"`):**
 `Sentinel().attach(runtime.event_stream)` subscribes to the event stream, records every event,
 analyzes each `FileWriteAction` / `FileEditAction` (patch-style edits when their
 `FileEditObservation` arrives) and injects warnings back as a user `MessageAction`. V0 cannot

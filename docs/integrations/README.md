@@ -77,8 +77,8 @@ Install the extra that matches your framework:
 pip install ai-agent-vcr                 # raw Python, Claude Code recording, Sentinel
 pip install "ai-agent-vcr[langgraph]"    # LangGraph
 pip install "ai-agent-vcr[crewai]"       # CrewAI
-pip install ai-agent-vcr openhands-sdk openhands-tools   # OpenHands SDK 1.x
-pip install "ai-agent-vcr[openhands]"    # OpenHands legacy V0 (openhands-ai event stream)
+pip install "ai-agent-vcr[openhands]"    # OpenHands SDK 1.x (Python 3.12+)
+pip install "ai-agent-vcr[openhands-legacy]"  # OpenHands legacy V0 (openhands-ai event stream)
 ```
 
 ## Raw Python
@@ -304,7 +304,7 @@ arrives. `VCRRuntime` pairs each `ActionEvent` with its result by `tool_call_id`
 - Recording problems are logged, never raised into the agent run. Message, state and system
   events are not recorded.
 
-**Legacy V0 (`openhands-ai`, `pip install "ai-agent-vcr[openhands]"`):** call
+**Legacy V0 (`openhands-ai`, `pip install "ai-agent-vcr[openhands-legacy]"`):** call
 `VCRRuntime().attach(runtime.event_stream)` instead. Every event on the stream becomes its own
 frame (`openhands:CmdRunAction`, `openhands:CmdOutputObservation`, ...), with the same size
 guardrail. `attach()` refuses an SDK conversation: SDK callbacks can only be passed when the
@@ -380,7 +380,7 @@ The JSON schemas in [`../../schemas/`](../../schemas/) are the language-neutral 
 | CrewAI | `with VCRCrewCallback(rec): crew.kickoff()` | `[crewai]` |
 | OpenHands SDK | `Conversation(..., callbacks=[VCRRuntime()])` | `openhands-sdk` |
 | OpenHands SDK | `protect(conversation, AirbagCallback())` | `openhands-sdk` |
-| OpenHands V0 | `VCRRuntime().attach(runtime.event_stream)` | `[openhands]` |
+| OpenHands V0 | `VCRRuntime().attach(runtime.event_stream)` | `[openhands-legacy]` |
 | Claude Code | `vcr init --claude-code` | — |
 | n8n / HTTP | `POST /api/workflows/{name}/trigger` | `[dashboard]` |
 

@@ -47,7 +47,7 @@ on purpose (`.env`, local databases). Your own `.git` is never read or written b
 
 No. There's no telemetry, and snapshots and recordings stay on your disk. The only network
 calls are ones you set up yourself: `vcr cloud` pushing to a server *you* point it at, MCP tool
-discovery, the optional LLM planner, the Inngest backend, or a workflow `callback_url`.
+discovery, the optional LLM planner, or a workflow `callback_url`.
 
 ### Do I need an API key or an account?
 

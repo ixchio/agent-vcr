@@ -404,10 +404,10 @@ def main() -> None:
 ║     agent self-corrects in the SAME session.                  ║
 ║     Cost: 0 human time. 1 extra LLM call.                    ║
 ║                                                               ║
-║   3 lines to add to any OpenHands session:                    ║
-║     recorder = VCRRecorder()                                  ║
-║     sentinel = Sentinel(recorder=recorder)                    ║
-║     sentinel.attach(runtime.event_stream)                     ║
+║   3 lines to add to any OpenHands SDK conversation:           ║
+║     sentinel = Sentinel(block_on_blocker=True)                ║
+║     conv = Conversation(agent, callbacks=[sentinel], ...)     ║
+║     sentinel.bind(conv)                                       ║
 ║                                                               ║
 ╚═══════════════════════════════════════════════════════════════╝
 {C.RESET}""")
