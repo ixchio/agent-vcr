@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import re
 import shutil
 import site
 import subprocess
@@ -20,7 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from agent_vcr.airbag import agents as ag
-from agent_vcr.airbag.scope import Scope, resolve
+from agent_vcr.airbag.scope import OPT_IN_DIR, Scope, marker_path, resolve
 
 ICONS = {"ok": "✓", "fail": "✗", "warn": "!", "info": "·"}
 
@@ -86,33 +87,48 @@ def _python_check() -> Check:
                  f"{kind}: {sys.executable}")
 
 
-def _shebang(path: Path) -> str | None:
+
+
+#: pip/distlib launchers for interpreter paths with spaces or over 127 characters:
+#: ``#!/bin/sh`` then ``'''exec' "/path/to/python" "$0" "$@"``.
+_SH_EXEC = re.compile(r"""^'''exec' (?:"([^"]+)"|(\S+))""")
+
+
+def launcher_python(path: Path) -> str | None:
+    """The interpreter a ``vcr`` launcher script runs (for display), if it is a script."""
     try:
         with open(path, "rb") as fh:
-            first = fh.readline(512)
+            head = fh.read(4096).decode("utf-8", "replace").splitlines()
     except OSError:
         return None
-    if not first.startswith(b"#!"):
+    if not head or not head[0].startswith("#!"):
         return None
-    text = first[2:].decode("utf-8", "replace").strip()
-    if text.startswith("/usr/bin/env "):
-        name = text.split()[1] if len(text.split()) > 1 else ""
-        return shutil.which(name) or name
-    return text.split()[0] if text else None
+    words = head[0][2:].split()
+    if words and os.path.basename(words[0]) in {"sh", "bash", "dash"}:
+        for line in head[1:4]:
+            match = _SH_EXEC.match(line.strip())
+            if match:
+                return match.group(1) or match.group(2)
+        return None
+    if words and os.path.basename(words[0]) == "env" and len(words) > 1:
+        return shutil.which(words[-1]) or words[-1]
+    return words[0] if words else None
 
 
-def _package_version(python: str) -> str | None:
-    """The agent_vcr version ``python`` imports, as its launcher would run it."""
+def run_launcher(path: Path) -> tuple[int | None, str]:
+    """Run ``path --version`` as your shell would; (exit code or None if it can't start, output)."""
+    env = {k: v for k, v in os.environ.items() if not k.startswith("PYTHON")}
     try:
-        out = subprocess.run(
-            # -E: like the launcher, ignore this shell's PYTHONPATH (it may point elsewhere).
-            [python, "-E", "-c", "import agent_vcr; print(agent_vcr.__version__)"],
-            capture_output=True, text=True, timeout=15, stdin=subprocess.DEVNULL,
-            encoding="utf-8", errors="replace",
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    return out.stdout.strip() if out.returncode == 0 and out.stdout.strip() else None
+        out = subprocess.run([str(path), "--version"], capture_output=True, text=True,
+                             timeout=20, stdin=subprocess.DEVNULL, env=env, encoding="utf-8",
+                             errors="replace")
+    except subprocess.TimeoutExpired:
+        return 1, "timed out"
+    except OSError as err:
+        return None, str(err)
+    return out.returncode, (out.stdout + out.stderr).strip()
+
+
 
 
 def launchers(path_env: str | None = None) -> list[Path]:
@@ -130,7 +146,12 @@ def launchers(path_env: str | None = None) -> list[Path]:
     return found
 
 
+_VERSION = re.compile(r"(\d+\.\d+\.\d+\S*)")
+_IMPORT_FAILED = ("No module named", "ModuleNotFoundError", "ImportError", "agent_vcr")
+
+
 def _launcher_checks(path_env: str | None = None) -> list[Check]:
+    """Each ``vcr`` on PATH, judged by running it: a removal is only suggested when it fails."""
     from agent_vcr import __version__
 
     found = launchers(path_env)
@@ -145,37 +166,47 @@ def _launcher_checks(path_env: str | None = None) -> list[Check]:
         role = "runs when you type `vcr`" if first else "shadowed by an earlier `vcr` on PATH"
         remove = f"rm {where}   (a leftover of an old install; `pipx install ai-agent-vcr` " \
                  "for a fresh one)"
+        bad = "fail" if first else "warn"
+        cid = f"launcher:{launcher}"
         if launcher.is_symlink() and not launcher.exists():
-            checks.append(Check(f"launcher:{launcher}", "fail" if first else "warn",
-                                f"{where} is a broken link", role, remove))
+            checks.append(Check(cid, bad, f"{where} is a broken link", role, remove))
             continue
-        if sys.platform == "win32":
-            checks.append(Check(f"launcher:{launcher}", "info", f"{where}", role))
+        python = launcher_python(launcher.resolve())
+        detail = f"{python}; {role}" if python else role
+        code, output = run_launcher(launcher)
+        if code is None:
+            gone = python is not None and not os.path.exists(python)
+            title = f"{where} points to a Python that no longer exists" if gone \
+                else f"{where} cannot be started"
+            checks.append(Check(cid, bad, title, f"{detail} ({output})", remove))
             continue
-        python = _shebang(launcher.resolve())
-        if python is None:
-            checks.append(Check(f"launcher:{launcher}", "info", f"{where} (not a Python script)",
-                                role))
+        if code != 0:
+            last = output.splitlines()[-1] if output else f"exit code {code}"
+            if python is not None and not os.path.exists(python):
+                checks.append(Check(cid, bad, f"{where} points to a Python that no longer "
+                                    "exists", f"{detail}; {last}", remove))
+            elif any(word in output for word in _IMPORT_FAILED):
+                checks.append(Check(cid, bad, f"{where} is stale: its Python has no agent_vcr "
+                                    "package", f"{detail}; {last}", remove))
+            else:
+                checks.append(Check(cid, "warn", f"{where} exits with an error",
+                                    f"{detail}; {last}",
+                                    f"run `{where} --version` to see why; reinstall with "
+                                    "`pipx install --force ai-agent-vcr`"))
             continue
-        if not os.path.exists(python):
-            checks.append(Check(f"launcher:{launcher}", "fail" if first else "warn",
-                                f"{where} points to a Python that no longer exists",
-                                f"{python}; {role}", remove))
-            continue
-        version = _package_version(python)
+        match = _VERSION.search(output)
+        version = match.group(1) if match else None
         if version is None:
-            checks.append(Check(f"launcher:{launcher}", "fail" if first else "warn",
-                                f"{where} is stale: its Python has no agent_vcr package",
-                                f"{python}; {role}", remove))
+            checks.append(Check(cid, "info", f"{where} (not Agent VCR?)", f"{detail}; {output}"))
         elif first and version != __version__:
-            checks.append(Check(f"launcher:{launcher}", "warn",
-                                f"{where} runs Agent VCR {version}, not {__version__}",
-                                f"{python}; {role}",
+            checks.append(Check(cid, "warn", f"{where} runs Agent VCR {version}, not "
+                                f"{__version__}", detail,
                                 "pipx upgrade ai-agent-vcr, or remove the older install"))
         else:
-            checks.append(Check(f"launcher:{launcher}", "ok", f"{where} → Agent VCR {version}",
-                                role))
+            checks.append(Check(cid, "ok", f"{where} → Agent VCR {version}", role))
     return checks
+
+
 
 
 def _git_check() -> Check:
@@ -304,9 +335,15 @@ def _store_checks(scope: Scope) -> list[Check]:
         checks = [Check("protection", "ok", "This folder is protected", detail)]
     else:
         checks = [Check("protection", "warn", "This folder is not protected",
-                        f"{scope.root}: {scope.why}. Irreversible and destructive commands are "
-                        "still stopped for a human, but nothing is snapshotted.",
+                        f"{scope.root}: {scope.why}. Nothing is snapshotted; irreversible "
+                        "commands and deleting a directory tree are stopped for a human.",
                         scope.opt_in_hint)]
+    bare = scope.path / OPT_IN_DIR
+    if not scope.protected and bare.is_dir() and not marker_path(scope.path).is_file():
+        checks.append(Check("protection:bare-vcr", "info",
+                            f"{bare} exists but is not an airbag opt-in",
+                            "The recorder and `vcr init` create .vcr/ too, so it no longer "
+                            "protects a folder by itself.", "vcr airbag protect"))
     if not scope.protected:
         checks.append(Check("store", "info", "Snapshot stores", str(state_home())))
         return checks
@@ -355,38 +392,71 @@ def fix(project_dir: str | Path = ".") -> list[str]:
     for s in sites:
         stale = bool(s.missing_interpreters) or s.legacy or \
             (not s.guarded and sys.platform != "win32")
-        if s.scope != "user" or not stale:
+        if s.scope != "user" or not stale or s.agent in reinstalled:
             continue
         title = ag.ADAPTERS[s.agent].title
-        if s.legacy and ag.remove_site(s):
-            done.append(f"removed the old {title} hook: {_home_short(s.path)}")
-        if s.agent not in reinstalled:
-            path, _ = ag.install(s.agent, roots[0], user=True)
-            reinstalled.add(s.agent)
-            done.append(f"rewrote the {title} hook for {sys.executable}: {_home_short(path)}"
-                        + (" (run /hooks in Codex again to trust it)" if s.agent == "codex"
-                           else ""))
+        reinstalled.add(s.agent)
+        try:
+            path = install_user_hook(s.agent, roots[0])
+        except (OSError, ValueError) as err:
+            done.append(f"{FAILED} could not rewrite the {title} hook: {err}. Nothing was "
+                        "changed for it.")
+            continue
+        done.append(f"rewrote the {title} hook for {sys.executable}: {_home_short(path)}"
+                    + (" (run /hooks in Codex again to trust it)" if s.agent == "codex"
+                       else ""))
+        for old in sites:  # an older user-level location, only now that the new one works
+            if old.agent == s.agent and old.legacy and old.scope == "user" and \
+                    old.path != path and ag.remove_site(old):
+                done.append(f"removed the old {title} hook: {_home_short(old.path)}")
     migrated: set[str] = set()
     for s in sites:
         if s.scope == "project" and s.agent not in migrated:
             migrated.add(s.agent)
-            done.extend(migrate(s.agent, roots))
+            try:
+                done.extend(migrate(s.agent, roots))
+            except (OSError, ValueError) as err:
+                done.append(f"{FAILED} could not move the {ag.ADAPTERS[s.agent].title} hook "
+                            f"to the user level: {err}. Nothing was changed; the project hook "
+                            f"in {_home_short(s.path)} is still there.")
     return done
 
 
+#: Prefix of a line in :func:`fix`'s result that reports a failure.
+FAILED = "✗"
+
+
+def install_user_hook(name: str, root: Path) -> Path:
+    """Install ``name`` at the user level and check it really is there (raises if not)."""
+    path, _ = ag.install(name, root, user=True)
+    if not ag.installed_ok(name, path):
+        raise ValueError(f"{path}: the airbag hook is not there after writing it")
+    return path
+
+
 def migrate(name: str, roots: list[Path]) -> list[str]:
-    """Move ``name``'s project-level airbag hooks under ``roots`` to the user level."""
-    done: list[str] = []
-    removed: list[Path] = []
+    """Move ``name``'s project-level airbag hooks under ``roots`` to the user level.
+
+    The user-level hook is written (and checked) first; only then are the
+    airbag's entries removed from the project files. If the user-level write
+    fails, this raises and nothing in the project has changed.
+    """
+    sites: list[ag.HookSite] = []
     for root in roots:
-        removed.extend(p for p in ag.uninstall_paths(name, root, user=False) if p not in removed)
-    if not removed:
-        return done
-    path, _ = ag.install(name, roots[0], user=True)
+        for found in ag.find_hooks(root):
+            if found.agent == name and found.scope == "project" and \
+                    all(found.path != s.path for s in sites):
+                sites.append(found)
+    if not sites:
+        return []
+    path = install_user_hook(name, roots[0])
     title = ag.ADAPTERS[name].title
-    for old in removed:
-        shown = next((os.path.relpath(old, r) for r in roots if old.is_relative_to(r)),
-                     _home_short(old))
+    done: list[str] = []
+    for old in sites:
+        if not ag.remove_site(old):
+            continue
+        shown = next((os.path.relpath(old.path, r) for r in roots
+                      if old.path.is_relative_to(r)), _home_short(old.path))
         done.append(f"moved the {title} hook from {shown} to {_home_short(path)}")
     return done
 

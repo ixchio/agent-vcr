@@ -21,8 +21,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from agent_vcr.airbag.classify import Verdict, classify, classify_file_write
-from agent_vcr.airbag.scope import GuardStore, Scope, resolve_first
+from agent_vcr.airbag.classify import BULK_DELETE, Verdict, classify, classify_file_write
+from agent_vcr.airbag.scope import GuardStore, Scope, resolve, resolve_first
 from agent_vcr.airbag.store import (
     AirbagError,
     DatabaseDump,
@@ -111,7 +111,7 @@ class Airbag:
         #: False: unprotected directory — classify and stop, never snapshot.
         self.protected = scope is None or scope.protected
         if store is None:
-            store = ShadowStore(find_project_root(project_dir)) if self.protected \
+            store = ShadowStore(_project_root(project_dir)) if self.protected \
                 else GuardStore(project_dir)
         self.store = store
 
@@ -161,8 +161,13 @@ class Airbag:
         if self.protected:
             self._snapshot_for(call, verdict, decision, label)
         elif verdict.level == "destructive" and self.scope is not None:
-            # No snapshot here, so "undoable with `vcr undo`" would be a lie: a human decides.
-            verdict.raise_to("irreversible", self.scope.unprotected_reason, "unprotected")
+            if BULK_DELETE in verdict.categories:
+                # A whole tree, no snapshot: "undo with `vcr undo`" would be a lie.
+                verdict.raise_to("irreversible", self.scope.unprotected_reason, "unprotected")
+            else:
+                # mv, sed -i, a redirect, one file: goes ahead, the human is told.
+                decision.user_message = self.scope.notice
+                return
         self._escalate_or_notify(call, verdict, decision, label)
 
     def _snapshot_for(self, call: ToolCall, verdict: Verdict, decision: Decision,
@@ -636,6 +641,17 @@ class Airbag:
             })
         except OSError:
             pass
+
+
+def _project_root(project_dir: str | Path) -> Path:
+    """The root a command-line ``vcr undo``/``rewind``/... acts on.
+
+    The protection rule's root when there is one (so a project inside a
+    dotfiles repository at ``~`` is the project, not ``~``), else the plain
+    ``find_project_root`` answer: the user named this directory.
+    """
+    scope = resolve(project_dir)
+    return scope.root if scope.protected else find_project_root(project_dir)
 
 
 def _dumped_by(action: dict[str, Any], snap: Snapshot) -> bool:

@@ -9,6 +9,7 @@ hooks (Cursor and Copilot CLI read ``.claude/settings.json``).
 from __future__ import annotations
 
 import contextlib
+import errno
 import json
 import os
 import re
@@ -337,9 +338,9 @@ def hook_interpreter(command: str) -> str | None:
     idx = command.find(marker)
     if idx < 0:
         return None
+    # Plain `PY`, guarded `test -x PY && exec PY`, Cline's `exec PY`: PY is the last word
+    # (shlex keeps a quoted path whole, even one containing "exec " or "&&").
     prefix = command[:idx].strip()
-    if "exec " in prefix:
-        prefix = prefix.rsplit("exec ", 1)[1].strip()
     if prefix.startswith("& '") and prefix.endswith("'"):
         return prefix[3:-1].replace("''", "'")
     if prefix.startswith('"') and prefix.endswith('"'):
@@ -352,25 +353,46 @@ def hook_interpreter(command: str) -> str | None:
 
 
 def _read_json(path: Path) -> dict[str, Any]:
-    if not path.exists() or path.stat().st_size == 0:
-        return {}
-    data = json.loads(path.read_text(encoding="utf-8"))
+    """A JSON settings file; errors name the file (``ValueError`` / ``OSError``)."""
+    try:
+        if not path.exists() or path.stat().st_size == 0:
+            return {}
+        text = path.read_text(encoding="utf-8")
+    except OSError as err:
+        raise OSError(err.errno, f"cannot read {path}: {err.strerror or err}") from err
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as err:
+        raise ValueError(f"{path} is not valid JSON ({err}); fix or remove it, then try "
+                         "again") from err
     if not isinstance(data, dict):
         raise ValueError(f"{path} must contain a JSON object")
     return data
 
 
+def _check_writable(path: Path) -> None:
+    """Refuse to replace a file the user made read-only (``os.replace`` would ignore it)."""
+    if path.exists() and not os.access(path, os.W_OK):
+        raise OSError(errno.EACCES, f"cannot write {path}: it is read-only")
+
+
 def _write_json(path: Path, data: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=path.name + ".", suffix=".tmp")
+    _check_writable(path)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=path.name + ".", suffix=".tmp")
+    except OSError as err:
+        raise OSError(err.errno, f"cannot write {path}: {err.strerror or err}") from err
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             json.dump(data, fh, indent=2)
             fh.write("\n")
         os.replace(tmp, path)
-    except BaseException:
+    except BaseException as err:
         with contextlib.suppress(OSError):
             os.unlink(tmp)
+        if isinstance(err, OSError):
+            raise OSError(err.errno, f"cannot write {path}: {err.strerror or err}") from err
         raise
 
 
@@ -627,15 +649,21 @@ def _install_cline(path: Path, statusline: bool = False) -> None:
 
 
 def _write_text(path: Path, text: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=path.name + ".", suffix=".tmp")
+    _check_writable(path)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=path.name + ".", suffix=".tmp")
+    except OSError as err:
+        raise OSError(err.errno, f"cannot write {path}: {err.strerror or err}") from err
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write(text)
         os.replace(tmp, path)
-    except BaseException:
+    except BaseException as err:
         with contextlib.suppress(OSError):
             os.unlink(tmp)
+        if isinstance(err, OSError):
+            raise OSError(err.errno, f"cannot write {path}: {err.strerror or err}") from err
         raise
 
 
@@ -785,6 +813,13 @@ def uninstall_paths(name: str, root: str | Path, user: bool = False) -> list[Pat
     return removed
 
 
+def installed_ok(name: str, path: Path) -> bool:
+    """``path`` holds ``name``'s airbag hook, with an interpreter that exists."""
+    commands, _ = _commands_in(name, path)
+    pythons = [hook_interpreter(c) for c in commands]
+    return bool(commands) and all(p and _runnable(p) for p in pythons)
+
+
 def remove_site(site: HookSite) -> bool:
     """Remove the airbag's entries from one found hook file."""
     return _remove_ours(site.agent, site.path, site.scope == "project")
@@ -805,6 +840,9 @@ class HookSite:
     commands: list[str]
     #: Installed where an older version put it (e.g. 1.7.0's .claude/settings.json).
     legacy: bool = False
+    #: Every command degrades to a no-op when its interpreter is gone (POSIX). Copilot's
+    #: ``powershell`` variant only runs on Windows and is not counted.
+    guarded: bool = True
 
     @property
     def interpreters(self) -> list[str]:
@@ -814,12 +852,6 @@ class HookSite:
     @property
     def missing_interpreters(self) -> list[str]:
         return [p for p in self.interpreters if not _runnable(p)]
-
-    @property
-    def guarded(self) -> bool:
-        """Every command degrades to a no-op when its interpreter is gone (POSIX)."""
-        return all(c.startswith("test -x ") or c.startswith("exec ") or self.agent == "opencode"
-                   for c in self.commands)
 
     def to_dict(self) -> dict[str, Any]:
         return {"agent": self.agent, "scope": self.scope, "path": str(self.path),
@@ -833,42 +865,53 @@ def _runnable(path: str) -> bool:
         os.access(str(candidate), os.X_OK)
 
 
-def _commands_in(name: str, path: Path) -> list[str]:
+def _is_guarded(command: str) -> bool:
+    return command.startswith("test -x ")
+
+
+def _commands_in(name: str, path: Path) -> tuple[list[str], bool]:
+    """The airbag commands in one hook file, and whether they are all guarded."""
     try:
         text = path.read_text(errors="replace", encoding="utf-8")
     except OSError:
-        return []
+        return [], True
     if MARKER.strip() not in text and STATUSLINE_MODULE not in text:
-        return []
-    if name == "opencode":
+        return [], True
+    if name == "opencode":  # the plugin returns quietly when spawning Python fails
         match = _OPENCODE_PYTHON.search(text)
         if match is None:
-            return []
+            return [], True
         with contextlib.suppress(json.JSONDecodeError):
-            return [f"{shlex.quote(str(json.loads(match.group(1))))} {MARKER}opencode pre"]
-        return []
-    if name == "cline":
-        return [line.strip() for line in text.splitlines()
-                if line.startswith("exec ") and MARKER.strip() in line]
+            python = shlex.quote(str(json.loads(match.group(1))))
+            return [f"{python} {MARKER}opencode pre"], True
+        return [], True
+    if name == "cline":  # 1.7.1 scripts check the interpreter on a `test -x` line first
+        lines = [line.strip() for line in text.splitlines()]
+        commands = [line for line in lines if line.startswith("exec ") and MARKER.strip() in line]
+        return commands, any(line.startswith("test -x ") for line in lines)
     try:
         data: Any = json.loads(text)
     except json.JSONDecodeError:
-        return []
+        return [], True
     out: list[str] = []
+    guarded = True
 
-    def walk(node: Any) -> None:
+    def walk(node: Any, key: str = "") -> None:
+        nonlocal guarded
         if isinstance(node, dict):
-            for value in node.values():
-                walk(value)
+            for k, value in node.items():
+                walk(value, str(k))
         elif isinstance(node, list):
             for value in node:
-                walk(value)
+                walk(value, key)
         elif isinstance(node, str) and (MARKER.strip() in node or
                                         f"-m {STATUSLINE_MODULE}" in node):
             out.append(node)
+            if key != "powershell" and not _is_guarded(node):
+                guarded = False
 
     walk(data)
-    return out
+    return out, guarded
 
 
 def find_hooks(root: str | Path) -> list[HookSite]:
@@ -880,9 +923,9 @@ def find_hooks(root: str | Path) -> list[HookSite]:
             if path in seen:
                 continue
             seen.add(path)
-            commands = _commands_in(name, path)
+            commands, guarded = _commands_in(name, path)
             if commands:
-                sites.append(HookSite(name, scope, path, commands, legacy))
+                sites.append(HookSite(name, scope, path, commands, legacy, guarded))
     return sites
 
 
