@@ -26,11 +26,16 @@ from agent_vcr.recorder import (
     _IF_EXISTS_CHOICES,
     _handle_existing_recording,
     _validate_session_id,
+    iter_frames_on_disk,
     rewrite_session_file,
+    rewrite_session_file_from_disk,
     update_manifest,
 )
 
 logger = logging.getLogger(__name__)
+
+#: Upper bound for reading evicted frames back from disk / rewriting a session file.
+_DISK_IO_TIMEOUT_S = 300.0
 
 
 class AsyncVCRRecorder:
@@ -46,7 +51,17 @@ class AsyncVCRRecorder:
         buffer_size: int = 100,
         diff_mode: bool = False,
         on_frame_recorded: Any | None = None,
+        max_cached_frames: int | None = None,
     ):
+        """
+        Args:
+            max_cached_frames: Bounded memory, as in :class:`~agent_vcr.recorder.VCRRecorder`:
+                keep at most this many already-written frames in RAM; older ones are read
+                back from the ``.vcr`` file when needed. ``None`` (default) keeps all.
+        """
+        if max_cached_frames is not None and max_cached_frames < 0:
+            raise ValueError("max_cached_frames must be >= 0 or None")
+        self.max_cached_frames = max_cached_frames
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -61,6 +76,8 @@ class AsyncVCRRecorder:
         self._lock = asyncio.Lock()
         self._cache = VCRCache()
         self._header_frame_count: int | None = None
+        # Frames of the current session evicted from the cache (on disk only).
+        self._evicted = 0
 
     async def __aenter__(self) -> AsyncVCRRecorder:
         """Support ``async with`` usage — auto-saves on exit."""
@@ -108,6 +125,9 @@ class AsyncVCRRecorder:
             )
             self._frames = []
             self._previous_state = None
+            # A fresh cache: frames of earlier sessions are on disk and must not pile up.
+            self._cache = VCRCache()
+            self._evicted = 0
             self._cache.add_session(self._session)
 
             logger.info("Started async session: %s", self._session.session_id)
@@ -166,7 +186,7 @@ class AsyncVCRRecorder:
             self._previous_state = serialized_output
 
             # Update session statistics
-            self._session.frame_count = len(
+            self._session.frame_count = self._evicted + len(
                 self._cache.get_frames(self._session.session_id)
             )
             self._session.updated_at = datetime.now(timezone.utc)
@@ -301,11 +321,12 @@ class AsyncVCRRecorder:
             if self._header_frame_count != self._session.frame_count:
                 # Header totals (frame_count, tokens, cost) were written at
                 # session start; rewrite atomically so they match the frames.
-                await asyncio.to_thread(
-                    rewrite_session_file,
-                    path,
-                    self._session,
-                    list(self._cache.get_frames(self._session.session_id)),
+                # Frames are streamed from the file, not from memory.
+                await asyncio.wait_for(
+                    asyncio.to_thread(self._rewrite_file, path, self._session.model_copy(),
+                                      self._evicted,
+                                      list(self._cache.get_frames(self._session.session_id))),
+                    timeout=_DISK_IO_TIMEOUT_S,
                 )
                 self._header_frame_count = self._session.frame_count
             await self._update_session_manifest()
@@ -317,10 +338,52 @@ class AsyncVCRRecorder:
         return self._session
 
     def get_frames(self) -> list[Frame]:
-        """Get all recorded frames (including already-flushed ones)."""
-        if self._session:
-            return self._cache.get_frames(self._session.session_id)
-        return list(self._frames)
+        """Get all recorded frames (including already-flushed ones).
+
+        With ``max_cached_frames`` set, evicted frames are read back from the ``.vcr``
+        file with blocking I/O; in a coroutine prefer ``await load_frames()``.
+        """
+        if not self._session:
+            return list(self._frames)
+        cached = self._cache.get_frames(self._session.session_id)
+        if not self._evicted:
+            return cached
+        on_disk = list(iter_frames_on_disk(self._get_session_path(), 0, self._evicted))
+        return on_disk + list(cached)
+
+    async def load_frames(self) -> list[Frame]:
+        """All frames, reading evicted ones from disk off the event loop."""
+        if not self._session or not self._evicted:
+            return list(self.get_frames())
+        evicted = self._evicted
+        cached = list(self._cache.get_frames(self._session.session_id))
+        path = self._get_session_path()
+        on_disk = await asyncio.wait_for(
+            asyncio.to_thread(lambda: list(iter_frames_on_disk(path, 0, evicted))),
+            timeout=_DISK_IO_TIMEOUT_S,
+        )
+        return on_disk + cached
+
+    @property
+    def cached_frame_count(self) -> int:
+        """Number of frames of the current session held in memory."""
+        if not self._session:
+            return len(self._frames)
+        return len(self._cache.get_frames(self._session.session_id))
+
+    async def _frame_at(self, index: int) -> Frame:
+        """Frame ``index`` of the current session, from the cache or the file."""
+        assert self._session is not None
+        if index >= self._evicted:
+            return self._cache.get_frames(self._session.session_id)[index - self._evicted]
+        path = self._get_session_path()
+        found = await asyncio.wait_for(
+            asyncio.to_thread(lambda: list(iter_frames_on_disk(path, index, index + 1))),
+            timeout=_DISK_IO_TIMEOUT_S,
+        )
+        if not found:
+            raise ValueError(f"Frame {index} not found in {path}")
+        return found[0]
 
     @property
     def frames(self) -> list[Frame]:
@@ -337,11 +400,11 @@ class AsyncVCRRecorder:
         if self._session is None:
             raise RuntimeError("No active session to fork from.")
 
-        all_frames = self.get_frames()
-        if from_frame < 0 or from_frame >= len(all_frames):
-            raise ValueError(f"Frame {from_frame} not found (have {len(all_frames)} frames)")
+        total = self._session.frame_count
+        if from_frame < 0 or from_frame >= total:
+            raise ValueError(f"Frame {from_frame} not found (have {total} frames)")
 
-        target_frame = all_frames[from_frame]
+        target_frame = await self._frame_at(from_frame)
         base_state = StateSerializer.deserialize(target_frame.output_state)
         forked_state = dict(base_state)
         if state_overrides:
@@ -352,6 +415,7 @@ class AsyncVCRRecorder:
             auto_save=self.auto_save,
             buffer_size=self.buffer_size,
             diff_mode=self.diff_mode,
+            max_cached_frames=self.max_cached_frames,
         )
 
         await new_recorder.start_session(
@@ -430,6 +494,32 @@ class AsyncVCRRecorder:
         # writes aren't practical for append-mode JSONL.
         await asyncio.to_thread(self._fsync_path, path)
         self._frames = []
+        self._evict_flushed()
+
+    def _evict_flushed(self) -> None:
+        """Drop the oldest written frames beyond ``max_cached_frames`` from memory."""
+        if self.max_cached_frames is None or self._session is None:
+            return
+        cached = self._cache.get_frames(self._session.session_id)
+        excess = min(len(cached) - self.max_cached_frames, len(cached) - len(self._frames))
+        if excess > 0:
+            del cached[:excess]
+            self._evicted += excess
+
+    @staticmethod
+    def _rewrite_file(path: Path, session: Session, evicted: int,
+                      cached: list[Frame]) -> None:
+        """Stream-rewrite ``path`` (see ``VCRRecorder._rewrite_file``); runs in a thread."""
+        copied = rewrite_session_file_from_disk(path, session, session.frame_count)
+        if copied == session.frame_count:
+            return
+        if not evicted:
+            rewrite_session_file(path, session, cached)
+        else:
+            logger.warning(
+                "%s has %d frames, expected %d; evicted frames cannot be restored",
+                path, copied, session.frame_count,
+            )
 
     @staticmethod
     def _fsync_path(path: Path) -> None:
