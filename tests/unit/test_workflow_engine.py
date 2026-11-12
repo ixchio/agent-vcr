@@ -28,6 +28,7 @@ from agent_vcr.workflows import (
     schedule_due,
 )
 from agent_vcr.workflows.backend import (
+    InngestBackendUnavailable,
     InngestWorkflowBackend,
     LocalWorkflowBackend,
     create_workflow_backend,
@@ -629,5 +630,57 @@ class TestBackendAndCancel:
             assert final.status == RunStatus.ABORTED and final.cancelled
             assert log == ["echo:A", "undo:A"]
             assert eng.resume(record.run_id).status == RunStatus.ABORTED  # not revived
+        finally:
+            eng.shutdown()
+
+
+# -- Inngest: not available yet; the simulate double cancels with compensation ----------
+
+
+class TestInngestUnavailable:
+    def test_factory_raises_without_simulate(self, tmp_path: Path,
+                                             monkeypatch: pytest.MonkeyPatch) -> None:
+        with pytest.raises(NotImplementedError, match="not available yet"):
+            create_workflow_backend("inngest", vcr_dir=str(tmp_path))
+        with pytest.raises(InngestBackendUnavailable, match="create_workflow_backend\\('local'\\)"):
+            create_workflow_backend("inngest", inngest_client=object(), simulate=True)
+        monkeypatch.setenv("INNGEST_EVENT_KEY", "key")
+        assert isinstance(create_workflow_backend("auto", vcr_dir=str(tmp_path)),
+                          LocalWorkflowBackend)
+
+    def test_double_never_executes_steps(self, tmp_path: Path) -> None:
+        log: list[str] = []
+        eng = _engine(tmp_path, _gateway(log))
+        backend = create_workflow_backend("inngest", simulate=True, engine=eng)
+        try:
+            run_id = backend.dispatch(_def([{"id": "a", "ref": "echo", "inputs": {"value": 1}}]))
+            assert isinstance(run_id, str) and log == []
+            record = backend.get_run(run_id)
+            assert record is not None and record.status == RunStatus.RUNNING
+            assert isinstance(backend, InngestWorkflowBackend)
+            assert backend.dispatched_events[0]["name"] == "agent_vcr/wf.triggered"
+        finally:
+            eng.shutdown()
+
+    def test_double_cancel_runs_owed_compensations(self, tmp_path: Path) -> None:
+        log: list[str] = []
+        eng = _engine(tmp_path, _gateway(log))
+        backend = InngestWorkflowBackend(simulate=True, engine=eng)
+        wf = _def([
+            {"id": "charge", "ref": "echo", "inputs": {"value": "C"},
+             "compensate": {"ref": "undo", "inputs": {"value": "$charge.id"}}},
+            {"id": "ship", "ref": "echo", "depends_on": ["charge"]},
+        ])
+        try:
+            run_id = backend.dispatch(wf)
+            backend.memoize_step(run_id, "charge", {"id": "ch_1"})
+            backend.memoize_step(run_id, "charge", {"id": "ch_2"})  # idempotent: first wins
+            assert backend.cancel_run(run_id) is True
+            final = backend.get_run(run_id)
+            assert final is not None and final.status == RunStatus.ABORTED
+            assert final.cancelled and final.compensated
+            assert log == ["undo:ch_1"]
+            assert backend.cancel_run(run_id) is False  # terminal
+            assert backend.cancel_run("no-such-run") is False
         finally:
             eng.shutdown()

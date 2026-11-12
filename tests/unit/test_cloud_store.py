@@ -585,19 +585,13 @@ class TestWorkflowBackends:
         assert updated_rec is not None
         assert updated_rec.status == RunStatus.ABORTED
 
-    def test_inngest_backend_with_mock_client(self) -> None:
+    def test_real_inngest_backend_is_unavailable(self) -> None:
         mock_client = MagicMock()
-        backend = InngestWorkflowBackend(client=mock_client)
-
-        wf = WorkflowDef(
-            name="cloud_event",
-            version=1,
-            steps=[WorkflowStep(id="s1", kind=StepKind.TOOL, ref="ping")],
-        )
-
-        run_id = backend.dispatch(wf, inputs={"key": "value"})
-        assert isinstance(run_id, str)
-        mock_client.send.assert_called_once()
+        with pytest.raises(NotImplementedError, match="not available yet"):
+            InngestWorkflowBackend(client=mock_client)
+        with pytest.raises(NotImplementedError, match="not available yet"):
+            InngestWorkflowBackend()
+        mock_client.send.assert_not_called()
 
     def test_workflow_backend_factory(self) -> None:
         local_backend = create_workflow_backend("local")

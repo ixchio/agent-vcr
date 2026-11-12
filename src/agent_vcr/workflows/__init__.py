@@ -1,6 +1,7 @@
 """Workflow engine — durable DAG execution with compensation (Phase 5)."""
 
 from agent_vcr.workflows.backend import (
+    InngestBackendUnavailable,
     InngestWorkflowBackend,
     LocalWorkflowBackend,
     WorkflowBackend,
@@ -48,5 +49,6 @@ __all__ = [
     "WorkflowBackend",
     "LocalWorkflowBackend",
     "InngestWorkflowBackend",
+    "InngestBackendUnavailable",
     "create_workflow_backend",
 ]
