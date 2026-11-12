@@ -383,7 +383,9 @@ def migrate(name: str, roots: list[Path]) -> list[str]:
     path, _ = ag.install(name, roots[0], user=True)
     title = ag.ADAPTERS[name].title
     for old in removed:
-        done.append(f"moved the {title} hook from {old} to {_home_short(path)}")
+        shown = next((os.path.relpath(old, r) for r in roots if old.is_relative_to(r)),
+                     _home_short(old))
+        done.append(f"moved the {title} hook from {shown} to {_home_short(path)}")
     return done
 
 

@@ -27,8 +27,8 @@ printf 'def total(xs):\n    return round(sum(xs), 2)  # uncommitted fix\n' > src
 git log --oneline && git status --short
 
 step "Arm the airbag for Claude Code"
-vcr airbag install claude --project-dir "$PROJECT"
-HOOK="$(python3 -c 'import json,sys; s=json.load(open(sys.argv[1])); print(s["hooks"]["PreToolUse"][0]["hooks"][0]["command"])' .claude/settings.json)"
+vcr airbag install claude --project --project-dir "$PROJECT"   # demo only: never touch ~/.claude
+HOOK="$(python3 -c 'import json,sys; s=json.load(open(sys.argv[1])); print(s["hooks"]["PreToolUse"][0]["hooks"][0]["command"])' .claude/settings.local.json)"
 
 step "The agent decides to 'clean up' and runs: rm -rf $PROJECT"
 printf '{"session_id":"demo","cwd":"%s","hook_event_name":"PreToolUse","tool_name":"Bash","tool_use_id":"t1","tool_input":{"command":"rm -rf %s"}}' \
