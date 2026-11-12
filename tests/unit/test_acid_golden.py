@@ -484,7 +484,7 @@ class TestACIDWorkspace:
             acid._workspace_path("escape/secret")
 
         # Escrowing the symlink object itself is safe; its target is metadata.
-        assert acid._workspace_path("escape") == workspace / "escape"
+        assert acid._workspace_path("escape") == workspace.resolve() / "escape"
         shutil.rmtree(outside)
 
     def test_begin_rejects_dirty_tracked_files_by_default(self):
