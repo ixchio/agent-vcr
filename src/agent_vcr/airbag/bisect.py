@@ -31,7 +31,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-from agent_vcr.airbag.core import Airbag
+from agent_vcr.airbag.core import Airbag, describe_action
 from agent_vcr.airbag.store import AirbagError, Snapshot, _clean_env
 
 DEFAULT_TIMEOUT = 300.0
@@ -49,9 +49,7 @@ class Step:
     def describe(self) -> str:
         if self.kind == "restore":
             return f"vcr undo/rewind to snapshot #{self.event.get('to')}"
-        text = (self.event.get("command") or ", ".join(self.event.get("paths") or [])
-                or self.event.get("tool") or "?")
-        return str(text)
+        return describe_action(self.event)
 
 
 @dataclass

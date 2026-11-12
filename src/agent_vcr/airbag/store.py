@@ -102,6 +102,8 @@ class RestoreResult:
     databases: list[str] = field(default_factory=list)
     #: Caveats about what was restored (e.g. a database restore that was not exact).
     notes: list[str] = field(default_factory=list)
+    #: The subset of ``written`` that already existed and was changed back (not re-created).
+    modified: list[str] = field(default_factory=list)
 
     @property
     def changed(self) -> int:
@@ -797,6 +799,7 @@ class ShadowStore:
             result = RestoreResult(target=target, before=before)
             to_write: list[str] = []
             to_delete: list[str] = []
+            modified: set[str] = set()
             for status, rel, gitlink in self._raw_diff(before, target):
                 if not _safe_rel(rel):
                     result.failed.append(rel)
@@ -810,6 +813,8 @@ class ShadowStore:
                     result.kept.append(rel)
                 else:
                     to_write.append(rel)
+                    if status != "A":
+                        modified.add(rel)
             for rel in to_delete:
                 full = self.root / rel
                 try:
@@ -861,6 +866,7 @@ class ShadowStore:
                             full = self.root / rel
                             if full.is_file() and not full.is_symlink():
                                 os.chmod(full, mode)
+            result.modified = [rel for rel in result.written if rel in modified]
             git_note = self._restore_git_dir()
             if git_note:
                 result.written.append(git_note)

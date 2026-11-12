@@ -599,6 +599,32 @@ def downgrade_for_databases(verdict: Verdict, names: list[str],
                      f"{', '.join(names)} ({note})", "database")
 
 
+def describe_action(event: dict[str, Any], root: str | os.PathLike[str] | None = None) -> str:
+    """A short human name for a logged action: its command, or ``Edit src/app.py``.
+
+    Paths inside ``root`` (default: the action's cwd) are shown relative to it.
+    """
+    command = str(event.get("command") or "").strip()
+    if command:
+        return command
+    base = str(root or event.get("cwd") or "")
+    shown = []
+    for raw in list(event.get("paths") or [])[:3]:
+        path = str(raw)
+        if base:
+            try:
+                rel = os.path.relpath(path, base)
+                if not rel.startswith(".."):
+                    path = rel
+            except ValueError:  # different drives on Windows
+                pass
+        shown.append(path.replace(os.sep, "/"))
+    if len(event.get("paths") or []) > 3:
+        shown.append("…")
+    tool = str(event.get("tool") or "").strip()
+    return " ".join(part for part in (tool, ", ".join(shown)) if part) or "?"
+
+
 def _pos(state: dict[str, Any], count: int) -> int:
     raw = state.get("undo_pos")
     return count if raw is None else max(0, min(int(raw), count))

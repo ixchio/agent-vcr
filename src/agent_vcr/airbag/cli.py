@@ -10,7 +10,7 @@ import time
 from typing import Any
 
 from agent_vcr.airbag.classify import classify
-from agent_vcr.airbag.core import Airbag, Policy
+from agent_vcr.airbag.core import Airbag, Policy, describe_action
 from agent_vcr.airbag.store import AirbagError, RestoreResult, Snapshot
 
 LEVEL_ICON = {"read": "·", "write": "✎", "destructive": "🛟", "irreversible": "⚠"}
@@ -181,8 +181,10 @@ def _summary(result: RestoreResult) -> str:
 
 
 def _print_changes(result: RestoreResult, limit: int = 12) -> None:
+    # Same signs as `vcr undo --dry-run`: + comes back, ~ changed back, - removed.
+    modified = set(result.modified)
     for rel in result.written[:limit]:
-        print(f"    + {rel}")
+        print(f"    {'~' if rel in modified else '+'} {rel}")
     for rel in result.deleted[:limit]:
         print(f"    - {rel}")
     extra = len(result.written) + len(result.deleted) - 2 * limit
@@ -202,7 +204,7 @@ def cmd_undo(args: argparse.Namespace) -> None:
             print(NOTHING_TO_UNDO)
             return
         action, snap, changes = preview
-        print(f"Would undo: {action.get('command') or action.get('tool')}  "
+        print(f"Would undo: {describe_action(action, bag.root)}  "
               f"({action.get('agent')}, {_ago(float(action.get('time', 0)))}) → snapshot {snap.short}")
         for status, rel in changes[:30]:
             # diff(current -> snapshot): A = comes back, D = will be removed (matches `vcr undo`)
@@ -224,23 +226,46 @@ def cmd_undo(args: argparse.Namespace) -> None:
                           "databases": restore.databases, "failed": restore.failed},
                          default=str))
         return
-    print(f"↩ Undid: {action.get('command') or action.get('tool')}  "
+    print(f"↩ Undid: {describe_action(action, bag.root)}  "
           f"({action.get('agent')}, {_ago(float(action.get('time', 0)))})")
     print(f"  {_summary(restore)} — back to snapshot {restore.target.short}.")
     _print_changes(restore)
     print("  Changed your mind? `vcr redo`")
 
 
+def _actions_to_redo(bag: Airbag) -> list[dict[str, Any]]:
+    """The actions the next `vcr redo` brings back (empty after a rewind past the log)."""
+    state = bag.store.read_state()
+    stack = state.get("redo") or []
+    if not stack:
+        return []
+    actions = bag.actions()
+    cur, nxt = state.get("undo_pos"), stack[-1].get("pos")
+    lo = len(actions) if cur is None else max(0, min(int(cur), len(actions)))
+    hi = len(actions) if nxt is None else max(0, min(int(nxt), len(actions)))
+    return actions[lo:hi]
+
+
 def cmd_redo(args: argparse.Namespace) -> None:
+    bag = _bag(args)
+    redone = _actions_to_redo(bag)
     try:
-        result = _bag(args).redo()
+        result = bag.redo()
     except KeyError:
         _fail("the snapshot to redo to was deleted by `vcr airbag gc`")
         return
     if result is None:
         print("Nothing to redo.")
         return
-    print(f"↪ Redid: {_summary(result)} — back to snapshot {result.target.short}.")
+    if len(redone) == 1:
+        action = redone[0]
+        print(f"↪ Redid: {describe_action(action, bag.root)}  "
+              f"({action.get('agent')}, {_ago(float(action.get('time', 0)))})")
+    elif redone:
+        print(f"↪ Redid {len(redone)} actions, up to: {describe_action(redone[-1], bag.root)}")
+    else:
+        print("↪ Redid the last undo.")
+    print(f"  {_summary(result)} — now at snapshot {result.target.short}.")
     _print_changes(result)
 
 
@@ -285,8 +310,7 @@ def cmd_rewind_list(args: argparse.Namespace) -> None:
         seq = action.get("snapshot")
         snap: Snapshot | None = snaps.get(int(seq)) if seq is not None else None
         icon = LEVEL_ICON.get(str(action.get("level")), "?")
-        text = action.get("command") or ", ".join(action.get("paths") or []) or action.get("tool")
-        text = str(text)[:70]
+        text = describe_action(action, bag.root)[:70]
         if action.get("databases"):
             marker = f"  [db: {', '.join(str(d) for d in action['databases'])}]"
             text = text[:max(20, 70 - len(marker))] + marker

@@ -30,7 +30,7 @@ from typing import IO, Any, Callable
 
 from agent_vcr import __version__
 from agent_vcr.airbag.cli import LEVEL_EXPLAIN, NOTHING_TO_UNDO, _ago, _summary
-from agent_vcr.airbag.core import Airbag, Policy
+from agent_vcr.airbag.core import Airbag, Policy, describe_action
 from agent_vcr.airbag.store import AirbagError, RestoreResult, Snapshot
 
 logger = logging.getLogger("agent_vcr.mcp")
@@ -194,6 +194,7 @@ def _action_info(action: dict[str, Any]) -> dict[str, Any]:
         "agent": action.get("agent"), "tool": action.get("tool"),
         "level": action.get("level"),
         "command": _clip(action.get("command") or ""),
+        "title": _clip(describe_action(action)),
         "paths": list(action.get("paths") or [])[:20],
         "decision": action.get("decision"),
         "reasons": list(action.get("reasons") or []),

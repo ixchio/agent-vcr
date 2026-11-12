@@ -623,3 +623,39 @@ def test_cli_undo_finds_a_deleted_project(project: Path, capsys: pytest.CaptureF
     shutil.rmtree(project / ".git")
     cli.main(["undo", "--project-dir", str(project / "src")])
     assert _git(project, "rev-parse", "HEAD") == head
+
+
+def test_undo_and_redo_output_names_actions_and_uses_dry_run_signs(
+        project: Path, capsys: pytest.CaptureFixture) -> None:
+    """Seen in a live Claude Code session: undo showed `+` for an edited file, the log
+    showed absolute paths for Edit, and redo didn't say what it redid."""
+    from agent_vcr import cli
+
+    bag = Airbag(project, policy=Policy())
+    app = project / "src" / "app.py"
+    bag.before(ToolCall(agent="claude", tool_name="Edit", kind="edit", cwd=str(project),
+                        paths=[str(app)]))
+    app.write_text("print('v2')\n")
+    bag.before(_call(project, "rm src/app.py"))
+    app.unlink()
+
+    cli.main(["airbag", "log", "--project-dir", str(project)])
+    log = capsys.readouterr().out
+    assert "Edit src/app.py" in log and str(app) not in log
+
+    cli.main(["undo", "--project-dir", str(project)])  # rm: the file comes back
+    out = capsys.readouterr().out
+    assert "Undid: rm src/app.py" in out and "    + src/app.py" in out
+    cli.main(["undo", "--project-dir", str(project)])  # Edit: the file is changed back
+    out = capsys.readouterr().out
+    assert "Undid: Edit src/app.py" in out and "    ~ src/app.py" in out
+    assert app.read_text() == "print('v1')\n"
+
+    cli.main(["redo", "--project-dir", str(project)])
+    out = capsys.readouterr().out
+    assert "Redid: Edit src/app.py" in out and "    ~ src/app.py" in out
+    assert app.read_text() == "print('v2')\n"
+    cli.main(["redo", "--project-dir", str(project)])
+    out = capsys.readouterr().out
+    assert "Redid: rm src/app.py" in out and "    - src/app.py" in out
+    assert not app.exists()
