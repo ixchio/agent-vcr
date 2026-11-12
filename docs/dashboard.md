@@ -62,7 +62,7 @@ vcr .vcr/demo.vcr         # or: vcr tui .vcr/demo.vcr
 | `↑` / `k`, `↓` / `j` | Previous / next frame |
 | `1` / `2` / `3` | Show input state / output state / diff |
 | `s` | Filter frames by node name (`Enter` applies, `Esc` clears) |
-| `e` | Edit this frame's output state as JSON (click **Save**, or `Esc` to cancel) |
+| `e` | Edit this frame's output state as JSON (`Ctrl+S` or **Save** keeps it, `Esc` cancels) |
 | `r` | Write `resume_state.json` next to the `.vcr` (session, frame index, state, edited flag) |
 | `q` | Quit |
 
