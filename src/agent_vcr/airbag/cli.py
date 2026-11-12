@@ -14,6 +14,15 @@ from agent_vcr.airbag.core import Airbag, Policy
 from agent_vcr.airbag.store import AirbagError, RestoreResult, Snapshot
 
 LEVEL_ICON = {"read": "·", "write": "✎", "destructive": "🛟", "irreversible": "⚠"}
+LEVEL_EXPLAIN = {
+    "read": "read-only — no snapshot needed",
+    "write": "changes files — snapshot first, undo with `vcr undo`",
+    "destructive": "destroys project data — snapshot first, undo with `vcr undo`",
+    "irreversible": "cannot be undone by a snapshot — the airbag asks a human first",
+}
+NOTHING_TO_UNDO = (
+    "Nothing to undo: no recorded agent action changed files since the last snapshot."
+)
 
 
 def register(subparsers: Any) -> None:
@@ -147,14 +156,12 @@ def _print_changes(result: RestoreResult, limit: int = 12) -> None:
 
 def cmd_undo(args: argparse.Namespace) -> None:
     bag = _bag(args)
-    plan = bag.plan_undo(args.steps)
-    if plan is None:
-        print("Nothing to undo: no recorded agent action changed files since the last snapshot.")
-        return
-    action, snap = plan
     if args.dry_run:
-        current = bag.store.latest()
-        changes = bag.store.diff(current, snap) if current else []
+        preview = bag.preview_undo(args.steps)
+        if preview is None:
+            print(NOTHING_TO_UNDO)
+            return
+        action, snap, changes = preview
         print(f"Would undo: {action.get('command') or action.get('tool')}  "
               f"({action.get('agent')}, {_ago(float(action.get('time', 0)))}) → snapshot {snap.short}")
         for status, rel in changes[:30]:
@@ -165,7 +172,7 @@ def cmd_undo(args: argparse.Namespace) -> None:
         return
     result = bag.undo(args.steps)
     if result is None:
-        print("Nothing to undo.")
+        print(NOTHING_TO_UNDO)
         return
     action, restore = result
     if args.json:
@@ -258,22 +265,14 @@ def cmd_check(args: argparse.Namespace) -> None:
                           "categories": verdict.categories, "undoable": verdict.undoable}))
         return
     icon = LEVEL_ICON[verdict.level]
-    explain = {
-        "read": "read-only — no snapshot needed",
-        "write": "changes files — snapshot first, undo with `vcr undo`",
-        "destructive": "destroys project data — snapshot first, undo with `vcr undo`",
-        "irreversible": "cannot be undone by a snapshot — the airbag asks a human first",
-    }[verdict.level]
-    print(f"{icon} {verdict.level.upper()}: {explain}")
+    print(f"{icon} {verdict.level.upper()}: {LEVEL_EXPLAIN[verdict.level]}")
     for reason in verdict.reasons:
         print(f"   • {reason}")
 
 
 def cmd_snapshot(args: argparse.Namespace) -> None:
     bag = _bag(args)
-    snap = bag.store.snapshot(label=args.message, meta={"agent": "user", "manual": True})
-    bag.store.log_event({"kind": "action", "agent": "user", "tool": "snapshot",
-                         "command": args.message, "level": "write", "snapshot": snap.seq})
+    snap = bag.manual_snapshot(args.message)
     print(f"📸 Snapshot {snap.short} of {bag.root} ({snap.files} files protected).")
 
 

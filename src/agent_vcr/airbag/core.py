@@ -222,6 +222,35 @@ class Airbag:
             idx -= 1
         return None
 
+    def preview_undo(
+        self, steps: int = 1,
+    ) -> tuple[dict[str, Any], Snapshot, list[tuple[str, str]]] | None:
+        """``plan_undo`` plus the ``(status, path)`` changes ``undo`` would make.
+
+        Status is from current → snapshot: ``A`` comes back, ``D`` is removed,
+        ``M``/``T`` is rewritten. Only the shadow store is written (a "current"
+        snapshot); project files are untouched.
+        """
+        plan = self.plan_undo(steps)
+        if plan is None:
+            return None
+        action, snap = plan
+        current = self.store.latest()
+        return action, snap, self.store.diff(current, snap) if current else []
+
+    def preview_rewind(self, seq: int) -> tuple[Snapshot, list[tuple[str, str]]]:
+        """The snapshot ``rewind(seq)`` restores and the changes it would make."""
+        target = self.store.get(seq)
+        current = self.store.snapshot(label="current")
+        return target, self.store.diff(current, target)
+
+    def manual_snapshot(self, message: str, agent: str = "user") -> Snapshot:
+        """Take a save point now and log it on the timeline (``vcr airbag snapshot``)."""
+        snap = self.store.snapshot(label=message, meta={"agent": agent, "manual": True})
+        self.store.log_event({"kind": "action", "agent": agent, "tool": "snapshot",
+                              "command": message, "level": "write", "snapshot": snap.seq})
+        return snap
+
     def undo(self, steps: int = 1) -> tuple[dict[str, Any], RestoreResult] | None:
         """Revert the files to just before the last ``steps`` file-changing actions."""
         plan = self.plan_undo(steps)
