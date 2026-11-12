@@ -7,7 +7,7 @@ feed, and a self-hosted project store you can push recordings to from CI.
 
 - `vcr run.vcr` opens a keyboard-driven debugger: step through frames, diff state, edit and export.
 - `vcr serve` starts the API and web UI on `127.0.0.1:8000`. It **refuses** to listen on any other
-  address without a token.
+  address without a token. With a token set, the browser signs in once at `/dashboard/login`.
 - Add `--data-dir` plus an admin token and you get projects, scoped tokens and `vcr cloud push/pull`.
 
 ## Try it in 60 seconds
@@ -111,6 +111,41 @@ curl -H "Authorization: Bearer $AGENT_VCR_ADMIN_TOKEN" http://127.0.0.1:8000/api
 - Both server tokens have full admin rights. Prefer the environment variables over `--auth-token`
   / `--admin-token` so secrets stay out of the process list.
 
+### Open the web UI on a token-protected server
+
+The browser signs in once and gets a session cookie; the web UI, its API calls and its live
+feed then just work, over HTTP or behind HTTPS.
+
+1. Start the server with a token (as above) and open `http://127.0.0.1:8000/`. You land on
+   `/dashboard/login`.
+2. Paste `AGENT_VCR_ADMIN_TOKEN` (or `AGENT_VCR_AUTH_TOKEN`) and click **Sign in**.
+
+For scripts or a bookmark, a link does the same thing and redirects to `/dashboard/` with the
+token removed from the address bar (it still lands in your shell history and proxy logs, so
+prefer the form on shared machines):
+
+```bash
+curl -s -c jar -o /dev/null -w '%{http_code} %{redirect_url}\n' \
+  "http://127.0.0.1:8000/dashboard?token=$AGENT_VCR_ADMIN_TOKEN"
+# 303 http://127.0.0.1:8000/dashboard/
+curl -s -b jar http://127.0.0.1:8000/api/sessions | head -c 60; echo
+curl -s -b jar -X POST http://127.0.0.1:8000/api/sessions/demo/resume \
+  -H "Content-Type: application/json" -d '{"from_frame": 0}'
+# {"detail":"Cross-origin request refused: ..."}   <- no Origin header, see below
+```
+
+- The cookie (`agent_vcr_session`) is `HttpOnly`, `SameSite=Strict`, valid for 8 hours, and
+  `Secure` when the request came in over HTTPS (directly, or with `X-Forwarded-Proto: https`
+  from your proxy). It's a signed expiry, never the token itself.
+- Only the two server tokens can sign in. Project tokens get `401`, as on `/api/sessions`.
+- Requests that change something (`POST`, `PUT`, `PATCH`, `DELETE`) authenticated only by the
+  cookie must carry an `Origin` (or `Referer`) of the server itself: the browser does this
+  for the web UI, a forged cross-site form doesn't get through. Requests with a token header
+  skip this check. `/ws/live` accepts the cookie only on a same-origin handshake.
+- Behind a proxy that rewrites `Host`, add `--allowed-origin https://your.host` (or have the
+  proxy send `X-Forwarded-Host`) so the web UI's own requests count as same-origin.
+- Sign out at `/dashboard/logout`. Restarting the server signs everyone out.
+
 ### Stream frames live
 
 Point a recorder's `on_frame_recorded` callback at `POST /api/push`. The snippet is in
@@ -185,9 +220,9 @@ Hosting this on the internet? See [deployment/railway.md](deployment/railway.md)
 
 ## What it can't do
 
-- **The bundled web UI doesn't send a token yet.** In the browser it only works in tokenless
-  loopback mode. With a token set, use the API, the WebSocket and `vcr cloud`.
-- **The web UI connects to `ws://`, never `wss://`.** Behind HTTPS its live feed won't connect.
+- **The web UI signs in with a server token only.** Project tokens can't open it, and there are
+  no user accounts: everyone signed in has admin rights. A sign-in lasts 8 hours or until the
+  server restarts.
 - **The project store is files on one disk.** Run a single replica. It's not a multi-tenant SaaS.
 - **The live file watcher only sees `--vcr-dir` itself**, not subfolders, and only what has been
   flushed.
@@ -204,7 +239,8 @@ Hosting this on the internet? See [deployment/railway.md](deployment/railway.md)
 | `--vcr-dir DIR` / `--data-dir DIR` | Recordings to serve (`.vcr`) / project store (default: same as `--vcr-dir`) |
 | `--auth-token` / `--admin-token` | Tokens (default from `AGENT_VCR_AUTH_TOKEN` / `AGENT_VCR_ADMIN_TOKEN`) |
 | `--allow-unauthenticated` | Allow a public bind without a token (insecure) |
-| `--allowed-origin URL` | CORS origin, repeatable (default: the server's own localhost) |
+| `--allowed-origin URL` | CORS origin, repeatable (default: the server's own localhost); also trusted as same-origin for the web UI's cookie |
+| `/dashboard/login` · `/dashboard?token=…` · `/dashboard/logout` | Web UI sign-in (session cookie) and sign-out |
 | `--workflow-handlers FILE` | Tools for HTTP workflows — see [integrations/n8n.md](integrations/n8n.md) |
 | `--hosted` | Supabase/Stripe endpoints — see [deployment/railway.md](deployment/railway.md) |
 | `vcr cloud login URL --token-stdin` | Verify and store credentials |
