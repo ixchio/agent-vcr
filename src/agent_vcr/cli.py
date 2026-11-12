@@ -177,7 +177,7 @@ def _cmd_mcp(args: argparse.Namespace) -> None:
         raise SystemExit(2)
     from agent_vcr.mcp_server import run
 
-    code = run(project_dir)
+    code = run(project_dir, allow_any_project=args.allow_any_project)
     if code:
         raise SystemExit(code)
 
@@ -776,6 +776,11 @@ def main(argv: list[str] | None = None) -> None:
     mcp_parser.add_argument(
         "--project-dir", default=".",
         help="Default project for the tools (default: the directory the agent starts it in)",
+    )
+    mcp_parser.add_argument(
+        "--allow-any-project", action="store_true",
+        help="Let airbag_snapshot / airbag_undo / airbag_rewind act on projects other than "
+             "--project-dir (off by default)",
     )
     mcp_parser.set_defaults(func=_cmd_mcp)
 

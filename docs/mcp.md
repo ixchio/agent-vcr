@@ -21,10 +21,13 @@ So it stops and asks you first, instead of running into the airbag's block.
 
 - `claude mcp add agent-vcr -- vcr mcp` (or the one-liner for your agent below), and the agent
   gets 8 tools: status, timeline, check, snapshot, undo, rewind, and two for `.vcr` recordings.
-- Everything is read-only except `airbag_snapshot`, which only writes to the snapshot store
-  outside your project.
-- `airbag_undo` and `airbag_rewind` **only preview** unless called with `dry_run: false` **and**
-  `confirm: true`. Their descriptions tell the model to do that only when you asked.
+- Five tools only read. `airbag_snapshot` writes to the snapshot store outside your project,
+  never to your files.
+- `airbag_undo` and `airbag_rewind` change your files, but **only preview** unless called with
+  `dry_run: false` **and** `confirm: true`. Their descriptions tell the model to do that only
+  when you asked.
+- Snapshot, undo and rewind work only on the project the server was started for (and its
+  subdirectories), so an agent can't be talked into rewinding a different project.
 - No extra dependencies: the server uses only the Python standard library. Nothing leaves your
   machine.
 
@@ -88,7 +91,7 @@ Agent VCR does not edit these configs for you: the commands above are each agent
 
 ### Which project do the tools act on?
 
-The directory the agent starts the server in, which is normally your project. Every airbag tool also takes an optional `project_dir`, and you can pin the default:
+The directory the agent starts the server in, which is normally your project. You can pin it:
 
 ```bash
 claude mcp add agent-vcr -- vcr mcp --project-dir /path/to/project
@@ -96,6 +99,20 @@ claude mcp add agent-vcr -- vcr mcp --project-dir /path/to/project
 
 The project is found the same way `vcr undo` finds it (the git top-level, or the nearest
 protected directory), so a subdirectory works too.
+
+Every airbag tool also takes an optional `project_dir`, but only the read-only ones
+(`airbag_status`, `airbag_timeline`, `airbag_check`) may point it outside the server's project.
+`airbag_snapshot`, `airbag_undo` and `airbag_rewind` refuse any other project, including one
+reached through a symlink:
+
+```text
+Error: /home/you/other-app is outside this server's project (/home/you/myapp). Tools that
+snapshot or restore only act on the project `vcr mcp` was started for; ...
+```
+
+`confirm: true` is set by the agent itself, so this is the boundary that stops a prompt-injected
+agent from restoring files somewhere you never pointed it. To manage several projects from one
+server anyway, start it with `vcr mcp --allow-any-project`.
 
 ## The tools
 
@@ -108,7 +125,7 @@ protected directory), so a subdirectory works too.
 | `airbag_undo` | Previews undoing the last file-changing action(s) (`steps`). Restores only with `dry_run: false` + `confirm: true` | Yes, when confirmed |
 | `airbag_rewind` | Previews restoring snapshot `#N` (`snapshot`). Restores only with `dry_run: false` + `confirm: true` | Yes, when confirmed |
 | `recordings_list` | Finds `.vcr` recordings under a directory, newest first (skips `.git`, `node_modules`, virtualenvs) | No |
-| `recording_summary` | One recording: frames, nodes, checkpoints, errors, tokens, cost, latency, models, integrity | No |
+| `recording_summary` | One recording (a `.vcr` or `.jsonl` file): frames, nodes, checkpoints, errors, tokens, cost, latency, models, integrity. Long lists stop at 200 entries | No |
 
 Each result comes back twice, as MCP recommends: as JSON text for the model, and as
 `structuredContent` for clients that read it. Problems such as a bad argument, an unknown
@@ -125,7 +142,11 @@ Python SDK client is used in the tests to check it.
   supports (`2025-11-25`, `2025-06-18`, `2025-03-26`, `2024-11-05`), otherwise it answers with
   the newest. It declares only the `tools` capability. It also supports `ping`, `tools/list` and
   `tools/call`. Notifications get no reply. Unknown methods get JSON-RPC error `-32601`, unknown
-  tools `-32602`, and malformed JSON `-32700`.
+  tools `-32602`, malformed JSON `-32700`, and a line over 4 MB `-32600`. A UTF-8 byte order
+  mark before the first message is accepted.
+- **Output that never breaks.** Every reply is ASCII-only JSON. File names that aren't valid
+  UTF-8 show up with their bytes as text (`bad\xff.vcr`), so strict JSON parsers accept them and
+  no odd string can stop the server. A JSON `null` argument counts as "not given".
 - **A clean stdout.** At startup the server moves the protocol streams to private file
   descriptors and points fd 1 at stderr and fd 0 at `/dev/null`. A stray `print` or a child
   process (git) cannot corrupt the JSON stream or swallow your client's messages. Logs go to
@@ -197,13 +218,16 @@ error frames with messages, and tokens and cost, without loading the whole file 
   always be reversed with `vcr redo`.
 - **No approvals over MCP.** Approving a stopped irreversible command stays a human action in
   your terminal (`vcr airbag allow`). An agent cannot approve its own command.
+- **One project at a time** for snapshot, undo and rewind, unless you start the server with
+  `--allow-any-project`.
 - **stdio only.** There is no HTTP transport; the server runs locally, launched by your agent.
 
 ## Cheat sheet
 
 ```bash
 vcr mcp                                   # serve MCP on stdin/stdout (the agent starts this)
-vcr mcp --project-dir /path/to/project    # pin the default project
+vcr mcp --project-dir /path/to/project    # pin the project
+vcr mcp --allow-any-project               # let snapshot/undo/rewind act on other projects too
 claude mcp add agent-vcr -- vcr mcp       # Claude Code
 codex mcp add agent-vcr -- vcr mcp        # Codex CLI
 gemini mcp add agent-vcr vcr mcp          # Gemini CLI
