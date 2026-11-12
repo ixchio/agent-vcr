@@ -41,7 +41,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - OpenHands SDK 1.x support for `VCRRuntime` (`Conversation(callbacks=[vcr])`, one frame per
   tool call) and Sentinel (`sentinel.bind(conversation)`; blocks the next action through the
   SDK's own rejection mechanism). The V0 event-stream API still works.
-- CI runs the test suite on macOS and Windows.
+- **Windows and macOS support, tested in CI** on every change. Windows fixes: file locking for the
+  airbag store, recorder manifest and project store (`msvcrt`); UTF-8 everywhere (recordings,
+  reports, hook JSON, the CLI on cp1252 consoles); hook commands that run in Git Bash, `cmd` and
+  PowerShell; `.git` backups copied instead of hardlinked; Windows paths in the classifier;
+  timeouts kill the whole process tree; no more `os.fchmod`/`os.killpg` crashes; atomic writes
+  retried while another process holds the file; binary-mode JSONL appends.
 
 ### Changed
 - The `openhands` extra installs `openhands-sdk` and `openhands-tools` (Python 3.12+); the old

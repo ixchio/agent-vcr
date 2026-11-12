@@ -118,15 +118,20 @@ your own hooks alone. Other settings are in [Airbag → Configuration](airbag.md
 
 ### Does it work on Windows? macOS?
 
-CI runs on **Linux (Ubuntu) only**, so macOS and Windows aren't tested on every change. On
-Windows specifically:
+Yes. Every change runs the full test suite on **Linux (Python 3.9–3.13), macOS and Windows**.
+What's different on Windows:
 
-- The airbag store has a Windows location (`%LOCALAPPDATA%`), but nobody tests it.
+- The airbag store lives in `%LOCALAPPDATA%\agent-vcr\airbag`, and it's locked against
+  concurrent hook processes with `msvcrt` (`flock` on Linux and macOS).
+- Hook commands are written with forward slashes, quoted only when needed, so they run in Git
+  Bash and `cmd`. Copilot CLI's PowerShell hook uses `& '...'`.
+- A `.git` backup is a copy, not a hardlink, so your own `.git` is never touched.
 - `vcr airbag install cline` refuses to install on Windows; Cline hooks are POSIX shell scripts.
-- The command classifier parses POSIX shell syntax, not PowerShell or `cmd`.
-- Concurrent hook processes aren't file-locked against each other on Windows.
-
-If you try it on Windows or macOS, an issue with what worked and what didn't is very welcome.
+- The command classifier parses POSIX shell syntax. Windows paths (`C:\...`, backslashes) and
+  `%TEMP%` are understood, but PowerShell- or `cmd`-only syntax isn't analysed.
+- NTFS has no Unix permission bits, so "private files stay 0600 after restore" doesn't apply.
+- `vcr bisect` and the local sandbox kill a timed-out run's whole process tree with
+  `taskkill /T /F`.
 
 ### Which Python versions?
 

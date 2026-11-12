@@ -273,7 +273,8 @@ pip install "ai-agent-vcr[openhands]"    # OpenHands SDK 1.x (Python 3.12+)
 pip install "ai-agent-vcr[all]"          # everything optional
 ```
 
-Python 3.9–3.13. The airbag and ACID workspace need `git` on `PATH`.
+Python 3.9–3.13 on Linux, macOS and Windows (all tested in CI). The airbag and ACID workspace
+need `git` on `PATH`.
 
 ## Where it fits
 
