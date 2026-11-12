@@ -69,8 +69,27 @@ _MALLOC_ENV = {"MALLOC_TRIM_THRESHOLD_": "268435456", "MALLOC_TOP_PAD_": "167772
 _PREWRITE_JOBS = 4
 _PREWRITE_MIN_FILES = 2000
 
-#: At most this many ignored directories are searched for precious files per snapshot.
+#: At most this many ignored directories are searched for precious files per snapshot,
+#: and for at most this long; the rest are searched by the next snapshots (rotating).
 _PRECIOUS_DIR_LIMIT = 200
+_PRECIOUS_TIME_BUDGET = 0.2
+#: Ignored third-party trees that are never searched for precious files: their
+#: ``.env``/``*.db`` files belong to someone else's package, and they can be huge.
+_PRECIOUS_SKIP_DIRS = frozenset({
+    "vendor", "third_party", "third-party", "Pods", "Carthage", "DerivedData",
+    "bower_components", "jspm_packages", ".bundle", ".gradle", ".m2", ".ivy2", ".yarn",
+    ".pnpm-store", ".npm", ".cargo", ".stack-work", "elm-stuff", ".dart_tool", ".pub-cache",
+    "site-packages",
+})
+
+#: A SQLite file whose stat (and its sidecars') is unchanged since its last backup is not
+#: backed up again, unless it was modified this close to that check: timestamps are
+#: coarse (a jiffy on Linux, 2 s on FAT), so a later write could keep the same mtime.
+_SQLITE_RACY_NS = 2_000_000_000
+_SQLITE_SUFFIXES = (".db", ".sqlite", ".sqlite3", ".db3")
+#: Sidecars whose stat is part of a database's identity. Not ``-shm``: it only indexes
+#: the WAL (no content of its own) and every reader writes to it, our backup included.
+_SQLITE_SIDECARS = ("-wal", "-journal")
 
 _SQLITE_MAGIC = b"SQLite format 3\x00"
 _SAFE_NAME = re.compile(r"[^A-Za-z0-9._-]+")
@@ -586,6 +605,8 @@ class ShadowStore:
         # on the first snapshot of a big repository, where every file is "changed".
         prefix = os.path.join(str(self.root), "")
         uid = os.getuid() if hasattr(os, "getuid") else -1
+        sqlite_cache = self._sqlite_cache()
+        sqlite_reused: set[str] = set()
         for rel in changed:
             if rel.endswith("/"):
                 continue
@@ -600,6 +621,12 @@ class ShadowStore:
                     continue
                 if not st.st_mode & 0o077:
                     private[rel] = stat.S_IMODE(st.st_mode)
+                if rel in sqlite_cache and _sqlite_unchanged(prefix + rel, sqlite_cache[rel]):
+                    # Its consistent backup from an earlier snapshot is still staged (the
+                    # entry carries no stat data, so ls-files always lists it as modified).
+                    # _stage_sqlite_consistently verifies that blob.
+                    sqlite_reused.add(rel)
+                    continue
                 if _maybe_unreadable(st, uid) and not os.access(prefix + rel, os.R_OK):
                     changes.unreadable.add(rel)
                 else:
@@ -607,9 +634,21 @@ class ShadowStore:
             elif stat.S_ISDIR(st.st_mode):
                 changes.dirs.add(rel)  # an indexed file (or gitlink) is a directory now
             to_add.append(rel)
-        precious, too_big_precious = self._precious_ignored_files()
+        notes: list[str] = []
+        precious, too_big_precious = self._precious_ignored_files(notes)
+        for rel in precious:
+            with contextlib.suppress(OSError):
+                st = os.lstat(prefix + rel)
+                if stat.S_ISREG(st.st_mode) and _maybe_unreadable(st, uid) \
+                        and not os.access(prefix + rel, os.R_OK):
+                    changes.unreadable.add(rel)
         changes.precious = precious
         self._stage(changes)
+        unreadable = sorted(changes.unreadable)
+        if unreadable:
+            notes.append(f"{len(unreadable)} file(s) could not be read and are not in this "
+                         f"snapshot: {', '.join(unreadable[:5])}"
+                         f"{', ...' if len(unreadable) > 5 else ''}")
         skipped.extend(too_big_precious)
         if skipped:
             # Files over the limit must not stay in the index with an old, small
@@ -619,7 +658,7 @@ class ShadowStore:
                 input_bytes=b"".join(p.encode("utf-8", "surrogateescape") + b"\0"
                                      for p in skipped),
             )
-        nested = self._stage_sqlite_consistently()
+        nested = self._stage_sqlite_consistently(sqlite_cache, sqlite_reused)
         nested.extend(n for n in untracked_nested if n not in nested)
         private.update(_private_modes_of(prefix, precious))
         self._remember_private_modes(private)
@@ -635,6 +674,12 @@ class ShadowStore:
         seq = (last.seq + 1) if last is not None else 1
         if databases:
             meta = {**meta, "databases": self._attach_dumps(seq, databases)}
+        extra: dict[str, Any] = {}
+        if unreadable:
+            extra["skipped_unreadable"] = unreadable[:50]
+        if notes:
+            extra["notes"] = notes
+        meta = {**extra, **meta}
         record = {"seq": seq, "label": label, "time": time.time(), "files": files,
                   "skipped_large": skipped[:50], "nested_repos": nested[:50], **meta}
         commit = self._git(
@@ -845,8 +890,18 @@ class ShadowStore:
             return {}
         return {str(k): int(v) for k, v in data.items()} if isinstance(data, dict) else {}
 
-    def _precious_ignored_files(self) -> tuple[list[str], list[str]]:
-        """Ignored files matching the precious patterns (e.g. ``.env``): (small, too big)."""
+    def _precious_ignored_files(self, notes: list[str] | None = None,
+                                ) -> tuple[list[str], list[str]]:
+        """Ignored files matching the precious patterns (e.g. ``.env``): (small, too big).
+
+        Precious files are found by listing untracked ignored files, so each is only
+        looked for until it is in the shadow index; from then on ``ls-files
+        --modified`` follows it. Directories ignored as a whole are searched within a
+        per-snapshot budget (``_PRECIOUS_DIR_LIMIT`` directories, about
+        ``_PRECIOUS_TIME_BUDGET`` seconds), resuming where the previous snapshot
+        stopped, so every directory is eventually searched and a snapshot that did not
+        get to all of them says so in ``notes``.
+        """
         if not self.precious:
             return [], []
         out = self._git(
@@ -862,19 +917,36 @@ class ShadowStore:
         look_inside = [
             d for d in collapsed
             if not any(_matches_exclude(d + "x", pat) for pat in self.excludes)
-        ][:_PRECIOUS_DIR_LIMIT]
-        if look_inside:
-            specs = [f":(glob){_glob_escape(d)}**/{pat}"
-                     for d in look_inside for pat in self.precious]
-            # ls-files has no --pathspec-from-file; batch to stay far below Windows'
-            # 32k-character command-line limit.
-            for start in range(0, len(specs), 100):
-                inner = self._git(
-                    "ls-files", "-z", "--others", "--ignored", "--exclude-standard",
-                    "--", *specs[start:start + 100], check=False,
-                )
-                if inner.returncode == 0:
-                    entries.extend(raw for raw in inner.stdout.split(b"\0") if raw)
+            and _PRECIOUS_SKIP_DIRS.isdisjoint(d.split("/"))
+        ]
+        total = len(look_inside)
+        cursor = int(self.read_state().get("precious_cursor") or 0) % total if total else 0
+        order = look_inside[cursor:] + look_inside[:cursor]
+        searched = 0
+        inside: set[bytes] = set()
+        # ls-files has no --pathspec-from-file; batch to stay far below Windows'
+        # 32k-character command-line limit.
+        per_call = max(1, 100 // len(self.precious))
+        deadline = time.monotonic() + _PRECIOUS_TIME_BUDGET
+        while searched < min(total, _PRECIOUS_DIR_LIMIT):
+            if searched and time.monotonic() > deadline:
+                break
+            chunk = order[searched:min(searched + per_call, _PRECIOUS_DIR_LIMIT)]
+            specs = [f":(glob){_glob_escape(d)}**/{pat}" for d in chunk for pat in self.precious]
+            inner = self._git(
+                "ls-files", "-z", "--others", "--ignored", "--exclude-standard",
+                "--", *specs, check=False,
+            )
+            if inner.returncode == 0:
+                inside.update(raw for raw in inner.stdout.split(b"\0") if raw)
+            searched += len(chunk)
+        next_cursor = (cursor + searched) % total if searched < total else 0
+        if next_cursor != cursor:
+            self._write_state({"precious_cursor": next_cursor})
+        if searched < total and notes is not None:
+            notes.append(f".env/SQLite files were looked for in {searched} of {total} ignored "
+                         "folders; the next snapshots search the others")
+        entries.extend(sorted(inside))
         result: list[str] = []
         too_big: list[str] = []
         seen: set[bytes] = set()
@@ -888,6 +960,8 @@ class ShadowStore:
                 continue
             if any(_matches_exclude(rel, pat) for pat in self.excludes):
                 continue
+            if raw in inside and not _PRECIOUS_SKIP_DIRS.isdisjoint(rel.split("/")[:-1]):
+                continue  # found in an ignored folder, but within a third-party tree
             try:
                 if (self.root / rel).stat().st_size <= self.max_file_bytes:
                     result.append(rel)
@@ -897,16 +971,50 @@ class ShadowStore:
                 continue
         return result, too_big
 
-    def _stage_sqlite_consistently(self) -> list[str]:
+    def _sqlite_cache(self) -> dict[str, dict[str, Any]]:
+        """``{path: {"key", "blob", "checked_ns"}}`` of the last SQLite backups."""
+        try:
+            data = json.loads((self.dir / "sqlite-cache.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        return {str(k): v for k, v in data.items() if isinstance(v, dict)} \
+            if isinstance(data, dict) else {}
+
+    def _write_sqlite_cache(self, cache: dict[str, dict[str, Any]]) -> None:
+        dest = self.dir / "sqlite-cache.json"
+        if not cache:
+            with contextlib.suppress(OSError):
+                dest.unlink()
+            return
+        fd, tmp = tempfile.mkstemp(dir=str(self.dir), prefix="sqlite-cache.", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump(cache, fh)
+            _platform.replace(tmp, dest)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp)
+            raise
+
+    def _stage_sqlite_consistently(self, cache: dict[str, dict[str, Any]] | None = None,
+                                   reused: set[str] | frozenset[str] = frozenset(),
+                                   ) -> list[str]:
         """Replace staged SQLite files with a consistent online-backup copy.
 
         Copying a live SQLite file byte-for-byte can capture a torn state
         (especially in WAL mode). The backup API produces a consistent image.
+        A database whose stat and sidecars are unchanged since its last backup
+        (see ``_sqlite_unchanged``) keeps that backup, which is still staged.
+        ``reused`` are the databases the caller left unstaged for that reason.
         Returns the nested git repositories (gitlinks) found in the index: their
         contents are *not* in the snapshot.
         """
+        cache = dict(cache) if cache is not None else self._sqlite_cache()
+        before = dict(cache)
+        prefix = os.path.join(str(self.root), "")
         out = self._git("ls-files", "-z", "--stage").stdout
         nested: list[str] = []
+        live: set[str] = set()
         for raw in out.split(b"\0"):
             if not raw:
                 continue
@@ -915,8 +1023,20 @@ class ShadowStore:
             if info.startswith(b"160000"):
                 nested.append(rel)
                 continue
-            if not rel.lower().endswith((".db", ".sqlite", ".sqlite3", ".db3")):
+            if not rel.lower().endswith(_SQLITE_SUFFIXES):
                 continue
+            mode, staged = info.decode().split(" ")[:2]
+            entry = cache.get(rel)
+            if entry is not None and entry.get("blob") == staged \
+                    and _sqlite_unchanged(prefix + rel, entry):
+                live.add(rel)
+                continue
+            cache.pop(rel, None)
+            if rel in reused:
+                # Left unstaged as unchanged, yet the backup cannot be reused now (the
+                # file changed meanwhile, or the staged blob is another one): stage
+                # its bytes first so that a failed backup never keeps an old blob.
+                self._git("update-index", "--add", "--remove", "--", rel, check=False)
             full = self.root / rel
             try:
                 with open(full, "rb") as fh:
@@ -924,7 +1044,8 @@ class ShadowStore:
                         continue
             except OSError:
                 continue
-            mode = info.split(b" ")[0].decode()
+            checked_ns = time.time_ns()
+            key = _sqlite_key(prefix + rel)
             with tempfile.TemporaryDirectory(dir=str(self.dir)) as tmp:
                 copy = Path(tmp) / "db"
                 try:
@@ -939,6 +1060,12 @@ class ShadowStore:
                     continue  # keep the byte copy already staged
                 blob = self._git("hash-object", "-w", str(copy)).stdout.decode().strip()
                 self._git("update-index", "--cacheinfo", f"{mode},{blob},{rel}")
+            if key is not None and _sqlite_key(prefix + rel) == key:
+                cache[rel] = {"key": key, "blob": blob, "checked_ns": checked_ns}
+                live.add(rel)
+        cache = {k: v for k, v in cache.items() if k in live}
+        if cache != before:
+            self._write_sqlite_cache(cache)
         return nested
 
     # ── listing ──────────────────────────────────────────────────────────
@@ -1282,6 +1409,7 @@ class ShadowStore:
             "store": str(self.dir),
             "snapshots": len(snaps),
             "latest": asdict(snaps[-1]) if snaps else None,
+            "notes": list(snaps[-1].meta.get("notes") or []) if snaps else [],
         }
 
 
@@ -1290,6 +1418,35 @@ def _maybe_unreadable(st: os.stat_result, uid: int) -> bool:
     if st.st_mode & stat.S_IROTH:
         return False
     return not (st.st_uid == uid and st.st_mode & stat.S_IRUSR)
+
+
+def _sqlite_key(full: str) -> list[list[int] | None] | None:
+    """Stat identity of a SQLite file and its sidecars (``None`` when it is missing)."""
+    key: list[list[int] | None] = []
+    for suffix in ("", *_SQLITE_SIDECARS):
+        try:
+            st = os.stat(full + suffix)
+        except OSError:
+            if not suffix:
+                return None
+            key.append(None)
+            continue
+        key.append([st.st_size, st.st_mtime_ns, st.st_ctime_ns, st.st_ino, st.st_dev])
+    return key
+
+
+def _sqlite_unchanged(full: str, entry: dict[str, Any]) -> bool:
+    """Is the database exactly as it was when ``entry``'s backup was taken?
+
+    Same size, mtime, ctime, inode and device for the file and each sidecar,
+    none of them modified within ``_SQLITE_RACY_NS`` before that backup
+    (otherwise a later write could carry the same coarse timestamps).
+    """
+    key = _sqlite_key(full)
+    if key is None or key != entry.get("key"):
+        return False
+    limit = int(entry.get("checked_ns") or 0) - _SQLITE_RACY_NS
+    return all(part is None or (part[1] < limit and part[2] < limit) for part in key)
 
 
 def _behind_symlink(prefix: str, rel: str, cache: dict[str, bool]) -> bool:

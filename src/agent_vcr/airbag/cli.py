@@ -492,6 +492,8 @@ def cmd_status(args: argparse.Namespace) -> None:
     print(f"  enabled: {policy.enabled}   mode: {policy.mode}   "
           f"irreversible commands: {policy.on_irreversible}")
     print(f"  snapshots: {info['snapshots']}   store: {info['store']}")
+    for note in info.get("notes") or []:
+        print(f"  ! latest snapshot: {note}")
     if not sites:
         print("  ✗ no agent hooks installed — run `vcr airbag install`")
     for site in sites:
