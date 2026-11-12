@@ -196,7 +196,10 @@ button{{padding:.5rem 1rem;border:0;border-radius:4px;background:#3b82f6;color:#
 
 _LOGIN_HEADERS = {
     "Cache-Control": "no-store",
-    "Referrer-Policy": "no-referrer",
+    # Not "no-referrer": under that policy browsers send `Origin: null` on the form POST, and
+    # the same-origin check below would refuse every real sign-in. "same-origin" still sends
+    # nothing to other sites.
+    "Referrer-Policy": "same-origin",
     "X-Frame-Options": "DENY",
     "Content-Security-Policy": (
         "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; "

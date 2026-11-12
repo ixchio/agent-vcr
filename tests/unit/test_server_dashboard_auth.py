@@ -97,6 +97,15 @@ class TestCookieSignIn:
         assert posted.status_code == 303 and DASHBOARD_COOKIE in posted.headers["set-cookie"]
         assert other.get("/api/sessions").status_code == 200
 
+    def test_login_page_lets_the_browser_send_its_origin(self, tmp_path: Path) -> None:
+        # Under "no-referrer" browsers send `Origin: null` on the form POST, so the
+        # same-origin check refused every real sign-in (seen in a real browser).
+        client = _client(tmp_path)
+        policy = client.get("/dashboard/login").headers.get("referrer-policy", "")
+        assert policy and policy != "no-referrer"
+        # ...and the token link's redirect still keeps the token out of any Referer.
+        assert _sign_in(client).headers["referrer-policy"] == "no-referrer"
+
     def test_https_requests_get_a_secure_cookie(self, tmp_path: Path) -> None:
         client = _client(tmp_path, base_url="https://vcr.example.test")
         cookie = _sign_in(client).headers["set-cookie"]
