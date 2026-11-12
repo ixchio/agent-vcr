@@ -27,6 +27,8 @@ New here? → **[Quickstart: every superpower in 5 minutes](quickstart.md)**
 | Feature | What it does for you | Guide |
 |---|---|---|
 | 🛟 **Airbag** | Snapshots your project before every coding-agent tool call; `vcr undo` brings it back | [airbag.md](airbag.md) |
+| 🎯 **Bisect** | `vcr bisect -- pytest -q` finds the agent action that broke your tests — zero tokens, project untouched | [airbag.md](airbag.md#find-the-action-that-broke-it-vcr-bisect) |
+| 🐘 **Local Postgres rewind** | `pg_dump` before an agent's `DROP TABLE` on your local dev DB; `vcr undo` restores the rows | [airbag.md](airbag.md#rewind-your-local-postgres-too) |
 | 🧰 **MCP server** | `vcr mcp` gives any MCP agent (Claude Code, Codex, Cursor, Gemini CLI) airbag tools: check a command first, snapshot, preview undo | [mcp.md](mcp.md) |
 | ⏪ **Recording & time travel** | Records every step of your agent; jump to any step, diff, fork, resume | [recording-and-replay.md](recording-and-replay.md) |
 | 👻 **Ghost Replay** | Re-runs a verified run from its recording — zero model calls, zero tokens | [recording-and-replay.md](recording-and-replay.md) |

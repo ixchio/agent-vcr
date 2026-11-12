@@ -6,39 +6,46 @@
 [![CI](https://github.com/ixchio/agent-vcr/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/ixchio/agent-vcr/actions/workflows/ci.yml)
 [![MIT License](https://img.shields.io/pypi/l/ai-agent-vcr?style=flat-square)](https://github.com/ixchio/agent-vcr/blob/main/LICENSE)
 
-**The undo button for AI agents.** Undo anything your coding agent did — including `rm -rf`
-from the shell — record and rewind agent runs, replay verified work without model calls, and
-gate agent regressions in CI.
+### Ctrl+Z for AI agents.
+
+Your coding agent just ran `rm -rf`. Or `git reset --hard`. Or `DROP TABLE users` on your dev
+database. **`vcr undo` brings it all back**: files, `.env`, git history, even the rows.
 
 ```bash
 pip install ai-agent-vcr
-vcr airbag install        # hooks for every coding agent on your PATH
-vcr undo                  # the agent deleted something? bring it back
+vcr airbag install        # arms every coding agent on your PATH
+vcr undo                  # oops? un-oops.
 ```
 
-No model key, account, or framework required. Everything stays on your machine.
+No API key. No account. No cloud. Everything stays on your machine.
+Works with **Claude Code, Codex, Gemini CLI, Cursor, Copilot CLI, OpenHands, OpenCode, Cline
+and Devin**, on Linux, macOS and Windows.
 
 ![Agent VCR recording, rollback, and replay demo](https://raw.githubusercontent.com/ixchio/agent-vcr/main/docs/demo.gif)
 
-## Why
+---
 
-Coding agents run shell commands. The built-in "rewind" in agent tools only tracks the agent's
-own file-edit tool — Claude Code's docs say file changes made by Bash are not tracked, and
-Gemini CLI's checkpoints cover only its edit tools. So `rm -rf`, `git reset --hard`,
-`sed -i`, a migration against your local SQLite file, or an over-eager "cleanup" can destroy
-work that no undo button sees.
+## The problem
 
-Agent VCR's **airbag** snapshots your project *before every tool call* — shell commands
-included — and `vcr undo` restores it. Commands a snapshot cannot undo (remote databases,
-`terraform destroy`, force-pushes, `npm publish`) are stopped so a human can confirm.
+Coding agents don't just edit files: they run shell commands. And the "rewind" buttons built
+into agent tools only track the agent's own edit tool. Claude Code's docs say changes made
+through Bash aren't tracked; Gemini CLI's checkpoints cover only its edit tools.
 
-## The airbag in 30 seconds
+So the scary stuff (`rm -rf`, `sed -i`, `git clean -fdx`, a migration against your local DB, an
+over-eager "let me clean that up") is exactly what nothing can undo.
+
+**Agent VCR fixes that with an airbag:** a snapshot of your project before *every* tool call,
+shell commands included. `vcr undo` restores it. Commands no snapshot can undo
+(force-pushes, `terraform destroy`, `npm publish`, a DROP on a remote database) are stopped
+until a human says yes.
+
+## 60-second tour
 
 ```text
 $ vcr airbag install claude
   ✓ Claude Code: .claude/settings.json
 
-# ...the agent decides to "clean up" and runs `rm -rf ~/code/myapp`...
+# ... the agent decides to "clean up" and runs `rm -rf ~/code/myapp` ...
 🛟 Agent VCR airbag: snapshot #1 saved before `rm -rf ~/code/myapp`. Undo with `vcr undo`.
 
 $ vcr undo --project-dir ~/code/myapp
@@ -52,9 +59,10 @@ $ vcr undo --project-dir ~/code/myapp
   Changed your mind? `vcr redo`
 ```
 
-Your uncommitted edits, your git-ignored `.env`, and your git history are back. Try it
-yourself without an agent: [`examples/airbag_demo.sh`](https://github.com/ixchio/agent-vcr/blob/main/examples/airbag_demo.sh),
-or classify any command:
+Uncommitted edits, the git-ignored `.env`, and the whole git history: back. Want to see it
+without an agent? Run
+[`examples/airbag_demo.sh`](https://github.com/ixchio/agent-vcr/blob/main/examples/airbag_demo.sh).
+Want to know what the airbag thinks of a command before anyone runs it?
 
 ```text
 $ vcr airbag check "psql -h prod-db.internal -c 'DROP TABLE invoices'"
@@ -62,9 +70,22 @@ $ vcr airbag check "psql -h prod-db.internal -c 'DROP TABLE invoices'"
    • SQL DROP on a remote database (prod-db.internal) — server data is not in your project files
 ```
 
-### Supported agents
+## What's in the box
 
-| Agent | Install | Commands a snapshot cannot undo |
+| | You type | What happens |
+|---|---|---|
+| 🛟 **Undo anything** | `vcr undo` · `vcr redo` · `vcr rewind 12` | Files, `.env`, SQLite, git history, back to before any agent action |
+| 🎯 **Find what broke it** | `vcr bisect -- pytest -q` | Binary-searches the agent's actions and names the one that broke your tests. Zero tokens |
+| 🐘 **Rewind your local DB** | `AGENT_VCR_AIRBAG_DATABASES=...` | `pg_dump` before a destructive SQL command; `vcr undo` restores the rows too |
+| 🔌 **Give the agent a seatbelt** | `claude mcp add agent-vcr -- vcr mcp` | The agent checks risky commands and reads its own undo history over MCP |
+| 📼 **Record & time-travel** | `VCRRecorder` / `vcr run.vcr` | Every step of your own agent as a frame: inspect, fork, resume, diff |
+| 👻 **Replay for free** | Ghost Replay | Re-run a verified run with zero model calls |
+| 🧪 **Test agents like code** | `@pytest.mark.agent_vcr` | Record once, replay forever, fail the test on behavior/cost/token regressions |
+| 🚦 **Gate PRs** | `vcr ci run` + GitHub Action | Block a pull request that makes your agent worse or pricier |
+
+## Supported agents
+
+| Agent | Arm it | When a command can't be undone |
 |---|---|---|
 | Claude Code | `vcr airbag install claude` | asks you |
 | OpenAI Codex CLI | `vcr airbag install codex` | blocked until `vcr airbag allow` |
@@ -77,31 +98,38 @@ $ vcr airbag check "psql -h prod-db.internal -c 'DROP TABLE invoices'"
 | Devin Local (ex-Windsurf) | `vcr airbag install devin` | blocked until `vcr airbag allow` |
 | Anything else | `vcr airbag run -- aider` | snapshots every 2 s (no interception) |
 
-**What it protects:** tracked and untracked files, small ignored "precious" files (`.env*`,
-SQLite databases — copied consistently even while open), and your `.git` when a command would
-delete or damage it. Snapshots live in a private git store **outside** the project, so deleting
-the project cannot delete them, and your own `.git` is never touched.
-**What it cannot undo:** anything outside the project, remote databases, cloud resources,
-pushed commits, sent requests. Those are stopped for confirmation. Your **local Postgres** can
-be covered too: list it in `AGENT_VCR_AIRBAG_DATABASES` and a `DROP TABLE` gets a `pg_dump`
-first, so `vcr undo` brings the rows back with the files. Details and limits:
-[docs/airbag.md](https://github.com/ixchio/agent-vcr/blob/main/docs/airbag.md).
+The airbag **never grants a permission** your agent wouldn't have asked for. It only adds
+snapshots, and stops the things a snapshot can't fix.
 
-| Command | |
-|---|---|
-| `vcr undo [N]` · `vcr redo` | undo / redo the last agent action that changed files |
-| `vcr rewind` · `vcr rewind 12` | timeline of snapshots · restore snapshot #12 |
-| `vcr airbag check "<cmd>"` | classify a command without running it |
-| `vcr airbag allow` | approve a stopped command for one retry |
-| `vcr airbag status` · `vcr airbag gc` | installed hooks and store · delete old snapshots |
-| `vcr bisect -- pytest -q` | find the agent action that broke your tests — zero model tokens |
-| `vcr mcp` | an MCP server, so the agent can check commands and see its own undo history |
+## How it works
 
-### Which of the 40 tool calls broke it? `vcr bisect`
+```text
+ agent wants to run a tool
+          │
+          ▼
+ PreToolUse hook ─► classify: read · write · destructive · irreversible
+          │                    │                        │
+          │          snapshot the project         ask a human / block
+          ▼          (shadow git store,           (force-push, prod DB,
+   tool runs         outside your project)         cloud deletes, publish)
+                               │
+                 vcr undo / redo / rewind / bisect
+```
 
-Tests were green before the agent started; now they're red and nothing is committed. Every tool
-call has a snapshot, so `vcr bisect` binary-searches them in temporary checkouts — your project
-is never touched — and names the culprit:
+- **Snapshots live outside your project** (`~/.local/state/agent-vcr/airbag/…`), in a private
+  git store. Deleting the project can't delete them. Your own `.git` is never written, except to
+  put back one that was deleted or broken.
+- **What gets captured:** tracked and untracked files, small ignored "precious" files (`.env*`,
+  SQLite, copied consistently even while open), and your `.git` before a command that would
+  wreck it. Dependency trees (`node_modules`, `.venv`) are skipped; reinstall those.
+- **Snapshots are cheap:** content-addressed, and an unchanged tree reuses the last one.
+- **Every restore is undoable:** the current state is snapshotted first, so `vcr redo` works.
+
+## Find the action that broke it: `vcr bisect`
+
+Tests were green before the agent started. Forty tool calls later they're red and nothing is
+committed. Which call did it? `git bisect` can't help: there are no commits. The airbag has
+a snapshot before every call, so:
 
 ```text
 $ vcr bisect -- pytest -q
@@ -116,22 +144,39 @@ $ vcr bisect -- pytest -q
    Go back to just before it:  vcr rewind 2
 ```
 
-### Give the agent its own safety net: `vcr mcp`
+Each test run happens in a temporary checkout: your project is never touched. 100 actions take
+about 9 runs. Zero model tokens.
+
+## Rewind your local Postgres too
+
+A file snapshot can't undo `DROP TABLE`: the data lives in the database server. For local dev
+databases you name explicitly, the airbag runs `pg_dump` right before the destructive SQL:
+
+```bash
+export AGENT_VCR_AIRBAG_DATABASES=postgresql://localhost:5433/app_dev
+vcr undo     # files AND rows back
+```
+
+Only `localhost`, `127.0.0.1`, `::1` and unix sockets are accepted; remote databases are never
+dumped and still need a human. If the airbag can't be *certain* where a command connects
+(ORM resets, `-f script.sql`, `PGSERVICE`, a `\connect` inside the SQL), it takes the dump
+**and** still asks.
+
+## Give the agent its own seatbelt: `vcr mcp`
 
 ```bash
 claude mcp add agent-vcr -- vcr mcp      # Codex: codex mcp add agent-vcr -- vcr mcp
 ```
 
-The agent can now ask `airbag_check` before a risky command, read its timeline, take a snapshot,
-and preview an undo. Restoring files through MCP needs `dry_run: false` **and** `confirm: true`.
-See [docs/mcp.md](https://github.com/ixchio/agent-vcr/blob/main/docs/mcp.md).
+Now the agent can call `airbag_check` before a risky command, read its timeline, take a
+snapshot, and preview an undo. Actually restoring files over MCP takes `dry_run: false`
+**and** `confirm: true`, and only works on the project the server was started in.
+→ [docs/mcp.md](https://github.com/ixchio/agent-vcr/blob/main/docs/mcp.md)
 
-## More than an undo button
+## Building your own agent? Record it.
 
-### Record and time-travel agent runs
-
-Every step — state in, state out, tool calls, model calls, cost, latency, errors — is a frame in
-an append-only JSONL file you can open, diff, bundle, and replay.
+Every step (state in, state out, tool calls, model calls, cost, latency, errors) becomes a
+frame in an append-only JSONL file you can open, diff, bundle and replay.
 
 ```python
 from agent_vcr import VCRPlayer, VCRRecorder
@@ -147,14 +192,41 @@ player.goto_checkpoint("plan-approved")   # jump to any frame or checkpoint
 player.verify_integrity()                 # durability checks
 ```
 
-Fork a run from any frame, edit state, and resume; compare frames; open a recording in the
-terminal debugger with `vcr path/to/run.vcr`.
+Fork from any frame, edit state, resume. Open a recording in the terminal debugger with
+`vcr path/to/run.vcr`. Long runs? `VCRRecorder(max_cached_frames=1000)` keeps memory flat.
 
-### Roll back files and state together in your own agent
+### Test agents like code (pytest plugin)
 
-`ACIDWorkspace` gives Python agents transactions over a git repository: savepoints pair a git
-commit with the agent's state, rollback restores both, and pre-existing untracked files such as
-`.env` are escrowed byte-for-byte outside git history.
+Records the first time, then replays with **zero model calls**, failing the test when
+behavior, cost or tokens regress:
+
+```python
+@pytest.mark.agent_vcr(task="triage ticket t_123", identity={"model": "gpt-5"})
+def test_triage(agent_vcr):
+    run = agent_vcr.run(triage)            # 1st run: calls the agent; after: replays it
+    assert run.output["queue"] == "billing"
+    agent_vcr.assert_matches_golden(max_cost_usd=0.05)
+```
+
+`AGENT_VCR_RECORD=none pytest` in CI fails instead of spending tokens.
+→ [docs/pytest-plugin.md](https://github.com/ixchio/agent-vcr/blob/main/docs/pytest-plugin.md)
+
+### Gate pull requests (Agent CI)
+
+Turn verified runs into a dataset; fail the PR on behavioral, cost, token or latency
+regressions. Comes with a GitHub Action
+([action.yml](https://github.com/ixchio/agent-vcr/blob/main/action.yml)).
+
+```bash
+vcr dataset create refunds
+vcr dataset add refunds --task "refund a duplicate payment" --vcr .vcr/golden/refund.vcr
+vcr ci run --dataset refunds --candidates .vcr/candidates --fail-on degraded
+```
+
+### Transactions for your agent's workspace
+
+`ACIDWorkspace` pairs each git savepoint with the agent's state. Rollback restores both, and
+untracked files like `.env` are escrowed byte-for-byte outside git history.
 
 ```python
 from agent_vcr.integrations.openhands import ACIDWorkspace
@@ -166,145 +238,95 @@ with ACIDWorkspace("/path/to/repo") as ws:          # begin() on enter
 # clean exit → commit (merge); exception → abort (everything restored)
 ```
 
-### Ghost Replay and Agent CI
-
-Save a verified run as a *golden* run keyed by model, prompt hash, code commit and tool schema;
-replay it with zero model calls, re-run only changed steps, and see what you saved. Turn golden
-runs into datasets and fail a pull request on behavioral, cost, token or latency regressions:
-
-```bash
-vcr dataset create refunds
-vcr dataset add refunds --task "refund a duplicate payment" --vcr .vcr/golden/refund.vcr
-vcr ci run --dataset refunds --candidates .vcr/candidates --fail-on degraded
-```
-
-A reusable GitHub Action is included ([action.yml](https://github.com/ixchio/agent-vcr/blob/main/action.yml)).
-
-Or test agents the way you test code — the pytest plugin records on the first run and replays
-with zero model calls after that, failing the test on a behavior, cost or token regression:
-
-```python
-@pytest.mark.agent_vcr(task="triage ticket t_123", identity={"model": "gpt-5"})
-def test_triage(agent_vcr):
-    run = agent_vcr.run(triage)            # 1st run: calls the agent; after: replays it
-    assert run.output["queue"] == "billing"
-    agent_vcr.assert_matches_golden(max_cost_usd=0.05)
-```
-
-`AGENT_VCR_RECORD=none pytest` in CI fails instead of calling a model. See
-[docs/pytest-plugin.md](https://github.com/ixchio/agent-vcr/blob/main/docs/pytest-plugin.md).
-
 ### Sentinel
 
-An AST quality guard for agent-written Python: syntax errors, complexity and length spikes,
-duplicate functions across files. `sentinel scan .` in CI, or attach it to an OpenHands run.
+An AST guard for agent-written Python: syntax errors, complexity and length spikes, duplicate
+functions. `sentinel scan .` in CI, or plug it into an OpenHands conversation: it stops the agent's next
+move when an edit *introduces* a blocker (pre-existing mess is only a warning).
 
 ## Framework integrations
 
 ```python
-from agent_vcr import VCRRecorder
-
-recorder = VCRRecorder()
-recorder.start_session("my-run")      # ... run your agent ..., then recorder.save()
-```
-
-```python
-# LangGraph — no graph changes: pass the callback per run …
+# LangGraph: no graph changes, pass the callback per run …
 from agent_vcr.integrations.langgraph import LangGraphCallback
 app.invoke(inputs, config={"callbacks": [LangGraphCallback(recorder)]})
 
-# … or wrap every node of a StateGraph (before or after compile)
+# … or wrap every node of a StateGraph
 from agent_vcr.integrations.langgraph import VCRLangGraph
 graph = VCRLangGraph(recorder).wrap_graph(builder)
-```
 
-```python
 # CrewAI
-from agent_vcr.integrations.crewai import VCRCrewAI, VCRCrewCallback
-result = VCRCrewAI(recorder).kickoff(crew)        # or: with VCRCrewCallback(recorder): crew.kickoff()
-```
+from agent_vcr.integrations.crewai import VCRCrewAI
+result = VCRCrewAI(recorder).kickoff(crew)
 
-```python
-# OpenHands SDK — snapshot before every action, block irreversible ones
+# OpenHands SDK: snapshot before every action, block irreversible ones
 from agent_vcr.integrations.openhands_airbag import AirbagCallback, protect
 airbag = AirbagCallback()
 conversation = Conversation(agent=agent, workspace=ws, callbacks=[airbag])
 protect(conversation, airbag)
 ```
 
-Any other framework: call `record_step`, `record_llm_call`, `record_tool_call`, `record_error`
-and `record_checkpoint` from its lifecycle hooks, or forward frames live with
-`VCRRecorder(on_frame_recorded=...)`. Guides:
-[docs/integrations](https://github.com/ixchio/agent-vcr/blob/main/docs/integrations/README.md).
+Anything else: call `record_step`, `record_llm_call`, `record_tool_call`, `record_error` and
+`record_checkpoint` from your framework's hooks.
+→ [docs/integrations](https://github.com/ixchio/agent-vcr/blob/main/docs/integrations/README.md)
 
-## Architecture
+## What it can't do (honest section)
 
-```text
- coding agents ──hooks/plugins──►  airbag ──► shadow git store (outside the project)
- (Claude Code, Codex, …)            │           └─ vcr undo / redo / rewind
-                                    ▼
- frameworks ──callbacks──►  recorder ──► .vcr JSONL (execution/v1) ──► player
- (LangGraph, CrewAI, …)        ▲                                        │
-                               │                          Ghost Replay ◄┘──► Agent CI
-                      ACIDWorkspace (git transactions + escrow)
+- **Undo the outside world.** Sent emails, payments, cloud resources, pushed commits, remote
+  databases. Those get stopped for a human instead.
+- **Snapshot your dependency folders.** `node_modules`, `.venv` and build output are skipped
+  on purpose; reinstall them.
+- **Read every mind.** The classifier reads POSIX shell. A command it doesn't recognise still
+  gets a snapshot first, but an obfuscated or PowerShell-only danger may not be flagged as
+  irreversible.
+- **Replace observability.** LangSmith, Langfuse, Phoenix and AgentOps *watch* model calls;
+  Agent VCR lets you *go back*. Use both.
+
+## Install
+
+```bash
+pip install ai-agent-vcr                  # core: airbag, recorder, replay, CI, pytest plugin, MCP
+pip install "ai-agent-vcr[tui]"          # terminal debugger
+pip install "ai-agent-vcr[dashboard]"    # local web dashboard and server
+pip install "ai-agent-vcr[langgraph]"    # LangGraph
+pip install "ai-agent-vcr[crewai]"       # CrewAI
+pip install "ai-agent-vcr[openhands]"    # OpenHands SDK 1.x (Python 3.12+)
+pip install "ai-agent-vcr[all]"          # everything
 ```
+
+Python 3.9–3.13 on Linux, macOS and Windows, every one tested in CI on every change. The
+airbag needs `git` on your `PATH`.
+
+## Stability
 
 | Layer | Status |
 |---|---|
-| Recording kernel (`recorder`, `player`, `execution/v1` schema) | stable — old recordings always load |
-| Airbag, ACID workspace, Sentinel | stable API |
-| Ghost Replay, datasets, Agent CI, bundles | stable |
-| LangGraph / CrewAI / OpenHands / Claude Code integrations | stable — tested against the real libraries |
+| Airbag, bisect, MCP server, ACID workspace, Sentinel | stable API |
+| Recording kernel (`recorder`, `player`, `execution/v1` schema) | stable: old recordings always load |
+| Ghost Replay, datasets, Agent CI, pytest plugin, bundles | stable |
+| LangGraph / CrewAI / OpenHands / Claude Code integrations | stable, tested against the real libraries |
 | Dashboard and self-hosted store (`vcr-server`) | supported |
-| SuperAgent, workflows, sandbox, intelligence | experimental — APIs may change |
+| SuperAgent, workflows, sandbox, intelligence | experimental: APIs may change |
 
-The full package map and design notes are in
+Package map and design notes:
 [docs/architecture.md](https://github.com/ixchio/agent-vcr/blob/main/docs/architecture.md).
 
-## Install what you need
+## Docs
 
-```bash
-pip install ai-agent-vcr                  # core: recorder, player, airbag, replay, CI
-pip install "ai-agent-vcr[tui]"          # terminal debugger
-pip install "ai-agent-vcr[dashboard]"    # local dashboard and server
-pip install "ai-agent-vcr[langgraph]"    # LangGraph integration
-pip install "ai-agent-vcr[crewai]"       # CrewAI integration
-pip install "ai-agent-vcr[openhands]"    # OpenHands SDK 1.x (Python 3.12+)
-pip install "ai-agent-vcr[all]"          # everything optional
-```
-
-Python 3.9–3.13 on Linux, macOS and Windows (all tested in CI). The airbag and ACID workspace
-need `git` on `PATH`.
-
-## Where it fits
-
-Agent VCR is an **intervention** tool, not an observability platform. LangSmith, Langfuse,
-Phoenix and AgentOps observe and evaluate model calls; Agent VCR lets you go back — files, state
-and history — after an agent changed them. They work well together. It cannot make third-party
-side effects (emails, payments, cloud APIs) transactional; it stops those for confirmation.
-
-## Documentation
-
-- [Airbag](https://github.com/ixchio/agent-vcr/blob/main/docs/airbag.md) — per-agent support, commands, limits
-- [Recording, time travel and Ghost Replay](https://github.com/ixchio/agent-vcr/blob/main/docs/recording-and-replay.md)
-- [ACID workspace rollback](https://github.com/ixchio/agent-vcr/blob/main/docs/acid-workspace.md)
-- [Agent CI regression gates](https://github.com/ixchio/agent-vcr/blob/main/docs/agent-ci.md) ·
-  [pytest plugin](https://github.com/ixchio/agent-vcr/blob/main/docs/pytest-plugin.md)
-- [MCP server](https://github.com/ixchio/agent-vcr/blob/main/docs/mcp.md) — the airbag as agent tools
-- [Integrations](https://github.com/ixchio/agent-vcr/blob/main/docs/integrations/README.md)
-- [Architecture](https://github.com/ixchio/agent-vcr/blob/main/docs/architecture.md)
-- [All docs](https://github.com/ixchio/agent-vcr/blob/main/docs/README.md) ·
-  [Live site](https://ixchio.github.io/agent-vcr/) ·
-  [Examples](https://github.com/ixchio/agent-vcr/blob/main/examples/README.md) ·
-  [Changelog](https://github.com/ixchio/agent-vcr/blob/main/CHANGELOG.md)
+- **[Website](https://ixchio.github.io/agent-vcr/)** · [Documentation](https://ixchio.github.io/agent-vcr/guides.html) · [5-minute quickstart](https://github.com/ixchio/agent-vcr/blob/main/docs/quickstart.md)
+- [Airbag](https://github.com/ixchio/agent-vcr/blob/main/docs/airbag.md): every agent, every command, every limit
+- [MCP server](https://github.com/ixchio/agent-vcr/blob/main/docs/mcp.md) · [pytest plugin](https://github.com/ixchio/agent-vcr/blob/main/docs/pytest-plugin.md) · [Agent CI](https://github.com/ixchio/agent-vcr/blob/main/docs/agent-ci.md)
+- [Recording, time travel and Ghost Replay](https://github.com/ixchio/agent-vcr/blob/main/docs/recording-and-replay.md) · [ACID workspace](https://github.com/ixchio/agent-vcr/blob/main/docs/acid-workspace.md) · [Integrations](https://github.com/ixchio/agent-vcr/blob/main/docs/integrations/README.md)
+- [FAQ](https://github.com/ixchio/agent-vcr/blob/main/docs/faq.md) · [All docs](https://github.com/ixchio/agent-vcr/blob/main/docs/README.md) · [Examples](https://github.com/ixchio/agent-vcr/blob/main/examples/README.md) · [Changelog](https://github.com/ixchio/agent-vcr/blob/main/CHANGELOG.md)
 
 ## Contributing
 
-Issues and pull requests are welcome — new agent integrations especially. See
-[CONTRIBUTING.md](https://github.com/ixchio/agent-vcr/blob/main/CONTRIBUTING.md) (including
-*Adding an agent to the airbag*), run `make verify`, and include a test with every change.
-Please follow the [Code of Conduct](https://github.com/ixchio/agent-vcr/blob/main/CODE_OF_CONDUCT.md)
-and report vulnerabilities privately per [SECURITY.md](https://github.com/ixchio/agent-vcr/blob/main/SECURITY.md).
+PRs welcome, new agent integrations especially. Read
+[CONTRIBUTING.md](https://github.com/ixchio/agent-vcr/blob/main/CONTRIBUTING.md) (it covers
+*Adding an agent to the airbag*), run `make verify`, and ship a test with every change.
+Be kind: [Code of Conduct](https://github.com/ixchio/agent-vcr/blob/main/CODE_OF_CONDUCT.md).
+Found a security issue? Report it privately per
+[SECURITY.md](https://github.com/ixchio/agent-vcr/blob/main/SECURITY.md).
 
 ## License
 
