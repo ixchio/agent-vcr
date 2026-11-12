@@ -210,7 +210,7 @@ class TestDiagnose:
         assert report.verdict == "ok"
 
     def test_public_api(self):
-        assert agent_vcr.__version__ == "1.6.0"
+        assert agent_vcr.__version__ == "1.7.0"
         for name in ("cluster_sessions", "score_agent", "score_session",
                      "classify_player", "plan_recovery", "auto_recover_workflow",
                      "ModelRegistry", "route", "breakdown", "diagnose",

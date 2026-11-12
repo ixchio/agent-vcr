@@ -7,20 +7,68 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Documentation
-- Rebuilt the docs so every topic lives on exactly one page: new hub, 5-minute quickstart, FAQ,
-  Sentinel and dashboard guides; experimental SuperAgent, workflow and intelligence guides under
-  `docs/experimental/`; `docs/development.md` folded into `CONTRIBUTING.md`. Every command and
-  snippet was run against the code; stale or untrue claims were removed.
-- The website's landing and guides pages now lead with the airbag.
+## [1.7.0] - 2026-11-12
+
+### Added
+- **`vcr bisect -- <test command>`**: finds the agent action that broke your tests by
+  binary-searching the airbag's snapshots in temporary checkouts. No model tokens, and the
+  project, its `.git` and the snapshots are never modified. Reports the culprit command, the
+  files it changed, the failing output and the `vcr rewind` command to go back. `--good`,
+  `--bad`, `--timeout`, `--copy-ignored`, `--json`.
+- **Local Postgres rewind**: list local databases in `AGENT_VCR_AIRBAG_DATABASES` (or
+  `.vcr/airbag-databases.json`). A destructive SQL command against one gets a `pg_dump` first,
+  and `vcr undo` / `vcr rewind` restore the database together with the files (with a dump of the
+  current state first, so the restore is undoable too). Only localhost / unix-socket databases
+  are accepted. `vcr airbag db list|snapshot|restore`.
+- **`vcr mcp`**: a stdio MCP server (standard library only) that gives any MCP-capable agent
+  `airbag_status`, `airbag_timeline`, `airbag_check`, `airbag_snapshot`, `airbag_undo`,
+  `airbag_rewind`, `recordings_list` and `recording_summary`. Undo and rewind only preview
+  unless called with `dry_run: false` and `confirm: true`. Tested live in Claude Code.
+- **pytest plugin** (auto-registered): the `agent_vcr` fixture records an agent run on the
+  first test run and replays it with zero model calls afterwards;
+  `assert_matches_golden()` fails the test on behavior, cost, token or latency regressions with
+  a readable diff. `--vcr-record=none|once|all`, `--vcr-dir`, `--vcr-fail-on`,
+  `@pytest.mark.agent_vcr(...)`, xdist-safe.
+- **Dashboard sign-in for token-protected servers**: open `/dashboard?token=...` once, or use the
+  `/dashboard/login` form, to get a short-lived HttpOnly, SameSite=Strict session cookie (Secure
+  on HTTPS). Cookie-only state-changing requests and the live WebSocket must come from the
+  server's own origin. The live feed uses `wss://` on HTTPS pages.
+- `VCRRecorder(max_cached_frames=N)` / `AsyncVCRRecorder(max_cached_frames=N)`: bounded memory
+  for long runs; evicted frames are read back from the `.vcr` file when needed.
+- OpenHands SDK 1.x support for `VCRRuntime` (`Conversation(callbacks=[vcr])`, one frame per
+  tool call) and Sentinel (`sentinel.bind(conversation)`; blocks the next action through the
+  SDK's own rejection mechanism). The V0 event-stream API still works.
+- CI runs the test suite on macOS and Windows.
+
+### Changed
+- The `openhands` extra installs `openhands-sdk` and `openhands-tools` (Python 3.12+); the old
+  `openhands-ai` dependency moved to `openhands-legacy`. The unused `inngest` extra was removed.
+- `create_workflow_backend("inngest")` raises `InngestBackendUnavailable` instead of returning
+  a backend that never ran your steps; `"auto"` always picks the local backend.
+- Airbag output: the timeline names file edits as `Edit src/app.py` instead of an absolute path,
+  `vcr undo` marks files it changed back with `~` (as `--dry-run` does), and `vcr redo` says
+  which action it redid.
 
 ### Fixed
+- Airbag: writes and moves to a path outside the project (`cp a.txt ../x.txt`, `-t` targets,
+  `mv` out of the project, `rsync` to `host:path`, through a symlink inside the project) are
+  irreversible, not plain writes. Projects under symlinked directories (`/var`, `/tmp`,
+  `/home` on macOS) are classified the same as on Linux.
+- TUI: Ctrl+S saves in the state editor (the hint was there, the binding wasn't).
+- The dashboard sidebar showed a stale version.
 - `vcr bundle verify` exits 1 for a tampered or unreadable bundle (it printed `"ok": false`
   but exited 0).
 - `vcr undo --dry-run` shows the same `+`/`-` signs as the real undo.
 - Airbag: `ssh`/`scp` to another machine, mail senders, cloud `send`/`publish` commands, and
   schema migrations against a database server are now treated as irreversible.
 - The n8n template sends `inputs` as a JSON object and includes the workflow secret.
+
+### Documentation
+- Rebuilt the docs so every topic lives on exactly one page: new hub, 5-minute quickstart, FAQ,
+  Sentinel and dashboard guides; experimental SuperAgent, workflow and intelligence guides under
+  `docs/experimental/`; `docs/development.md` folded into `CONTRIBUTING.md`. Every command and
+  snippet was run against the code; stale or untrue claims were removed.
+- The website's landing and guides pages now lead with the airbag.
 
 ## [1.6.0] - 2026-11-11
 

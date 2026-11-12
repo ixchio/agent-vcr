@@ -126,7 +126,7 @@ Once Railway reports a healthy deploy:
 
 ```bash
 curl -fsS https://YOUR_RAILWAY_DOMAIN/api/health
-# {"status":"ok","version":"1.6.0","auth":true}
+# {"status":"ok","version":"1.7.0","auth":true}
 
 # The self-hosted API must reject anonymous calls (expect 401):
 curl -s -o /dev/null -w '%{http_code}\n' https://YOUR_RAILWAY_DOMAIN/api/sessions

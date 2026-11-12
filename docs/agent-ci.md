@@ -8,7 +8,7 @@ every pull request, and fail the PR when it breaks a rule or drifts from the bas
 - Golden run → **dataset** case with expectations → your test harness records a
   **candidate** → `vcr ci run` gives a ✅ pass / ⚠️ degraded / ❌ fail verdict and an exit code.
 - Offline and deterministic: the gate compares recordings. It never calls an LLM.
-- One step in GitHub Actions: `uses: ixchio/agent-vcr@v1.6.0`.
+- One step in GitHub Actions: `uses: ixchio/agent-vcr@v1.7.0`.
 
 ## Try it in 60 seconds
 
@@ -200,12 +200,12 @@ jobs:
         run: python tests/generate_agent_candidates.py   # your harness
 
       - name: Compare with reviewed baselines
-        uses: ixchio/agent-vcr@v1.6.0
+        uses: ixchio/agent-vcr@v1.7.0
         with:
           dataset: refunds
           candidates-dir: .vcr/candidates
           fail-on: degraded
-          package: ai-agent-vcr==1.6.0
+          package: ai-agent-vcr==1.7.0
 
       - name: Comment the report on the PR
         if: github.event_name == 'pull_request' && always()
