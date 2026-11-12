@@ -227,4 +227,4 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
-addopts = "-v --cov=agent_vcr --cov=openhands_sentinel --cov-report=term-missing"
+addopts = "-v -p no:agent_vcr --cov=agent_vcr --cov=openhands_sentinel --cov-report=term-missing"
