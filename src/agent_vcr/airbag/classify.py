@@ -283,6 +283,9 @@ class _Context:
         # not "absolute", but it is no more relative to the project than on POSIX.
         explicit = bool(self._expand(raw).root)
         for temp in self._temp_dirs():
+            if _WINDOWS and not temp.drive:
+                # A drive-less ``/tmp`` is on the drive of the path it is compared with.
+                temp = Path(path.drive + "/") / temp
             if temp not in path.parents:
                 continue
             project_in_temp = any(temp in root.parents for root in self.roots)
@@ -300,7 +303,8 @@ class _Context:
         for name in names:
             if name and Path(name).parent != Path(name):  # never a filesystem root
                 dirs.add(Path(name))
-                dirs.add(Path(os.path.realpath(name)))
+                if not _WINDOWS or Path(name).drive:  # realpath would add the cwd's drive
+                    dirs.add(Path(os.path.realpath(name)))
         return sorted(dirs)
 
 
