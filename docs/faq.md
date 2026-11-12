@@ -58,9 +58,12 @@ model key for features that call a model on purpose, like the optional
 ### Does the airbag slow my agent down?
 
 About 0.05–0.1 s per tool call, mostly Python start-up; read-only commands skip the snapshot
-entirely. The first snapshot of a project costs the most: about 1 s for a 20,000-file repository
-(it was 5–7 s before 1.7.1); after that, a snapshot after a small change takes about 0.1 s. CI
-fails if these regress. Numbers: [Airbag → How it works](airbag.md#how-it-works).
+entirely. The first snapshot of a project costs the most. For a 20,000-file repository on CI
+runners it took about 1 s on Linux (5–7 s before 1.7.1), about 10 s on macOS and 8–18 s on
+Windows; on Windows the system drive (with antivirus scanning) can be far slower. After that, a
+snapshot after a small change takes about 0.1 s. On a big project, warm it up once yourself
+before letting an agent loose: `vcr airbag snapshot`. CI fails if the Linux numbers regress.
+Numbers: [Airbag → How it works](airbag.md#how-it-works).
 
 ## Snapshots
 

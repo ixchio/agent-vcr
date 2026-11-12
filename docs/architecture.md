@@ -104,7 +104,7 @@ agent tool call ──► hook process (python -m agent_vcr.airbag.hook <agent>)
   `airbag/statusline.py` feeds Claude Code's status line.
 * **Fast first snapshot.** Files are staged with `git update-index --stdin` (linear) instead of
   pathspec-limited `git add`, with parallel blob writing for big batches; a 20k-file repository's
-  first snapshot takes about a second. Precious files are also found inside wholly ignored
+  first snapshot takes about a second on Linux (longer on macOS/Windows). Precious files are also found inside wholly ignored
   directories (`data/app.db`), never inside dependency trees.
 * **Databases (opt-in).** Local Postgres URLs listed in `AGENT_VCR_AIRBAG_DATABASES` (or
   `.vcr/airbag-databases.json`) are dumped with `pg_dump` into the store before a destructive

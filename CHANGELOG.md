@@ -71,9 +71,11 @@ hooks to your agents' user-level configs and leaves other hooks alone. `vcr doct
   retried while another process holds the file; binary-mode JSONL appends.
 
 ### Changed
-- **The first snapshot is 5–7x faster**: about 1 s instead of 5–7 s for a 20,000-file repository
-  (files are staged with `git update-index` instead of pathspec-limited `git add`). Later
-  snapshots stay around 0.1 s. Latency budgets in CI keep it that way.
+- **The first snapshot is 5–7x faster on Linux**: about 1 s instead of 5–7 s for a
+  20,000-file repository (files are staged with `git update-index` instead of
+  pathspec-limited `git add`). macOS and Windows are slower at that size (about 10 s and
+  8–18 s on CI runners); warm a big project up once with `vcr airbag snapshot`. Later snapshots
+  stay around 0.1 s. Latency budgets in CI keep it that way.
 - Hook commands survive a reinstall: on Linux and macOS a hook whose Python is gone does nothing
   instead of failing every tool call, and `vcr doctor --fix` points it at the new one.
 - The docs install the `vcr` command with `pipx` or `uv tool` (plain `pip` is blocked on most
@@ -90,6 +92,9 @@ hooks to your agents' user-level configs and leaves other hooks alone. `vcr doct
 - Airbag: `.env` and SQLite files inside a wholly ignored folder (`data/` in `.gitignore`) were
   never snapshotted. They are now, without looking inside dependency or build folders.
 - Airbag: a directory replaced by a symlink made the snapshot silently reuse the previous tree.
+- Windows: the SQLite backup cache used `st_ctime`, which is the *creation* time on Windows, so
+  an in-place write that restored the file's mtime could be missed. It now reads the NTFS change
+  time and treats an unreadable one as "changed".
 - Installer paths for Devin Local (`~/.config/devin/config.json`), Copilot CLI
   (`$COPILOT_HOME`) and Cline (XDG Documents folder).
 - Airbag: writes and moves to a path outside the project (`cp a.txt ../x.txt`, `-t` targets,
