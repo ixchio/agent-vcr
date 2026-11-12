@@ -62,7 +62,7 @@ def _atomic_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
     try:
-        with os.fdopen(fd, "w") as f:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(payload, f, indent=2)
         os.replace(tmp, str(path))
     except Exception:
@@ -109,7 +109,7 @@ class WorkflowRegistry:
         path = self._file(name, f".v{int(version)}.json")
         if not path.exists():
             raise KeyError(f"Workflow {name!r} v{version} not found")
-        return WorkflowDef(**json.loads(path.read_text()))
+        return WorkflowDef(**json.loads(path.read_text(encoding="utf-8")))
 
     def latest(self, name: str) -> WorkflowDef | None:
         try:
@@ -119,7 +119,7 @@ class WorkflowRegistry:
         if not pointer.exists():
             return None
         try:
-            version = json.loads(pointer.read_text())["version"]
+            version = json.loads(pointer.read_text(encoding="utf-8"))["version"]
         except (ValueError, KeyError, OSError):
             return None
         return self.get(name, version)
@@ -171,7 +171,7 @@ class RunStore:
         if not path.exists():
             raise KeyError(f"Run {run_id!r} not found")
         try:
-            return RunRecord(**json.loads(path.read_text()))
+            return RunRecord(**json.loads(path.read_text(encoding="utf-8")))
         except ValueError as err:
             raise ValueError(f"Corrupt run file {run_id!r}: {err}") from err
 
@@ -194,7 +194,7 @@ class RunStore:
         if not path.exists():
             return None
         try:
-            return str(json.loads(path.read_text()).get("reason") or "Cancelled")
+            return str(json.loads(path.read_text(encoding="utf-8")).get("reason") or "Cancelled")
         except (ValueError, OSError, AttributeError):
             return "Cancelled"
 
@@ -207,7 +207,7 @@ class RunStore:
         out: list[dict[str, Any]] = []
         for path in sorted(self.dir.glob("*.json")):
             try:
-                record = RunRecord(**json.loads(path.read_text()))
+                record = RunRecord(**json.loads(path.read_text(encoding="utf-8")))
             except ValueError:
                 continue
             if workflow and record.workflow != workflow:

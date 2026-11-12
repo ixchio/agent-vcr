@@ -285,7 +285,7 @@ class Scheduler:
         if not thread_lock.acquire(timeout=self.lock_timeout_s):
             raise TimeoutError(f"Timed out waiting for schedule lock in {self.dir}")
         try:
-            with open(self.dir / "schedules.lock", "a+") as handle:
+            with open(self.dir / "schedules.lock", "a+", encoding="utf-8") as handle:
                 self._acquire_file_lock(handle, deadline)
                 try:
                     yield
@@ -322,7 +322,7 @@ class Scheduler:
         if not self._path().exists():
             return {}
         try:
-            raw = json.loads(self._path().read_text())
+            raw = json.loads(self._path().read_text(encoding="utf-8"))
         except ValueError as err:
             raise ValueError(f"Corrupt schedules file: {err}") from err
         return {name: ScheduleSpec(**spec) for name, spec in raw.items()}
@@ -330,7 +330,7 @@ class Scheduler:
     def _save(self, schedules: dict[str, ScheduleSpec]) -> None:
         fd, tmp = tempfile.mkstemp(dir=str(self.dir), suffix=".tmp")
         try:
-            with os.fdopen(fd, "w") as f:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
                 json.dump({k: v.model_dump() for k, v in schedules.items()}, f, indent=2)
             os.replace(tmp, str(self._path()))
         except Exception:

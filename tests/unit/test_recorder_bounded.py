@@ -39,23 +39,27 @@ def test_20k_frames_with_a_small_cache_stay_bounded_and_correct(tmp_path: Path) 
     rec = VCRRecorder(output_dir=str(tmp_path), buffer_size=BUFFER, max_cached_frames=CACHE)
     rec.start_session("long-run")
 
+    # Growth is measured over two windows of 9k frames each. A leak grows in both; a one-off
+    # resize of an interpreter-global table (the sys.intern dict, filled by the whole test
+    # session, can double inside one window: ~4 MB in one allocation) grows in only one.
+    marks = {2_000: 0, 11_000: 0, N_FRAMES - 1: 0}
     tracemalloc.start()
     try:
         peak_cache = 0
-        baseline = 0
         for i in range(N_FRAMES):
             _record(rec, i)
             peak_cache = max(peak_cache, rec.cached_frame_count)
-            if i == 2_000:
-                baseline = tracemalloc.get_traced_memory()[0]
-        grown = tracemalloc.get_traced_memory()[0] - baseline
+            if i in marks:
+                marks[i] = tracemalloc.get_traced_memory()[0]
     finally:
         tracemalloc.stop()
+    first, mid, last = marks.values()
+    windows = (mid - first, last - mid)
 
     # The cache never holds more than the bound plus one unflushed buffer ...
     assert peak_cache <= CACHE + BUFFER
-    # ... so 18k more frames add (almost) nothing. Unbounded, they cost ~20 MB.
-    assert grown < 1_000_000, f"memory grew by {grown} bytes"
+    # ... so 9k more frames add (almost) nothing. Unbounded, they cost ~10 MB.
+    assert min(windows) < 500_000, f"memory grew by {windows} bytes per 9k frames"
     assert rec.get_session() is not None
     assert rec.get_session().frame_count == N_FRAMES  # type: ignore[union-attr]
 
@@ -106,7 +110,7 @@ def test_save_rewrites_the_header_from_disk_not_the_cache(
     for i in range(50):
         _record(rec, i)
     path = rec.save()
-    lines = path.read_text().splitlines()
+    lines = path.read_text(encoding="utf-8").splitlines()
     header = json.loads(lines[0])
     assert header["type"] == "session"
     assert header["data"]["frame_count"] == 50
@@ -124,7 +128,8 @@ def test_unbounded_default_keeps_everything_and_repairs_a_truncated_file(tmp_pat
     path = tmp_path / "default.vcr"
     # Lose flushed frames underneath the recorder: with every frame still cached, the
     # header rewrite falls back to the cache instead of keeping the damaged file.
-    path.write_text("\n".join(path.read_text().splitlines()[:6]) + "\n")
+    path.write_text("\n".join(path.read_text(
+        encoding="utf-8").splitlines()[:6]) + "\n", encoding="utf-8")
     rec.save()
     player = VCRPlayer.load(path)
     assert [f.node_name for f in player.frames] == [f"step_{i}" for i in range(25)]

@@ -53,7 +53,7 @@ def _load_profiles() -> dict[str, Any]:
     if not path.exists():
         return {}
     try:
-        return json.loads(path.read_text()).get("profiles", {})
+        return json.loads(path.read_text(encoding="utf-8")).get("profiles", {})
     except (OSError, ValueError) as err:
         raise CloudError(0, f"Cannot read credentials {path}: {err}") from err
 
@@ -76,7 +76,10 @@ def _atomic_write(path: Path, payload: bytes, *, mode: int | None = None) -> Non
     try:
         with os.fdopen(fd, "wb") as stream:
             if mode is not None:
-                os.fchmod(stream.fileno(), mode)
+                if hasattr(os, "fchmod"):
+                    os.fchmod(stream.fileno(), mode)
+                else:  # Windows: no fchmod; only the read-only bit exists there
+                    os.chmod(temporary, mode)
             stream.write(payload)
             stream.flush()
             os.fsync(stream.fileno())

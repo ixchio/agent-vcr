@@ -34,7 +34,7 @@ def workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("AGENT_VCR_AIRBAG_HOME", str(tmp_path / "home"))
     ws = tmp_path / "ws"
     (ws / "src").mkdir(parents=True)
-    (ws / "src" / "app.py").write_text("x = 1\n")
+    (ws / "src" / "app.py").write_text("x = 1\n", encoding="utf-8")
     return ws
 
 

@@ -34,7 +34,7 @@ class TestFrozenSchema:
     def test_backward_compat_old_files_without_version(self, tmp_path):
         """Pre-1.0 records without schema_version must still load."""
         path = tmp_path / "old.vcr"
-        with open(path, "w") as fh:
+        with open(path, "w", encoding="utf-8") as fh:
             fh.write(json.dumps({
                 "type": "session",
                 "data": {
@@ -141,7 +141,7 @@ class TestDurability:
         rec.start_session("hdr")
         rec.record_step("n", {}, {"v": 1})
         path = rec.save()
-        with open(path) as fh:
+        with open(path, encoding="utf-8") as fh:
             header = json.loads(fh.readline())
         assert header["type"] == "session"
         assert header.get("schema") == "execution/v1"
@@ -149,7 +149,7 @@ class TestDurability:
 
     def test_strict_load_raises_vs_skip(self, tmp_path):
         path = tmp_path / "mixed.vcr"
-        with open(path, "w") as fh:
+        with open(path, "w", encoding="utf-8") as fh:
             fh.write(json.dumps({
                 "type": "session",
                 "data": {
@@ -199,6 +199,6 @@ class TestDurability:
             / "schemas" / "events" / "resume_config.json"
         )
         assert schema_path.exists(), "run python3 scripts/export_schemas.py"
-        payload = json.loads(schema_path.read_text())
+        payload = json.loads(schema_path.read_text(encoding="utf-8"))
         assert "from_frame" in json.dumps(payload)
         assert ResumeConfig(from_frame=0).mode.value == "fork"

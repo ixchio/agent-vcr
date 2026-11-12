@@ -471,7 +471,7 @@ def write_github_summary(markdown: str) -> None:
     summary = os.environ.get("GITHUB_STEP_SUMMARY")
     if not summary:
         return
-    with open(summary, "a") as f:
+    with open(summary, "a", encoding="utf-8") as f:
         f.write(markdown + "\n")
 
 

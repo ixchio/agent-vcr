@@ -99,7 +99,7 @@ class TestZeroBaseline:
         report = run_regression(ds, {"t": str(cand)}, cache)
         report.results[0].diff.latency_delta_pct = float("inf")  # belt and braces
         out = report.save(tmp_path / "out" / "report.json")
-        data = _strict_loads(out.read_text())
+        data = _strict_loads(out.read_text(encoding="utf-8"))
         assert data["degraded"] == 1
         assert data["results"][0]["diff"]["latency_delta_pct"] is None
         assert not list(out.parent.glob("*.tmp"))
@@ -123,7 +123,7 @@ class TestPerCaseErrors:
         ds, cache = _two_case_dataset(tmp_path)
         _, ok = _record(tmp_path / "ok", "ok")
         corrupt = tmp_path / "corrupt.vcr"
-        corrupt.write_text("this is not jsonl\n")
+        corrupt.write_text("this is not jsonl\n", encoding="utf-8")
         report = run_regression(ds, {"good": str(ok), "bad": str(corrupt)}, cache)
         verdicts = {r.case: r for r in report.results}
         assert verdicts["good"].verdict == CaseVerdict.PASS
@@ -162,14 +162,14 @@ class TestPerCaseErrors:
         cand = tmp_path / "cand"
         cand.mkdir()
         shutil.copy(golden, cand / "good.vcr")
-        (cand / "bad.vcr").write_text("{broken\n")
+        (cand / "bad.vcr").write_text("{broken\n", encoding="utf-8")
         with pytest.raises(SystemExit) as exc:
             cli.main(["ci", "run", "--dataset", "shop", "--candidates", str(cand),
                       "--report", "r.json", "--markdown", "r.md", "--quiet"])
         assert exc.value.code == 1
-        data = _strict_loads((tmp_path / "r.json").read_text())
+        data = _strict_loads((tmp_path / "r.json").read_text(encoding="utf-8"))
         assert data["passed"] == 1 and data["failed"] == 1
-        assert "cannot load candidate" in (tmp_path / "r.md").read_text()
+        assert "cannot load candidate" in (tmp_path / "r.md").read_text(encoding="utf-8")
 
 
 # -- 3. GitHub workflow-command escaping ----------------------------------------
@@ -292,7 +292,7 @@ class TestCandidates:
         shutil.copy(golden, cand / "stray.vcr")
         cli.main(["ci", "run", "--dataset", "shop", "--candidates", str(cand), "--quiet",
                   "--report", "r.json"])
-        assert json.loads((tmp_path / "r.json").read_text())["passed"] == 1
+        assert json.loads((tmp_path / "r.json").read_text(encoding="utf-8"))["passed"] == 1
         assert "stray.vcr matches no case" in capsys.readouterr().err
 
     def test_help_documents_matching(self, capsys: Any) -> None:
@@ -334,7 +334,7 @@ class TestTUI:
             app._edited_state = {}
             app.action_resume()
             await pilot.pause(0.05)
-        payload = json.loads((tmp_path / "resume_state.json").read_text())
+        payload = json.loads((tmp_path / "resume_state.json").read_text(encoding="utf-8"))
         assert payload["edited"] is True
         assert payload["state"] == {}
         assert not list(tmp_path.glob(".*.tmp"))
@@ -345,7 +345,7 @@ class TestTUI:
         from agent_vcr.tui import VCRApp
 
         bad = tmp_path / "bad.vcr"
-        bad.write_text("garbage\n")
+        bad.write_text("garbage\n", encoding="utf-8")
         app = VCRApp(str(bad))
         async with app.run_test() as pilot:
             await pilot.pause(0.1)
@@ -361,7 +361,7 @@ class TestTUI:
         monkeypatch.setattr(VCRApp, "run",
                             lambda self, **kw: original_run(self, headless=True))
         bad = tmp_path / "bad.vcr"
-        bad.write_text("garbage\n")
+        bad.write_text("garbage\n", encoding="utf-8")
         with pytest.raises(SystemExit) as exc:
             cli.main([str(bad)])
         assert exc.value.code == 1
@@ -391,7 +391,7 @@ class TestCLIDX:
     def test_existing_file_without_suffix_opens_tui(self, tmp_path: Path,
                                                     monkeypatch: Any) -> None:
         monkeypatch.chdir(tmp_path)
-        (tmp_path / "recording").write_text("")
+        (tmp_path / "recording").write_text("", encoding="utf-8")
         launched: list[str] = []
         monkeypatch.setattr(cli, "_run_tui", launched.append)
         cli.main(["recording"])
@@ -416,12 +416,12 @@ class TestCLIDX:
 
     def test_init_corrupt_settings(self, tmp_path: Path, capsys: Any) -> None:
         (tmp_path / ".claude").mkdir()
-        (tmp_path / ".claude" / "settings.json").write_text("{not json")
+        (tmp_path / ".claude" / "settings.json").write_text("{not json", encoding="utf-8")
         with pytest.raises(SystemExit) as exc:
             cli.main(["init", "--claude-code", "--project-dir", str(tmp_path)])
         assert exc.value.code == 1
         assert "is not valid JSON" in capsys.readouterr().err
-        assert (tmp_path / ".claude" / "settings.json").read_text() == "{not json"
+        assert (tmp_path / ".claude" / "settings.json").read_text(encoding="utf-8") == "{not json"
 
     def test_bundle_export_directory(self, tmp_path: Path, capsys: Any) -> None:
         with pytest.raises(SystemExit) as exc:

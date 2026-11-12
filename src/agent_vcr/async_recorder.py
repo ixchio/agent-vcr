@@ -12,6 +12,7 @@ from typing import Any, TypeVar
 
 import aiofiles
 
+from agent_vcr._platform import fsync_path
 from agent_vcr.models import (
     INPUT_FROM_PREVIOUS_KEY,
     Frame,
@@ -481,9 +482,6 @@ class AsyncVCRRecorder:
     # --- Private methods ---
 
     def _generate_session_id(self) -> str:
-        import os
-        from datetime import datetime, timezone
-
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         unique_id = os.urandom(4).hex()
         return f"{timestamp}_{unique_id}"
@@ -502,7 +500,7 @@ class AsyncVCRRecorder:
             "schema": "execution/v1",
             "data": self._session.model_dump(),
         }
-        async with aiofiles.open(path, "w") as f:
+        async with aiofiles.open(path, "w", encoding="utf-8") as f:
             await f.write(json_dumps_safe(record) + "\n")
             await f.flush()
         await asyncio.to_thread(self._fsync_path, path)
@@ -524,7 +522,7 @@ class AsyncVCRRecorder:
             for frame in self._frames
         )
         async def _append() -> None:
-            async with aiofiles.open(path, "a") as f:
+            async with aiofiles.open(path, "a", encoding="utf-8") as f:
                 await f.write(payload)
                 await f.flush()
             # fsync must use the real fd — aiofiles doesn't expose fileno(),
@@ -570,11 +568,7 @@ class AsyncVCRRecorder:
     @staticmethod
     def _fsync_path(path: Path) -> None:
         """Open a file briefly to fsync it (used after async writes)."""
-        fd = os.open(str(path), os.O_RDONLY)
-        try:
-            os.fsync(fd)
-        finally:
-            os.close(fd)
+        fsync_path(path)
 
     async def _update_session_manifest(self) -> None:
         """Update manifest.json off the event loop (locked + atomic, shared with sync)."""

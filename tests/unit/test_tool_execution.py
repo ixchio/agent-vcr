@@ -59,7 +59,7 @@ def test_workflow_engine_redacts_recorded_outputs(tmp_path: Path) -> None:
         engine.shutdown()
     assert record.status == RunStatus.COMMITTED
     files = list((tmp_path / "vcr").glob("*.vcr"))
-    text = "".join(p.read_text() for p in files)
+    text = "".join(p.read_text(encoding="utf-8") for p in files)
     assert "sk-live-1234567890abcdef" not in text
     assert '"status":"ok"' in text.replace(" ", "")  # non-secret output is still recorded
     assert any(VCRPlayer.load(p).frames for p in files)

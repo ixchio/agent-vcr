@@ -34,7 +34,7 @@ def isolated_git_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None
     home = tmp_path / "home"
     home.mkdir()
     global_config = home / ".gitconfig"
-    global_config.write_text("[user]\n\tuseConfigOnly = true\n")
+    global_config.write_text("[user]\n\tuseConfigOnly = true\n", encoding="utf-8")
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(home / ".config"))
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(global_config))
@@ -50,7 +50,7 @@ def git(cwd: Path, *args: str, check: bool = True) -> str:
         cwd=cwd,
         capture_output=True,
         text=True,
-        check=check,
+        check=check, encoding="utf-8", errors="replace",
     )
     return result.stdout
 
@@ -59,10 +59,10 @@ def make_repo(path: Path) -> Path:
     path.mkdir(parents=True, exist_ok=True)
     git(path, "init", "-q")
     git(path, "symbolic-ref", "HEAD", "refs/heads/main")
-    (path / "tracked.txt").write_text("v1\n")
-    (path / "other.txt").write_text("other v1\n")
-    (path / "doomed.txt").write_text("doomed\n")
-    (path / ".gitignore").write_text("*.log\n")
+    (path / "tracked.txt").write_text("v1\n", encoding="utf-8")
+    (path / "other.txt").write_text("other v1\n", encoding="utf-8")
+    (path / "doomed.txt").write_text("doomed\n", encoding="utf-8")
+    (path / ".gitignore").write_text("*.log\n", encoding="utf-8")
     git(path, "add", "-A")
     git(path, "commit", "-qm", "init")
     return path
@@ -72,8 +72,8 @@ def make_subdir_repo(root: Path) -> Path:
     make_repo(root)
     sub = root / "sub"
     sub.mkdir()
-    (sub / "keep.txt").write_text("keep v1\n")
-    (sub / "edit.txt").write_text("edit v1\n")
+    (sub / "keep.txt").write_text("keep v1\n", encoding="utf-8")
+    (sub / "edit.txt").write_text("edit v1\n", encoding="utf-8")
     git(root, "add", "-A")
     git(root, "commit", "-qm", "sub")
     return sub
@@ -113,16 +113,17 @@ def all_committed_paths(root: Path) -> set[str]:
 def make_user_mess(root: Path, prefix: str = "") -> None:
     """Unstaged, staged, staged+unstaged, deleted, untracked and ignored user changes."""
     base = root / prefix if prefix else root
-    (base / ("edit.txt" if prefix else "tracked.txt")).write_text("USER UNSAVED WORK\n")
+    (base / ("edit.txt" if prefix else "tracked.txt")).write_text("USER UNSAVED WORK\n",
+                                                                  encoding="utf-8")
     staged = base / ("keep.txt" if prefix else "other.txt")
-    staged.write_text("USER STAGED\n")
+    staged.write_text("USER STAGED\n", encoding="utf-8")
     git(root, "add", "--", staged.relative_to(root).as_posix())
-    staged.write_text("USER STAGED THEN EDITED\n")
+    staged.write_text("USER STAGED THEN EDITED\n", encoding="utf-8")
     if not prefix:
         (root / "doomed.txt").unlink()
-    (base / "notes.local").write_text("user notes\n")
-    (base / "debug.log").write_text("user log\n")
-    (base / "with space ü.txt").write_text("unicode name\n")
+    (base / "notes.local").write_text("user notes\n", encoding="utf-8")
+    (base / "debug.log").write_text("user log\n", encoding="utf-8")
+    (base / "with space ü.txt").write_text("unicode name\n", encoding="utf-8")
 
 
 # ──────────────────────────────────────────────
@@ -138,31 +139,31 @@ class TestAbortPreservesDirtyState:
 
         ws = ACIDWorkspace(str(repo), recorder=recorder(tmp_path), dirty_worktree_policy="allow")
         ws.begin("dirty-abort")
-        (repo / "tracked.txt").write_text("agent overwrite\n")
-        (repo / "agent.py").write_text("print('agent')\n")
-        (repo / "notes.local").write_text("agent clobbered notes\n")
+        (repo / "tracked.txt").write_text("agent overwrite\n", encoding="utf-8")
+        (repo / "agent.py").write_text("print('agent')\n", encoding="utf-8")
+        (repo / "notes.local").write_text("agent clobbered notes\n", encoding="utf-8")
         ws.savepoint({"step": 1})
         (repo / "other.txt").unlink()
-        (repo / "later.py").write_text("later\n")
+        (repo / "later.py").write_text("later\n", encoding="utf-8")
         ws.abort()
 
         assert repo_state(repo) == before
-        assert (repo / "tracked.txt").read_text() == "USER UNSAVED WORK\n"
+        assert (repo / "tracked.txt").read_text(encoding="utf-8") == "USER UNSAVED WORK\n"
 
     def test_rollback_keeps_preexisting_dirty_edits(self, tmp_path: Path) -> None:
         repo = make_repo(tmp_path / "repo")
-        (repo / "tracked.txt").write_text("USER UNSAVED WORK\n")
+        (repo / "tracked.txt").write_text("USER UNSAVED WORK\n", encoding="utf-8")
 
         ws = ACIDWorkspace(str(repo), recorder=recorder(tmp_path), dirty_worktree_policy="allow")
         ws.begin("dirty-rollback")
         ws.savepoint({"step": 0})
-        (repo / "tracked.txt").write_text("agent overwrite\n")
+        (repo / "tracked.txt").write_text("agent overwrite\n", encoding="utf-8")
         ws.savepoint({"step": 1})
         ws.rollback(0)
 
-        assert (repo / "tracked.txt").read_text() == "USER UNSAVED WORK\n"
+        assert (repo / "tracked.txt").read_text(encoding="utf-8") == "USER UNSAVED WORK\n"
         ws.abort()
-        assert (repo / "tracked.txt").read_text() == "USER UNSAVED WORK\n"
+        assert (repo / "tracked.txt").read_text(encoding="utf-8") == "USER UNSAVED WORK\n"
         assert git(repo, "status", "--porcelain").strip() == "M tracked.txt"
 
     def test_abort_without_savepoints_restores_everything(self, tmp_path: Path) -> None:
@@ -172,8 +173,8 @@ class TestAbortPreservesDirtyState:
 
         ws = ACIDWorkspace(str(repo), recorder=recorder(tmp_path), dirty_worktree_policy="allow")
         ws.begin("no-savepoints")
-        (repo / "tracked.txt").write_text("agent\n")
-        (repo / "new.txt").write_text("agent\n")
+        (repo / "tracked.txt").write_text("agent\n", encoding="utf-8")
+        (repo / "new.txt").write_text("agent\n", encoding="utf-8")
         ws.abort()
 
         assert repo_state(repo) == before
@@ -194,8 +195,8 @@ class TestSubdirectoryWorkspace:
 
         ws = ACIDWorkspace(str(sub), recorder=recorder(tmp_path), dirty_worktree_policy="allow")
         ws.begin("sub-abort")
-        (sub / "agent.py").write_text("agent\n")
-        (sub / "keep.txt").write_text("agent edit\n")
+        (sub / "agent.py").write_text("agent\n", encoding="utf-8")
+        (sub / "keep.txt").write_text("agent edit\n", encoding="utf-8")
         frame = ws.savepoint({"step": 1})
 
         savepoint_paths = set(
@@ -209,7 +210,7 @@ class TestSubdirectoryWorkspace:
         outside_blob = git(root, "show", f"{frame.metadata.custom['acid_commit_hash']}:other.txt")
         assert outside_blob == "other v1\n"  # user's outside staged edit was not committed
 
-        (sub / "later.py").write_text("later\n")
+        (sub / "later.py").write_text("later\n", encoding="utf-8")
         ws.abort()
 
         assert repo_state(root) == before
@@ -220,19 +221,19 @@ class TestSubdirectoryWorkspace:
     ) -> None:
         root = tmp_path / "repo"
         sub = make_subdir_repo(root)
-        (root / "tracked.txt").write_text("USER UNSAVED WORK\n")
+        (root / "tracked.txt").write_text("USER UNSAVED WORK\n", encoding="utf-8")
 
         ws = ACIDWorkspace(str(sub), recorder=recorder(tmp_path))
         ws.begin("outside-dirty")
         ws.abort()
-        assert (root / "tracked.txt").read_text() == "USER UNSAVED WORK\n"
+        assert (root / "tracked.txt").read_text(encoding="utf-8") == "USER UNSAVED WORK\n"
 
     def test_dirty_files_inside_subdir_workspace_still_fail_by_default(
         self, tmp_path: Path
     ) -> None:
         root = tmp_path / "repo"
         sub = make_subdir_repo(root)
-        (sub / "edit.txt").write_text("dirty\n")
+        (sub / "edit.txt").write_text("dirty\n", encoding="utf-8")
 
         ws = ACIDWorkspace(str(sub), recorder=recorder(tmp_path))
         with pytest.raises(RuntimeError, match=r"dirty tracked files.*edit\.txt"):
@@ -243,17 +244,17 @@ class TestSubdirectoryWorkspace:
     ) -> None:
         root = tmp_path / "repo"
         sub = make_subdir_repo(root)
-        (root / "tracked.txt").write_text("USER UNSAVED WORK\n")
-        (root / "other.txt").write_text("USER STAGED\n")
+        (root / "tracked.txt").write_text("USER UNSAVED WORK\n", encoding="utf-8")
+        (root / "other.txt").write_text("USER STAGED\n", encoding="utf-8")
         git(root, "add", "other.txt")
-        (root / "root_untracked.txt").write_text("user notes\n")
-        (sub / "notes.local").write_text("sub notes\n")
+        (root / "root_untracked.txt").write_text("user notes\n", encoding="utf-8")
+        (sub / "notes.local").write_text("sub notes\n", encoding="utf-8")
 
         ws = ACIDWorkspace(str(sub), recorder=recorder(tmp_path))
         ws.begin("sub-commit")
-        (sub / "agent.py").write_text("agent\n")
+        (sub / "agent.py").write_text("agent\n", encoding="utf-8")
         ws.savepoint({"step": 1})
-        (sub / "edit.txt").write_text("edit v2\n")
+        (sub / "edit.txt").write_text("edit v2\n", encoding="utf-8")
         ws.commit()
 
         head_paths = set(git(root, "ls-tree", "-r", "--name-only", "HEAD").splitlines())
@@ -267,30 +268,30 @@ class TestSubdirectoryWorkspace:
         assert sorted(status) == sorted(
             ["M  other.txt", " M tracked.txt", "?? root_untracked.txt", "?? sub/notes.local"]
         )
-        assert (root / "tracked.txt").read_text() == "USER UNSAVED WORK\n"
+        assert (root / "tracked.txt").read_text(encoding="utf-8") == "USER UNSAVED WORK\n"
 
     def test_rollback_in_subdir_is_scoped(self, tmp_path: Path) -> None:
         root = tmp_path / "repo"
         sub = make_subdir_repo(root)
-        (root / "tracked.txt").write_text("USER UNSAVED WORK\n")
-        (sub / "notes.local").write_text("sub notes\n")
+        (root / "tracked.txt").write_text("USER UNSAVED WORK\n", encoding="utf-8")
+        (sub / "notes.local").write_text("sub notes\n", encoding="utf-8")
 
         ws = ACIDWorkspace(str(sub), recorder=recorder(tmp_path))
         ws.begin("sub-rollback")
-        (sub / "good.py").write_text("good\n")
+        (sub / "good.py").write_text("good\n", encoding="utf-8")
         ws.savepoint({"step": 0})
-        (sub / "bad.py").write_text("bad\n")
-        (sub / "keep.txt").write_text("bad edit\n")
+        (sub / "bad.py").write_text("bad\n", encoding="utf-8")
+        (sub / "keep.txt").write_text("bad edit\n", encoding="utf-8")
         ws.savepoint({"step": 1})
-        (sub / "junk.tmp").write_text("junk\n")
+        (sub / "junk.tmp").write_text("junk\n", encoding="utf-8")
         ws.rollback(0)
 
         assert (sub / "good.py").exists()
         assert not (sub / "bad.py").exists()
         assert not (sub / "junk.tmp").exists()
-        assert (sub / "keep.txt").read_text() == "keep v1\n"
-        assert (sub / "notes.local").read_text() == "sub notes\n"
-        assert (root / "tracked.txt").read_text() == "USER UNSAVED WORK\n"
+        assert (sub / "keep.txt").read_text(encoding="utf-8") == "keep v1\n"
+        assert (sub / "notes.local").read_text(encoding="utf-8") == "sub notes\n"
+        assert (root / "tracked.txt").read_text(encoding="utf-8") == "USER UNSAVED WORK\n"
         ws.abort()
 
 
@@ -304,10 +305,10 @@ class TestCommitIncludesTrailingWork:
         repo = make_repo(tmp_path / "repo")
         ws = ACIDWorkspace(str(repo), recorder=recorder(tmp_path))
         ws.begin("trailing")
-        (repo / "a.py").write_text("print(1)\n")
+        (repo / "a.py").write_text("print(1)\n", encoding="utf-8")
         ws.savepoint({"s": 1})
-        (repo / "b.py").write_text("print(2)\n")
-        (repo / "tracked.txt").write_text("v2 after last savepoint\n")
+        (repo / "b.py").write_text("print(2)\n", encoding="utf-8")
+        (repo / "tracked.txt").write_text("v2 after last savepoint\n", encoding="utf-8")
         ws.commit()
 
         head_paths = git(repo, "ls-tree", "--name-only", "HEAD").split()
@@ -321,7 +322,7 @@ class TestCommitIncludesTrailingWork:
         repo = make_repo(tmp_path / "repo")
         ws = ACIDWorkspace(str(repo), recorder=recorder(tmp_path))
         ws.begin("no-trailing")
-        (repo / "a.py").write_text("print(1)\n")
+        (repo / "a.py").write_text("print(1)\n", encoding="utf-8")
         ws.savepoint({"s": 1})
         ws.commit()
 
@@ -331,7 +332,7 @@ class TestCommitIncludesTrailingWork:
     def test_commit_without_savepoints_commits_changes(self, tmp_path: Path) -> None:
         repo = make_repo(tmp_path / "repo")
         with ACIDWorkspace(str(repo), recorder=recorder(tmp_path)):
-            (repo / "only.py").write_text("x\n")
+            (repo / "only.py").write_text("x\n", encoding="utf-8")
         assert "only.py" in git(repo, "ls-tree", "--name-only", "HEAD").split()
         assert git(repo, "status", "--porcelain") == ""
 
@@ -346,7 +347,7 @@ class TestBranchLifecycle:
         repo = make_repo(tmp_path / "repo")
         ws = ACIDWorkspace(str(repo), recorder=recorder(tmp_path))
         ws.begin("task1")
-        (repo / "a.py").write_text("1\n")
+        (repo / "a.py").write_text("1\n", encoding="utf-8")
         ws.savepoint({})
         ws.commit()
         assert git(repo, "branch", "--list", "acid/*") == ""
@@ -365,7 +366,7 @@ class TestBranchLifecycle:
         ws = ACIDWorkspace(str(repo), recorder=recorder(tmp_path))
         ws.begin("task1")
         assert ws.branch_name == "acid/task1-2"
-        (repo / "a.py").write_text("1\n")
+        (repo / "a.py").write_text("1\n", encoding="utf-8")
         ws.commit()
 
         assert git(repo, "rev-parse", "acid/task1").strip() == stale_tip
@@ -405,14 +406,14 @@ class TestGitInvocation:
         capfd.readouterr()
         ws = ACIDWorkspace(str(repo), recorder=recorder(tmp_path))
         ws.begin("quiet")
-        (repo / "a.py").write_text("1\n")
+        (repo / "a.py").write_text("1\n", encoding="utf-8")
         ws.savepoint({})
-        (repo / "b.py").write_text("2\n")
+        (repo / "b.py").write_text("2\n", encoding="utf-8")
         ws.savepoint({})
         ws.rollback(0)
         ws.commit()
         ws.begin("quiet2")
-        (repo / "c.py").write_text("3\n")
+        (repo / "c.py").write_text("3\n", encoding="utf-8")
         ws.abort()
 
         captured = capfd.readouterr()
@@ -435,7 +436,7 @@ class TestGitInvocation:
         hooks = repo / ".git" / "hooks"
         for hook in ("pre-commit", "commit-msg", "post-commit", "post-checkout", "pre-merge-commit"):
             script = hooks / hook
-            script.write_text(f"#!/bin/sh\necho {hook} >> '{marker}'\nexit 1\n")
+            script.write_text(f"#!/bin/sh\necho {hook} >> '{marker}'\nexit 1\n", encoding="utf-8")
             script.chmod(0o755)
         git(repo, "config", "commit.gpgSign", "true")
         git(repo, "config", "gpg.program", "false")
@@ -446,7 +447,7 @@ class TestGitInvocation:
 
         ws = ACIDWorkspace(str(repo), recorder=recorder(tmp_path))
         ws.begin("hooks")
-        (repo / "a.py").write_text("1\n")
+        (repo / "a.py").write_text("1\n", encoding="utf-8")
         frame = ws.savepoint({})
         ws.commit()
 
@@ -462,7 +463,7 @@ class TestGitInvocation:
         git(repo, "config", "user.email", "real@example.com")
         ws = ACIDWorkspace(str(repo), recorder=recorder(tmp_path))
         ws.begin("ident")
-        (repo / "a.py").write_text("1\n")
+        (repo / "a.py").write_text("1\n", encoding="utf-8")
         ws.commit()
         assert git(repo, "log", "-1", "--format=%an").strip() == "Real User"
 
@@ -482,7 +483,7 @@ class TestGitInvocation:
         monkeypatch.setattr(openhands.subprocess, "run", spy)
         ws = ACIDWorkspace(str(repo), recorder=recorder(tmp_path), git_timeout=17)
         ws.begin("timeouts")
-        (repo / "a.py").write_text("1\n")
+        (repo / "a.py").write_text("1\n", encoding="utf-8")
         ws.savepoint({})
         ws.rollback(0)
         ws.commit()
@@ -515,7 +516,7 @@ class TestSavepointRobustness:
         ws = ACIDWorkspace(str(repo), recorder=recorder(tmp_path))
         ws.begin("vanish")
         ephemeral = repo / "ephemeral.log"  # ignored, so it goes through the escrow
-        ephemeral.write_text("temp\n")
+        ephemeral.write_text("temp\n", encoding="utf-8")
 
         real_scan = ws._scan_local_paths
 
@@ -541,7 +542,7 @@ class TestSavepointRobustness:
         ws = ACIDWorkspace(str(repo), recorder=recorder(tmp_path))
         ws.begin("unstable")
         busy = repo / "busy.log"
-        busy.write_text("start\n")
+        busy.write_text("start\n", encoding="utf-8")
 
         real_sha256 = hashlib.sha256
 
@@ -555,7 +556,7 @@ class TestSavepointRobustness:
             def update(self, chunk: bytes) -> None:
                 if not self._touched:
                     self._touched = True
-                    with busy.open("a") as handle:
+                    with busy.open("a", encoding="utf-8") as handle:
                         handle.write("more\n")
                 self._digest.update(chunk)
 
@@ -580,7 +581,7 @@ class TestSavepointRobustness:
         repo = make_repo(tmp_path / "repo")
         ws = ACIDWorkspace(str(repo), recorder=recorder(tmp_path))
         ws.begin("orphan")
-        (repo / "a.py").write_text("1\n")
+        (repo / "a.py").write_text("1\n", encoding="utf-8")
         tip_before = git(repo, "rev-parse", "HEAD").strip()
 
         def explode(*args: Any, **kwargs: Any) -> Any:

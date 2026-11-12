@@ -590,7 +590,8 @@ def _tool_recordings_list(server: MCPServer, args: dict[str, Any]) -> dict[str, 
     limit = int(args["limit"])
     recordings = []
     for mtime, path, size in found[:limit]:
-        recordings.append({"path": str(path), "relative": os.path.relpath(path, root),
+        relative = Path(os.path.relpath(path, root)).as_posix()  # same on every OS
+        recordings.append({"path": str(path), "relative": relative,
                            "size_bytes": size, "modified": _iso(mtime), **_read_header(path)})
     return {"directory": str(root), "count": len(found), "recordings": recordings,
             "truncated": len(found) > limit, "scan_truncated": scan_truncated,

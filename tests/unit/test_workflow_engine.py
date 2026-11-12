@@ -436,7 +436,7 @@ class TestSecurity:
 
     def test_runstore_rejects_unsafe_run_ids(self, tmp_path: Path) -> None:
         store = RunStore(tmp_path / "runs")
-        (tmp_path / "secret.json").write_text("{}")
+        (tmp_path / "secret.json").write_text("{}", encoding="utf-8")
         with pytest.raises(KeyError):
             store.load("../secret")
 

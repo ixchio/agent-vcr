@@ -30,7 +30,7 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("AGENT_VCR_AIRBAG_HOME", str(tmp_path / "home"))
     proj = tmp_path / "proj"
     (proj / "src").mkdir(parents=True)
-    (proj / "src" / "app.py").write_text("print(1)\n")
+    (proj / "src" / "app.py").write_text("print(1)\n", encoding="utf-8")
     return proj
 
 
@@ -44,7 +44,7 @@ def run_hook(agent: str, payload: dict[str, Any], project: Path, *extra: str,
             full_env.pop(var, None)
     proc = subprocess.run(
         [sys.executable, "-m", "agent_vcr.airbag.hook", agent, "pre", *extra],
-        input=json.dumps(payload), capture_output=True, text=True, timeout=60,
+        input=json.dumps(payload), capture_output=True, encoding="utf-8", timeout=60,
         cwd=str(project), env=full_env,
     )
     assert "Traceback" not in proc.stderr, proc.stderr
@@ -183,10 +183,10 @@ def test_mcp_and_unknown_tools_are_ignored(project: Path) -> None:
 def test_hook_never_breaks_the_agent(project: Path) -> None:
     proc = subprocess.run([sys.executable, "-m", "agent_vcr.airbag.hook", "claude", "pre"],
                           input="not json", capture_output=True, text=True, timeout=60,
-                          env={**os.environ, "PYTHONPATH": SRC})
+                          env={**os.environ, "PYTHONPATH": SRC}, encoding="utf-8", errors="replace")
     assert proc.returncode == 0 and proc.stdout == ""
     home = project.parent / "home-is-a-file"
-    home.write_text("x")
+    home.write_text("x", encoding="utf-8")
     out, code = run_hook("claude", {"cwd": str(project), "tool_name": "Bash",
                                     "tool_input": {"command": "rm -rf src"}}, project,
                          env={"AGENT_VCR_AIRBAG_HOME": str(home)})
@@ -204,17 +204,18 @@ def test_install_is_idempotent_and_keeps_user_hooks(name: str, project: Path,
     if name in {"claude", "codex", "openhands"}:
         user_hook = {"matcher": "Bash", "hooks": [{"type": "command", "command": "my-lint"}]}
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"hooks": {"PreToolUse": [user_hook]}, "other": 1}))
+        path.write_text(json.dumps({"hooks": {"PreToolUse": [user_hook]}, "other": 1}),
+                        encoding="utf-8")
     install(name, project)
     install(name, project)
-    text = path.read_text()
+    text = path.read_text(encoding="utf-8")
     # cursor: shell + tool hooks; copilot: bash + powershell variants of one hook
     assert text.count(agents.MARKER.strip()) == (2 if name in {"cursor", "copilot"} else 1)
     data = json.loads(text)
     if user_hook is not None:
         assert user_hook in data["hooks"]["PreToolUse"] and data["other"] == 1
     assert uninstall(name, project) == path
-    remaining = path.read_text() if path.exists() else ""
+    remaining = path.read_text(encoding="utf-8") if path.exists() else ""
     assert agents.MARKER.strip() not in remaining
     if user_hook is not None:
         assert user_hook in json.loads(remaining)["hooks"]["PreToolUse"]
@@ -223,24 +224,56 @@ def test_install_is_idempotent_and_keeps_user_hooks(name: str, project: Path,
 @pytest.mark.skipif(sys.platform == "win32", reason="Cline hooks are POSIX scripts")
 def test_cline_installs_an_executable_script(project: Path) -> None:
     path, _ = install("cline", project)
-    assert os.access(path, os.X_OK) and agents.MARKER.strip() in path.read_text()
+    assert os.access(path, os.X_OK) and agents.MARKER.strip() in path.read_text(encoding="utf-8")
     proc = subprocess.run([str(path)], input=json.dumps({
         "workspaceRoots": [str(project)],
         "preToolUse": {"toolName": "execute_command", "parameters": {"command": "rm -rf src"}},
     }), capture_output=True, text=True, timeout=60,
-        env={**os.environ, "PYTHONPATH": SRC})
+        env={**os.environ, "PYTHONPATH": SRC}, encoding="utf-8", errors="replace")
     assert json.loads(proc.stdout)["cancel"] is False
     assert uninstall("cline", project) == path and not path.exists()
 
 
-def test_hook_command_uses_this_interpreter() -> None:
-    assert agents.hook_command("claude").startswith(
-        sys.executable if " " not in sys.executable else "'")
+def _run_in_shell(argv_or_command: Any, project: Path, shell: bool,
+                  payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    if payload is None:
+        payload = {"cwd": str(project), "tool_name": "Bash",
+                   "tool_input": {"command": "rm -rf src"}}
+    proc = subprocess.run(argv_or_command, shell=shell, input=json.dumps(payload),
+                          capture_output=True, encoding="utf-8", timeout=60, cwd=str(project),
+                          env={**os.environ, "PYTHONPATH": SRC})
+    assert proc.returncode == 0, proc.stderr
+    return dict(json.loads(proc.stdout))
+
+
+def test_hook_command_uses_this_interpreter(project: Path) -> None:
+    command = agents.hook_command("claude")
+    if sys.platform == "win32":
+        # Forward slashes, double quotes only when needed: valid in Git Bash, cmd and pwsh.
+        assert command.lstrip('"').startswith(sys.executable.replace(os.sep, "/"))
+    else:
+        assert command.startswith(sys.executable if " " not in sys.executable else "'")
+    # The command really runs in the platform shell (/bin/sh, or cmd.exe on Windows).
+    assert "vcr undo" in _run_in_shell(command, project, shell=True)["systemMessage"]
+    assert snapshots(project) == 1
+
+
+@pytest.mark.skipif(sys.platform != "win32" or shutil.which("powershell") is None,
+                    reason="Windows PowerShell")
+def test_powershell_hook_command_runs_under_powershell(project: Path) -> None:
+    command = agents.hook_command("copilot", shell="powershell")
+    payload = {"sessionId": "s", "timestamp": 1704614400000, "cwd": str(project),
+               "toolName": "powershell", "toolArgs": json.dumps({"command": "rm -rf src"})}
+    out = _run_in_shell(["powershell", "-NoProfile", "-NonInteractive", "-Command", command],
+                        project, shell=False, payload=payload)
+    assert out["type"] == "progress"
+    assert snapshots(project) == 1
 
 
 _DRIVER = """
 const [plugin, dir] = process.argv.slice(2);
-const mod = await import(plugin);
+const { pathToFileURL } = await import("node:url");
+const mod = await import(pathToFileURL(plugin).href);
 const hooks = await mod.AgentVcrAirbag({ directory: dir, worktree: dir });
 const before = hooks["tool.execute.before"];
 await before({ tool: "bash", sessionID: "s", callID: "c1" }, { args: { command: "rm -rf src" } });
@@ -256,11 +289,12 @@ try {
 def test_opencode_plugin_runs_under_node(project: Path, tmp_path: Path) -> None:
     path, _ = install("opencode", project)
     driver = tmp_path / "drive.mjs"
-    driver.write_text(_DRIVER)
+    driver.write_text(_DRIVER, encoding="utf-8")
     proc = subprocess.run(["node", str(driver), str(path), str(project)], capture_output=True,
                           text=True, timeout=120,
                           env={**os.environ, "PYTHONPATH": SRC + os.pathsep +
-                               os.environ.get("PYTHONPATH", "")})
+                               os.environ.get("PYTHONPATH", "")},
+                                   encoding="utf-8", errors="replace")
     assert proc.returncode == 0, proc.stderr
     assert "BLOCKED Agent VCR airbag" in proc.stdout
     assert snapshots(project) == 1

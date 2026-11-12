@@ -288,7 +288,7 @@ def test_sentinel_view_and_failed_edits_not_analyzed(tmp_path: Path) -> None:
 
 def test_sentinel_str_replace_reads_disk_when_no_new_content(tmp_path: Path) -> None:
     target = tmp_path / "mod.py"
-    target.write_text("from os import *\n")
+    target.write_text("from os import *\n", encoding="utf-8")
     sentinel, conv = _sentinel(tmp_path)
     action = ActionEvent("file_editor", _Action(command="str_replace", path=str(target)))
     sentinel(action)
@@ -436,7 +436,7 @@ def _apply(sentinel: Sentinel, conv: FakeConversation, path: Path, before: str |
            after: str, command: str = "str_replace") -> Any:
     action, obs = _edit(path, before, after, command)
     sentinel(action)
-    path.write_text(after)
+    path.write_text(after, encoding="utf-8")
     return conv.run_tool(sentinel, action, obs)
 
 
@@ -451,7 +451,7 @@ def _gated(tmp_path: Path, **config: Any) -> tuple[Sentinel, FakeConversation, P
 def test_pre_existing_blocker_does_not_gate(tmp_path: Path) -> None:
     legacy = tmp_path / "legacy.py"
     before = LONG_FUNCTION + "VERSION = '1'\n"
-    legacy.write_text(before)
+    legacy.write_text(before, encoding="utf-8")
     sentinel, conv = _sentinel(tmp_path)
     _apply(sentinel, conv, legacy, before, LONG_FUNCTION + "VERSION = '2'\n")
     assert sentinel.blocked_files == {}
@@ -465,11 +465,11 @@ def test_pre_existing_blocker_does_not_gate(tmp_path: Path) -> None:
 
 def test_pre_edit_snapshot_used_when_observation_has_no_old_content(tmp_path: Path) -> None:
     legacy = tmp_path / "legacy.py"
-    legacy.write_text(LONG_FUNCTION)
+    legacy.write_text(LONG_FUNCTION, encoding="utf-8")
     sentinel, conv = _sentinel(tmp_path)
     action = ActionEvent("file_editor", _Action(command="insert", path=str(legacy)))
     sentinel(action)  # Sentinel reads the file here, before the edit runs
-    legacy.write_text(LONG_FUNCTION + "X = 1\n")
+    legacy.write_text(LONG_FUNCTION + "X = 1\n", encoding="utf-8")
     conv.run_tool(sentinel, action, _Observation("ok", command="insert", path=str(legacy)))
     assert sentinel.blocked_files == {}
 
@@ -477,7 +477,7 @@ def test_pre_edit_snapshot_used_when_observation_has_no_old_content(tmp_path: Pa
 def test_edit_that_creates_a_blocker_gates(tmp_path: Path) -> None:
     mod = tmp_path / "mod.py"
     before = "def f():\n    return 1\n"
-    mod.write_text(before)
+    mod.write_text(before, encoding="utf-8")
     sentinel, conv = _sentinel(tmp_path)
     _apply(sentinel, conv, mod, before, LONG_FUNCTION)
     assert "function_too_long" in sentinel.blocked_files[str(mod)]
@@ -550,7 +550,8 @@ def test_new_user_message_clears_gate_but_own_warnings_do_not(tmp_path: Path) ->
 
 def test_gate_dropped_when_fixed_or_deleted_outside_file_editor(tmp_path: Path) -> None:
     sentinel, conv, bad = _gated(tmp_path)
-    bad.write_text("def ok():\n    pass\n")  # git checkout / the user / the airbag
+    bad.write_text("def ok():\n    pass\n",
+                   encoding="utf-8")  # git checkout / the user / the airbag
     run, run_obs = _terminal("ls")
     sentinel(run)
     assert isinstance(conv.run_tool(sentinel, run, run_obs), ObservationEvent)

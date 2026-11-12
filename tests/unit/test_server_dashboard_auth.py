@@ -53,6 +53,12 @@ def _sign_in(client: TestClient, token: str = ADMIN) -> Any:
     return client.get(f"/dashboard?token={token}", follow_redirects=False)
 
 
+def _replace_cookie(client: TestClient, value: str) -> None:
+    """Swap the session cookie (one jar entry: duplicates make the server's pick ambiguous)."""
+    client.cookies.delete(COOKIE)
+    client.cookies.set(COOKIE, value)
+
+
 def _origin(client: TestClient) -> dict[str, str]:
     return {"Origin": str(client.base_url).rstrip("/")}
 
@@ -146,12 +152,12 @@ class TestCookieSignIn:
         _sign_in(client)
         value = client.cookies[COOKIE]
         version, expires, sig = value.split(".")
-        client.cookies.set(COOKIE, f"{version}.{int(expires) + 999}.{sig}")
+        _replace_cookie(client, f"{version}.{int(expires) + 999}.{sig}")
         assert client.get("/api/sessions").status_code == 401
-        client.cookies.set(COOKIE, "garbage")
+        _replace_cookie(client, "garbage")
         assert client.get("/api/sessions").status_code == 401
 
-        client.cookies.set(COOKIE, value)
+        _replace_cookie(client, value)
         assert client.get("/api/sessions").status_code == 200
         real_time = server_module.time.time
         monkeypatch.setattr(server_module.time, "time",

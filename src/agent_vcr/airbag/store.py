@@ -35,6 +35,11 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+from agent_vcr import _platform
+
+#: Never text mode on Windows (no CRLF translation of the JSONL log).
+_O_BINARY = getattr(os, "O_BINARY", 0)
+
 #: Directories never snapshotted (build output, caches, dependency trees).
 DEFAULT_EXCLUDES = (
     "node_modules/", ".venv/", "venv/", "env/", "__pycache__/", "*.pyc",
@@ -131,7 +136,7 @@ def known_roots(home: str | Path | None = None) -> list[Path]:
     with contextlib.suppress(OSError):
         for marker in base.glob("*/root.txt"):
             with contextlib.suppress(OSError):
-                text = marker.read_text().strip()
+                text = marker.read_text(encoding="utf-8").strip()
                 if text:
                     roots.append(Path(text))
     return roots
@@ -162,7 +167,7 @@ def find_project_root(start: str | Path) -> Path:
         out = subprocess.run(
             ["git", "rev-parse", "--show-toplevel"],
             cwd=str(path), capture_output=True, text=True, timeout=10,
-            env=_clean_env(), stdin=subprocess.DEVNULL,
+            env=_clean_env(), stdin=subprocess.DEVNULL, encoding="utf-8", errors="replace",
         )
     except (OSError, subprocess.SubprocessError):
         out = None
@@ -174,6 +179,25 @@ def find_project_root(start: str | Path) -> Path:
 def _clean_env() -> dict[str, str]:
     """Environment without GIT_* variables that could redirect git elsewhere."""
     return {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+
+
+def _link_or_copy(src: str, dst: str) -> object:
+    """``copytree`` copy function for a ``.git`` directory: hardlink when it is safe.
+
+    Git replaces files via rename and never edits objects in place, so on POSIX
+    a hardlink is a faithful point-in-time copy. Not on Windows: git objects are
+    read-only there and deleting one link (``gc`` of an old backup, an agent's
+    ``rm -rf``) means clearing the read-only attribute, which every link shares,
+    so the user's own ``.git`` would be modified. Windows gets real copies.
+    """
+    if not _platform.WINDOWS:
+        try:
+            os.link(src, dst)
+            return dst
+        except OSError:
+            pass
+    shutil.copy2(src, dst)
+    return dst
 
 
 def _is_unsafe_root(root: Path) -> str | None:
@@ -246,7 +270,7 @@ class ShadowStore:
                 self._ensure_attributes()
                 return
             tmp = self.dir / f"git.init-{os.getpid()}"
-            shutil.rmtree(tmp, ignore_errors=True)
+            _platform.rmtree(tmp, ignore_errors=True)
             for cmd in (
                 ["git", "init", "-q", "--bare", str(tmp)],
                 # Not really bare: GIT_WORK_TREE always points at the project.
@@ -259,12 +283,12 @@ class ShadowStore:
             info = tmp / "info"
             info.mkdir(exist_ok=True)
             (info / "exclude").write_text(
-                "# agent-vcr airbag defaults\n" + "\n".join(self.excludes) + "\n"
+                "# agent-vcr airbag defaults\n" + "\n".join(self.excludes) + "\n", encoding="utf-8"
             )
             (info / "attributes").write_text(
-                "* -text -eol -filter -ident -working-tree-encoding\n")
-            os.replace(tmp, self.git_dir)
-            (self.dir / "root.txt").write_text(str(self.root) + "\n")
+                "* -text -eol -filter -ident -working-tree-encoding\n", encoding="utf-8")
+            _platform.replace(tmp, self.git_dir)
+            (self.dir / "root.txt").write_text(str(self.root) + "\n", encoding="utf-8")
 
     def _ensure_attributes(self) -> None:
         """Store bytes exactly: no eol conversion, no LFS/clean filters, no encoding.
@@ -275,31 +299,23 @@ class ShadowStore:
         attrs = self.git_dir / "info" / "attributes"
         if not attrs.exists():
             attrs.parent.mkdir(parents=True, exist_ok=True)
-            attrs.write_text("* -text -eol -filter -ident -working-tree-encoding\n")
+            attrs.write_text("* -text -eol -filter -ident -working-tree-encoding\n",
+                             encoding="utf-8")
 
     @contextlib.contextmanager
     def lock(self, timeout: float = 30.0) -> Iterator[None]:
         """Serialize store operations across concurrent hook processes."""
         self.dir.mkdir(parents=True, exist_ok=True)
-        with open(self.dir / "lock", "a+") as handle:
-            try:
-                import fcntl
-            except ImportError:  # pragma: no cover - Windows
-                yield
-                return
+        with open(self.dir / "lock", "a+b") as handle:
             deadline = time.monotonic() + timeout
-            while True:
-                try:
-                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    break
-                except BlockingIOError:
-                    if time.monotonic() > deadline:
-                        raise AirbagError("timed out waiting for the airbag lock") from None
-                    time.sleep(0.02)
+            while not _platform.try_lock(handle):
+                if time.monotonic() > deadline:
+                    raise AirbagError("timed out waiting for the airbag lock")
+                time.sleep(0.02)
             try:
                 yield
             finally:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                _platform.unlock(handle)
 
     def _git(
         self, *args: str, input_bytes: bytes | None = None, check: bool = True,
@@ -397,7 +413,7 @@ class ShadowStore:
             while dest.exists():
                 n += 1
                 dest = self.db_dir / f"{seq:08d}-{safe}-{n}.dump"
-            os.replace(dump.path, dest)
+            _platform.replace(dump.path, dest)
             entries.append({**dump.info, "name": dump.name,
                             "dump": dest.relative_to(self.dir).as_posix(),
                             "bytes": dest.stat().st_size})
@@ -425,20 +441,11 @@ class ShadowStore:
         if dst.exists():
             return dst
         tmp = self.gitdirs / f".{seq:08d}.tmp"
-        shutil.rmtree(tmp, ignore_errors=True)
+        _platform.rmtree(tmp, ignore_errors=True)
         tmp.parent.mkdir(parents=True, exist_ok=True)
 
-        def link_or_copy(a: str, b: str) -> object:
-            # Git replaces files via rename and never edits objects in place,
-            # so a hardlink is a faithful point-in-time copy.
-            try:
-                os.link(a, b)
-            except OSError:
-                shutil.copy2(a, b)
-            return b
-
-        shutil.copytree(src, tmp, symlinks=True, copy_function=link_or_copy)
-        os.replace(tmp, dst)
+        shutil.copytree(src, tmp, symlinks=True, copy_function=_link_or_copy)
+        _platform.replace(tmp, dst)
         return dst
 
     def latest_git_dir_backup(self) -> Path | None:
@@ -483,7 +490,8 @@ class ShadowStore:
         try:
             proc = subprocess.run(["git", "--git-dir", str(git_dir), "rev-parse", "HEAD"],
                                   capture_output=True, text=True, timeout=self.git_timeout,
-                                  env=_clean_env(), stdin=subprocess.DEVNULL)
+                                  env=_clean_env(), stdin=subprocess.DEVNULL,
+                                  encoding="utf-8", errors="replace")
         except (OSError, subprocess.SubprocessError):
             return None
         return proc.stdout.strip() if proc.returncode == 0 else None
@@ -524,14 +532,7 @@ class ShadowStore:
             shutil.move(str(target), str(aside))
             note = f".git/ (repaired; the damaged one is kept at {aside})"
 
-        def link_or_copy(a: str, b: str) -> object:
-            try:
-                os.link(a, b)
-            except OSError:
-                shutil.copy2(a, b)
-            return b
-
-        shutil.copytree(backup, target, symlinks=True, copy_function=link_or_copy)
+        shutil.copytree(backup, target, symlinks=True, copy_function=_link_or_copy)
         return note
 
     def _snapshot_locked(self, label: str, meta: dict[str, Any], *,
@@ -639,12 +640,12 @@ class ShadowStore:
             return
         modes.update(private)
         tmp = self.dir / "modes.json.tmp"
-        tmp.write_text(json.dumps(modes))
-        os.replace(tmp, self.dir / "modes.json")
+        tmp.write_text(json.dumps(modes), encoding="utf-8")
+        _platform.replace(tmp, self.dir / "modes.json")
 
     def _private_modes(self) -> dict[str, int]:
         try:
-            data = json.loads((self.dir / "modes.json").read_text())
+            data = json.loads((self.dir / "modes.json").read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return {}
         return {str(k): int(v) for k, v in data.items()} if isinstance(data, dict) else {}
@@ -890,7 +891,7 @@ class ShadowStore:
             full.parent.mkdir(parents=True, exist_ok=True)
             tmp = full.with_name(full.name + ".airbag-tmp")
             tmp.write_bytes(proc.stdout)
-            os.replace(tmp, full)
+            _platform.replace(tmp, full)
         except OSError:
             return False
         return True
@@ -937,7 +938,8 @@ class ShadowStore:
     def _append_log(self, record: dict[str, Any]) -> None:
         self.dir.mkdir(parents=True, exist_ok=True)
         line = json.dumps(record, default=str) + "\n"
-        fd = os.open(str(self.log_file), os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+        fd = os.open(str(self.log_file), os.O_WRONLY | os.O_APPEND | os.O_CREAT | _O_BINARY,
+                     0o600)
         try:
             os.write(fd, line.encode("utf-8"))
         finally:
@@ -982,7 +984,7 @@ class ShadowStore:
 
     def read_state(self) -> dict[str, Any]:
         try:
-            data = json.loads(self.state_file.read_text())
+            data = json.loads(self.state_file.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             return {}
         return data if isinstance(data, dict) else {}
@@ -992,9 +994,9 @@ class ShadowStore:
         self.dir.mkdir(parents=True, exist_ok=True)
         fd, tmp = tempfile.mkstemp(dir=str(self.dir), prefix="state.", suffix=".tmp")
         try:
-            with os.fdopen(fd, "w") as fh:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
                 json.dump(state, fh)
-            os.replace(tmp, self.state_file)
+            _platform.replace(tmp, self.state_file)
         except BaseException:
             with contextlib.suppress(OSError):
                 os.unlink(tmp)
@@ -1024,7 +1026,7 @@ class ShadowStore:
             for snap in doomed:
                 backup = self.gitdirs / f"{snap.seq:08d}"
                 if backup != newest_gitdir:
-                    shutil.rmtree(backup, ignore_errors=True)
+                    _platform.rmtree(backup, ignore_errors=True)
                 for entry in snap.meta.get("databases") or []:
                     dump = self.dump_file(entry) if isinstance(entry, dict) else None
                     if dump is not None:

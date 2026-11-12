@@ -67,7 +67,7 @@ def inner(pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch):
 
 def _calls(pytester: pytest.Pytester) -> int:
     path = pytester.path / "calls.txt"
-    return len(path.read_text().splitlines()) if path.exists() else 0
+    return len(path.read_text(encoding="utf-8").splitlines()) if path.exists() else 0
 
 
 def _golden_dir(pytester: pytest.Pytester, nodeid: str) -> Path:
@@ -96,7 +96,8 @@ def test_records_once_then_replays_with_zero_agent_calls(pytester, inner) -> Non
         again.assert_outcomes(passed=1)
         again.stdout.fnmatch_lines(["*1 run(s) replayed (agent not called, 800 tokens*"])
     assert _calls(pytester) == 1  # the agent was never called again
-    assert (pytester.path / "modes.txt").read_text().split() == ["recorded", "replayed", "replayed"]
+    assert (pytester.path / "modes.txt").read_text(
+        encoding="utf-8").split() == ["recorded", "replayed", "replayed"]
 
 
 def test_replayed_output_matches_recorded_output(pytester, inner) -> None:
@@ -118,10 +119,10 @@ def test_out(agent_vcr):
     )
     inner().assert_outcomes(passed=1)
     inner().assert_outcomes(passed=1)
-    lines = (pytester.path / "out.jsonl").read_text().splitlines()
+    lines = (pytester.path / "out.jsonl").read_text(encoding="utf-8").splitlines()
     assert lines[0] == lines[1] == json.dumps([["done", 3], 2])
     golden = _golden_files(pytester, "test_out.py::test_out")[0]
-    frames = [json.loads(line) for line in golden.read_text().splitlines()[1:]]
+    frames = [json.loads(line) for line in golden.read_text(encoding="utf-8").splitlines()[1:]]
     assert frames[-1]["data"]["node_name"] == RESULT_NODE
     assert frames[-1]["data"]["metadata"]["latency_ms"] == 0.0
 
@@ -154,7 +155,8 @@ def test_pipe(agent_vcr):
     inner().assert_outcomes(passed=1)
     assert _calls(pytester) == 1
     golden = _golden_files(pytester, "test_pipe.py::test_pipe")[0]
-    frames = [json.loads(line)["data"] for line in golden.read_text().splitlines()[1:]]
+    frames = [json.loads(line)["data"] for line in golden.read_text(
+        encoding="utf-8").splitlines()[1:]]
     assert [f["node_name"] for f in frames] == ["classify", "draft"]
     assert frames[0]["metadata"]["tokens_used"] == 120
 
@@ -218,7 +220,7 @@ def test_fail_on_never_accepts_the_new_golden_with_a_warning(pytester, inner, mo
     accepted = inner("--vcr-record=all", "--vcr-fail-on=never")
     accepted.assert_outcomes(passed=1, warnings=1)
     accepted.stdout.fnmatch_lines(["*AgentVCRWarning: agent_vcr: DEGRADED vs golden*"])
-    assert "delete_customer" in golden.read_text()
+    assert "delete_customer" in golden.read_text(encoding="utf-8")
 
 
 def test_expectations_fail_on_rule_breaks_even_when_replaying(pytester, inner) -> None:
@@ -456,7 +458,9 @@ def test_opts(agent_vcr, request):
 
     helptext = inner("--help")
     helptext.stdout.fnmatch_lines(
-        ["*--vcr-dir=DIR*", "*--vcr-record={none,once,all}*", "*--vcr-fail-on={degraded,failed,never}*"]
+        # Python 3.13 prints aliases as "--vcr-record, --agent-vcr-record={...}".
+        ["*--vcr-dir=DIR*", "*--vcr-record*={none,once,all}*",
+         "*--vcr-fail-on={degraded,failed,never}*"]
     )
     markers = inner("--markers")
     markers.stdout.fnmatch_lines(["*@pytest.mark.agent_vcr(task=None, identity=None, record=None)*"])
@@ -496,7 +500,7 @@ class TestGroup:
     inner().assert_outcomes(passed=1)
     slug = node_slug("test_rec.py::TestGroup::test_rec[1]")
     path = pytester.path / ".vcr" / "pytest" / "sessions" / f"{slug}.vcr"
-    lines = [json.loads(line) for line in path.read_text().splitlines()]
+    lines = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
     assert lines[0]["data"]["metadata"]["agent_vcr"]["test"] == "test_rec.py::TestGroup::test_rec[1]"
     assert lines[1]["data"]["node_name"] == "step"
 
@@ -528,7 +532,7 @@ def test_plugin_is_inert_when_unused(pytester, inner) -> None:
 
 
 def test_entry_point_is_declared() -> None:
-    text = (REPO / "pyproject.toml").read_text()
+    text = (REPO / "pyproject.toml").read_text(encoding="utf-8")
     section = text.split("[project.entry-points.pytest11]", 1)[1].split("[", 1)[0]
     assert 'agent_vcr = "agent_vcr.pytest_plugin"' in section
 
@@ -538,8 +542,9 @@ def test_entry_point_loads_without_heavy_imports(pytester: pytest.Pytester, tmp_
     dist = tmp_path / "site" / "agent_vcr_entrypoint_probe-0.0.dist-info"
     dist.mkdir(parents=True)
     (dist / "METADATA").write_text("Metadata-Version: 2.1\nName: agent-vcr-entrypoint-probe\n"
-                                   "Version: 0.0\n")
-    (dist / "entry_points.txt").write_text("[pytest11]\nagent_vcr = agent_vcr.pytest_plugin\n")
+                                   "Version: 0.0\n", encoding="utf-8")
+    (dist / "entry_points.txt").write_text("[pytest11]\nagent_vcr = agent_vcr.pytest_plugin\n",
+                                           encoding="utf-8")
     pytester.makeconftest(
         '''
 import sys
@@ -563,11 +568,12 @@ def pytest_sessionfinish(session):
         env=env,
         capture_output=True,
         text=True,
-        timeout=120,
+        timeout=120, encoding="utf-8", errors="replace",
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr
-    assert (pytester.path / "plugin.txt").read_text() == "agent_vcr.pytest_plugin"
-    assert (pytester.path / "mods.txt").read_text() == "agent_vcr,agent_vcr.pytest_plugin"
+    assert (pytester.path / "plugin.txt").read_text(encoding="utf-8") == "agent_vcr.pytest_plugin"
+    assert (pytester.path / "mods.txt").read_text(
+        encoding="utf-8") == "agent_vcr,agent_vcr.pytest_plugin"
 
 
 # -- review regressions ------------------------------------------------------------
@@ -580,12 +586,13 @@ def _subprocess_pytest(cwd: Path, *args: str, **env_extra: str) -> subprocess.Co
         [sys.executable, "-m", "pytest", "-q", "-p", "agent_vcr.pytest_plugin",
          "-p", "no:cacheprovider", *args],
         cwd=cwd, env=env, capture_output=True, text=True, timeout=120,
+            encoding="utf-8", errors="replace",
     )
 
 
 def test_plugin_source_avoids_pytest7_only_apis() -> None:
     """pytest < 7 has no StashKey / .stash: using them broke every pytest run."""
-    source = (REPO / "src" / "agent_vcr" / "pytest_plugin.py").read_text()
+    source = (REPO / "src" / "agent_vcr" / "pytest_plugin.py").read_text(encoding="utf-8")
     assert "StashKey" not in source
     assert ".stash" not in source
 
@@ -620,7 +627,8 @@ sys.exit(pytest.main(["-q", "-p", "agent_vcr.pytest_plugin", "-p", "no:cacheprov
     env["PYTHONPATH"] = os.pathsep.join([str(REPO / "src"), *sys.path])
     for _ in range(2):  # record, then replay
         proc = subprocess.run([sys.executable, str(runner)], cwd=pytester.path, env=env,
-                              capture_output=True, text=True, timeout=120)
+                              capture_output=True, text=True, timeout=120,
+                                  encoding="utf-8", errors="replace")
         assert proc.returncode == 0, proc.stdout + proc.stderr
     assert "replayed" in proc.stdout
 

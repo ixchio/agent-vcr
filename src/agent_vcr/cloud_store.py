@@ -30,6 +30,7 @@ import os
 import re
 import secrets
 import tempfile
+import time
 import uuid
 from collections.abc import Iterator
 from datetime import datetime, timezone
@@ -37,6 +38,8 @@ from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
+
+from agent_vcr import _platform
 
 logger = logging.getLogger(__name__)
 
@@ -123,9 +126,9 @@ def _atomic_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
     try:
-        with os.fdopen(fd, "w") as f:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(payload, f, indent=2)
-        os.replace(tmp, str(path))
+        _platform.replace(tmp, str(path))
     except Exception:
         with contextlib.suppress(OSError):
             os.unlink(tmp)
@@ -136,7 +139,7 @@ def _read_json(path: Path, default: Any) -> Any:
     if not path.exists():
         return default
     try:
-        return json.loads(path.read_text())
+        return json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError) as err:
         raise ValueError(f"Corrupt store file {path}: {err}") from err
 
@@ -151,14 +154,10 @@ def _store_lock(root: Path) -> Iterator[None]:
 
     Token minting/revocation and the throttled ``last_used_at`` flush all
     rewrite ``tokens.json``, so concurrent workers would otherwise lose each
-    other's updates. POSIX ``flock``; fail-open where unavailable. Body
-    exceptions always propagate (only lock-acquisition may degrade).
+    other's updates. ``flock`` on POSIX, ``msvcrt.locking`` on Windows;
+    fail-open where unavailable. Body exceptions always propagate (only
+    lock-acquisition may degrade).
     """
-    try:
-        import fcntl
-    except ImportError:  # Windows: single-process assumption
-        yield
-        return
     try:
         fh = open(root / ".lock", "a+b")  # noqa: PTH123, SIM115
     except OSError:
@@ -167,17 +166,17 @@ def _store_lock(root: Path) -> Iterator[None]:
         return
     with fh:
         try:
-            fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+            while not _platform.try_lock(fh):
+                time.sleep(0.01)
             locked = True
         except OSError:
-            logger.debug("flock unavailable, proceeding unlocked", exc_info=True)
+            logger.debug("file lock unavailable, proceeding unlocked", exc_info=True)
             locked = False
         try:
             yield
         finally:
             if locked:
-                with contextlib.suppress(OSError):
-                    fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+                _platform.unlock(fh)
 
 
 class CloudStore:
@@ -374,7 +373,7 @@ class CloudStore:
                     }
                 if not overwrite:
                     raise FileExistsError(f"Session {sid!r} already exists (use overwrite)")
-            os.replace(tmp, str(dest))
+            _platform.replace(tmp, str(dest))
             return {
                 "session_id": sid,
                 "frames": len(player.frames),
@@ -412,7 +411,7 @@ class CloudStore:
         skipped = 0
         for path in sorted(sessions.glob("*.vcr")):
             try:
-                with open(path) as f:
+                with open(path, encoding="utf-8") as f:
                     first = f.readline().strip()
                 record = json.loads(first)
                 if record.get("type") != "session":

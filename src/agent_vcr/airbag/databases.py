@@ -27,6 +27,7 @@ from __future__ import annotations
 import getpass
 import json
 import os
+import posixpath
 import re
 import shutil
 import subprocess
@@ -186,7 +187,7 @@ def parse_url(url: str) -> PgDatabase:
     if not is_local_host(host):
         raise _refuse(url, str(host))
     if host and host.startswith("/"):
-        host = os.path.normpath(host)
+        host = posixpath.normpath(host)  # a libpq socket directory: always POSIX syntax
     if not dbname:
         raise ValueError(f"{redact(url)}: no database name (postgresql://.../<dbname>)")
     try:
@@ -207,7 +208,7 @@ def load_databases(root: str | Path | None) -> tuple[list[PgDatabase], list[str]
         path = Path(root) / CONFIG_FILE
         if path.is_file():
             try:
-                data = json.loads(path.read_text())
+                data = json.loads(path.read_text(encoding="utf-8"))
                 entries = data.get("databases") if isinstance(data, dict) else None
                 if not isinstance(entries, list) or not all(isinstance(e, str) for e in entries):
                     raise ValueError('expected {"databases": ["postgresql://..."]}')
@@ -236,7 +237,7 @@ def _same_server(a: str | None, b: str | None) -> bool:
     if a_sock:
         if a is None or b is None:
             return a is None and b is None
-        return os.path.normpath(a) == os.path.normpath(b)
+        return posixpath.normpath(a) == posixpath.normpath(b)
     return True  # localhost / 127.0.0.1 / ::1: the port decides
 
 
@@ -379,7 +380,7 @@ def _psql_target(args: list[str], inline_env: dict[str, str],
     if not dbname:
         return None, False
     if host and host.startswith("/"):
-        host = os.path.normpath(host)
+        host = posixpath.normpath(host)  # a libpq socket directory: always POSIX syntax
     return PgDatabase(dbname=dbname, host=host, port=port_num, user=user), certain
 
 
@@ -394,7 +395,7 @@ def _dotenv_url(root: Path | None) -> str | None:
     if root is None:
         return None
     try:
-        text = (root / ".env").read_text(errors="replace")
+        text = (root / ".env").read_text(errors="replace", encoding="utf-8")
     except OSError:
         return None
     for line in text.splitlines():

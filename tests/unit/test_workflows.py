@@ -91,7 +91,7 @@ class TestRegistryAndRuns:
         assert store.list("w")[0]["status"] == "running"
         with pytest.raises(KeyError):
             store.load("nope")
-        (tmp_path / f"{rec.run_id}.json").write_text("{bad")
+        (tmp_path / f"{rec.run_id}.json").write_text("{bad", encoding="utf-8")
         with pytest.raises(ValueError, match="Corrupt"):
             store.load(rec.run_id)
 
@@ -415,7 +415,7 @@ class TestWorkflowAPI:
     def _handlers(self, tmp_path):
         path = tmp_path / "handlers.py"
         path.write_text("def echo(value=None):\n    return {'value': value}\n"
-                        "TOOLS = {'echo': echo}\n")
+                        "TOOLS = {'echo': echo}\n", encoding="utf-8")
         return str(path)
 
     def test_registry_and_trigger(self, tmp_path):
@@ -460,9 +460,10 @@ class TestWorkflowCLI:
                 {"id": "a", "kind": "tool", "ref": "echo", "inputs": {"value": 5}},
                 {"id": "b", "kind": "tool", "ref": "echo",
                  "inputs": {"value": "$a.value"}, "depends_on": ["a"]},
-            ]}))
+            ]}), encoding="utf-8")
         (tmp_path / "handlers.py").write_text(
-            "def echo(value=None):\n    return {'value': value}\nTOOLS = {'echo': echo}\n")
+            "def echo(value=None):\n    return {'value': value}\nTOOLS = {'echo': echo}\n",
+                encoding="utf-8")
         main(["workflow", "validate", "wf.json"])
         assert "Valid: cli" in capsys.readouterr().out
         main(["workflow", "run", "--file", "wf.json", "--handlers", "handlers.py"])
@@ -478,9 +479,11 @@ class TestWorkflowCLI:
 
         monkeypatch.chdir(tmp_path)
         (tmp_path / "wf.json").write_text(_json.dumps({
-            "name": "tock", "steps": [{"id": "a", "kind": "tool", "ref": "echo"}]}))
+            "name": "tock", "steps": [{"id": "a", "kind": "tool", "ref": "echo"}]}),
+                encoding="utf-8")
         (tmp_path / "handlers.py").write_text(
-            "def echo(value=None):\n    return {'value': value}\nTOOLS = {'echo': echo}\n")
+            "def echo(value=None):\n    return {'value': value}\nTOOLS = {'echo': echo}\n",
+                encoding="utf-8")
         main(["workflow", "run", "--file", "wf.json", "--handlers", "handlers.py"])
         capsys.readouterr()
         main(["workflow", "schedule", "put", "--name", "every",

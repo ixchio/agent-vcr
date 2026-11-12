@@ -10,10 +10,12 @@ import os
 import shutil
 import sqlite3
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
+from agent_vcr._platform import rmtree as rm_rf  # what the agent's `rm -rf` does
 from agent_vcr.airbag.classify import classify
 from agent_vcr.airbag.core import Airbag, Policy, ToolCall
 from agent_vcr.airbag.store import AirbagError, ShadowStore
@@ -34,7 +36,7 @@ def _airbag_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 def _git(cwd: Path, *args: str) -> str:
     env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
     return subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True,
-                          env=env).stdout
+                          env=env, encoding="utf-8", errors="replace").stdout
 
 
 @pytest.fixture
@@ -44,8 +46,8 @@ def project(tmp_path: Path) -> Path:
     _git(proj, "init", "-q", "-b", "main")
     _git(proj, "config", "user.email", "u@example.com")
     _git(proj, "config", "user.name", "u")
-    (proj / "src" / "app.py").write_text("print('v1')\n")
-    (proj / ".gitignore").write_text(".env\n*.db\nnode_modules/\nbig.bin\n")
+    (proj / "src" / "app.py").write_text("print('v1')\n", encoding="utf-8")
+    (proj / ".gitignore").write_text(".env\n*.db\nnode_modules/\nbig.bin\n", encoding="utf-8")
     _git(proj, "add", "-A")
     _git(proj, "commit", "-qm", "init")
     return proj
@@ -240,15 +242,15 @@ def test_symlinked_parent_spellings_classify_the_same(tmp_path: Path, root_via: 
 # ── store ────────────────────────────────────────────────────────────────
 
 def test_store_lives_outside_the_project_and_never_touches_user_git(project: Path) -> None:
-    (project / "src" / "app.py").write_text("print('dirty')\n")
+    (project / "src" / "app.py").write_text("print('dirty')\n", encoding="utf-8")
     _git(project, "stash", "list")
     head, status = _git(project, "rev-parse", "HEAD"), _git(project, "status", "--porcelain")
     store = ShadowStore(project)
     snap = store.snapshot("t")
     assert project not in store.dir.parents
-    (project / "src" / "app.py").write_text("print('changed by agent')\n")
+    (project / "src" / "app.py").write_text("print('changed by agent')\n", encoding="utf-8")
     store.restore(snap)
-    assert (project / "src" / "app.py").read_text() == "print('dirty')\n"
+    assert (project / "src" / "app.py").read_text(encoding="utf-8") == "print('dirty')\n"
     assert _git(project, "rev-parse", "HEAD") == head
     assert _git(project, "status", "--porcelain") == status
     assert _git(project, "for-each-ref", "refs/airbag") == ""
@@ -258,22 +260,22 @@ def test_snapshot_dedups_when_nothing_changed(project: Path) -> None:
     store = ShadowStore(project)
     first = store.snapshot("a")
     assert store.snapshot("b").seq == first.seq
-    (project / "new.txt").write_text("x")
+    (project / "new.txt").write_text("x", encoding="utf-8")
     assert store.snapshot("c").seq == first.seq + 1
 
 
 def test_protects_untracked_and_precious_but_not_dependency_trees(project: Path) -> None:
-    (project / ".env").write_text("API_KEY=secret\n")
-    (project / "draft.md").write_text("untracked\n")
+    (project / ".env").write_text("API_KEY=secret\n", encoding="utf-8")
+    (project / "draft.md").write_text("untracked\n", encoding="utf-8")
     (project / "node_modules" / "pkg").mkdir(parents=True)
-    (project / "node_modules" / "pkg" / "index.js").write_text("x")
+    (project / "node_modules" / "pkg" / "index.js").write_text("x", encoding="utf-8")
     store = ShadowStore(project)
     snap = store.snapshot("t")
     for path in (".env", "draft.md", "node_modules"):
         target = project / path
-        shutil.rmtree(target) if target.is_dir() else target.unlink()
+        rm_rf(target) if target.is_dir() else target.unlink()
     store.restore(snap)
-    assert (project / ".env").read_text() == "API_KEY=secret\n"
+    assert (project / ".env").read_text(encoding="utf-8") == "API_KEY=secret\n"
     assert (project / "draft.md").exists()
     assert not (project / "node_modules").exists()  # regenerable, never snapshotted
 
@@ -282,8 +284,8 @@ def test_restore_never_deletes_ignored_files(project: Path) -> None:
     store = ShadowStore(project)
     snap = store.snapshot("t")
     (project / "node_modules").mkdir()
-    (project / "node_modules" / "keep.js").write_text("keep")
-    (project / "created.txt").write_text("agent made this")
+    (project / "node_modules" / "keep.js").write_text("keep", encoding="utf-8")
+    (project / "created.txt").write_text("agent made this", encoding="utf-8")
     result = store.restore(snap)
     assert "created.txt" in result.deleted and not (project / "created.txt").exists()
     assert (project / "node_modules" / "keep.js").exists()
@@ -314,17 +316,17 @@ def test_sqlite_snapshot_is_consistent_in_wal_mode(project: Path) -> None:
 
 
 def test_full_project_deletion_restores_files_and_git_history(project: Path) -> None:
-    (project / "src" / "app.py").write_text("print('uncommitted')\n")
-    (project / ".env").write_text("SECRET=1\n")
+    (project / "src" / "app.py").write_text("print('uncommitted')\n", encoding="utf-8")
+    (project / ".env").write_text("SECRET=1\n", encoding="utf-8")
     head = _git(project, "rev-parse", "HEAD")
     bag = Airbag(project, policy=Policy())
     decision = bag.before(_call(project.parent, f"rm -rf {project}"))
     assert decision.verdict.level == "destructive" and decision.snapshot is not None
-    shutil.rmtree(project)
+    rm_rf(project)
     undone = bag.undo()
     assert undone is not None
-    assert (project / "src" / "app.py").read_text() == "print('uncommitted')\n"
-    assert (project / ".env").read_text() == "SECRET=1\n"
+    assert (project / "src" / "app.py").read_text(encoding="utf-8") == "print('uncommitted')\n"
+    assert (project / ".env").read_text(encoding="utf-8") == "SECRET=1\n"
     assert _git(project, "rev-parse", "HEAD") == head
     assert "app.py" in _git(project, "status", "--porcelain")
 
@@ -336,7 +338,7 @@ def test_refuses_home_directory(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def _parallel_snapshot(args: tuple[str, int]) -> int:
     root, i = args
-    (Path(root) / f"file{i}.txt").write_text(str(i))
+    (Path(root) / f"file{i}.txt").write_text(str(i), encoding="utf-8")
     return ShadowStore(root).snapshot(f"p{i}").seq
 
 
@@ -354,7 +356,7 @@ def test_concurrent_hook_processes_do_not_corrupt_the_store(project: Path) -> No
 def test_gc_removes_old_snapshots(project: Path) -> None:
     store = ShadowStore(project)
     for i in range(5):
-        (project / f"f{i}").write_text(str(i))
+        (project / f"f{i}").write_text(str(i), encoding="utf-8")
         store.snapshot(f"s{i}")
     assert store.gc(keep_days=0, keep_last=2) == 3
     assert len(store.snapshots()) == 2
@@ -377,17 +379,17 @@ def test_undo_twice_then_redo(project: Path) -> None:
     bag = Airbag(project, policy=Policy())
     app = project / "src" / "app.py"
     bag.before(_call(project, "sed -i s/v1/v2/ src/app.py"))
-    app.write_text("print('v2')\n")
+    app.write_text("print('v2')\n", encoding="utf-8")
     bag.before(_call(project, "sed -i s/v2/v3/ src/app.py"))
-    app.write_text("print('v3')\n")
+    app.write_text("print('v3')\n", encoding="utf-8")
     bag.undo()
-    assert app.read_text() == "print('v2')\n"
+    assert app.read_text(encoding="utf-8") == "print('v2')\n"
     bag.undo()
-    assert app.read_text() == "print('v1')\n"
+    assert app.read_text(encoding="utf-8") == "print('v1')\n"
     bag.redo()
-    assert app.read_text() == "print('v2')\n"
+    assert app.read_text(encoding="utf-8") == "print('v2')\n"
     bag.redo()
-    assert app.read_text() == "print('v3')\n"
+    assert app.read_text(encoding="utf-8") == "print('v3')\n"
     assert bag.redo() is None
 
 
@@ -404,7 +406,7 @@ def test_rewind_to_any_snapshot(project: Path) -> None:
     bag = Airbag(project, policy=Policy())
     first = bag.store.snapshot("start")
     for i in range(3):
-        (project / f"step{i}.txt").write_text(str(i))
+        (project / f"step{i}.txt").write_text(str(i), encoding="utf-8")
         bag.store.snapshot(f"s{i}")
     bag.rewind(first.seq)
     assert not any(project.glob("step*.txt"))
@@ -492,18 +494,18 @@ def test_read_only_programs_that_write_get_a_snapshot(command: str) -> None:
 def test_file_that_grew_past_the_limit_is_never_clobbered(project: Path) -> None:
     store = ShadowStore(project, max_file_bytes=1024)
     data = project / "data.csv"
-    data.write_text("version-A\n")
+    data.write_text("version-A\n", encoding="utf-8")
     first = store.snapshot("A")
-    data.write_text("version-B\n")
+    data.write_text("version-B\n", encoding="utf-8")
     store.snapshot("B")
     real = "".join(f"row {i} of irreplaceable results\n" for i in range(300))
-    data.write_text(real)
+    data.write_text(real, encoding="utf-8")
     grown = store.snapshot("C")
     assert "data.csv" in grown.meta["skipped_large"]
     result = store.restore(first)
-    assert data.read_text() == real and "data.csv" in result.kept
+    assert data.read_text(encoding="utf-8") == real and "data.csv" in result.kept
     store.restore(result.before)
-    assert data.read_text() == real
+    assert data.read_text(encoding="utf-8") == real
 
 
 @pytest.mark.parametrize("with_commit", [True, False])
@@ -514,7 +516,7 @@ def test_deleting_a_nested_repo_is_escalated_and_never_faked(project: Path,
     _git(nested, "init", "-q")
     _git(nested, "config", "user.email", "u@example.com")
     _git(nested, "config", "user.name", "u")
-    (nested / "core.c").write_text("int main(){}\n")
+    (nested / "core.c").write_text("int main(){}\n", encoding="utf-8")
     if with_commit:
         _git(nested, "add", "-A")
         _git(nested, "commit", "-qm", "dep")
@@ -522,7 +524,7 @@ def test_deleting_a_nested_repo_is_escalated_and_never_faked(project: Path,
     decision = bag.before(_call(project, "rm -rf vendor/lib"))
     assert decision.verdict.level == "irreversible" and decision.action == "ask"
     assert "nested git repositor" in " ".join(decision.verdict.reasons)
-    shutil.rmtree(nested)
+    rm_rf(nested)
     undone = bag.undo()
     if undone is not None:
         assert "vendor/lib" in undone[1].kept
@@ -531,17 +533,19 @@ def test_deleting_a_nested_repo_is_escalated_and_never_faked(project: Path,
 
 def test_private_file_permissions_survive_restore(project: Path) -> None:
     secret = project / ".env"
-    secret.write_text("KEY=1\n")
+    secret.write_text("KEY=1\n", encoding="utf-8")
     secret.chmod(0o600)
     store = ShadowStore(project)
     snap = store.snapshot("t")
     secret.unlink()
     store.restore(snap)
-    assert secret.stat().st_mode & 0o777 == 0o600
+    assert secret.read_text(encoding="utf-8") == "KEY=1\n"
+    if sys.platform != "win32":  # NTFS has no Unix permission bits to preserve
+        assert secret.stat().st_mode & 0o777 == 0o600
 
 
 def test_gitattributes_cannot_change_restored_bytes(project: Path) -> None:
-    (project / ".gitattributes").write_text("* text=auto\n")
+    (project / ".gitattributes").write_text("* text=auto\n", encoding="utf-8")
     crlf = b"id,name\r\n1,alice\r\n"
     (project / "fixture.csv").write_bytes(crlf)
     store = ShadowStore(project)
@@ -555,12 +559,12 @@ def test_undo_repairs_damaged_or_replaced_git_dir(project: Path) -> None:
     head = _git(project, "rev-parse", "HEAD")
     bag = Airbag(project, policy=Policy())
     bag.before(_call(project, "rm -rf .git/objects"))
-    shutil.rmtree(project / ".git" / "objects")
+    rm_rf(project / ".git" / "objects")
     assert bag.undo() is not None
     assert _git(project, "rev-parse", "HEAD") == head
     bag2 = Airbag(project, policy=Policy())
     bag2.before(_call(project, "rm -rf .git && git init"))
-    shutil.rmtree(project / ".git")
+    rm_rf(project / ".git")
     _git(project, "init", "-q")
     assert bag2.undo() is not None
     assert _git(project, "rev-parse", "HEAD") == head
@@ -571,7 +575,7 @@ def test_worktree_git_file_is_restored(project: Path, tmp_path: Path) -> None:
     _git(project, "worktree", "add", "-q", str(worktree))
     bag = Airbag(worktree, policy=Policy())
     bag.before(_call(tmp_path, f"rm -rf {worktree}"))
-    shutil.rmtree(worktree)
+    rm_rf(worktree)
     assert bag.undo() is not None
     assert (worktree / ".git").is_file()
     assert _git(worktree, "status", "--porcelain") == ""
@@ -581,12 +585,12 @@ def test_backslash_filename_is_restored_on_posix(project: Path) -> None:
     if os.name == "nt":
         pytest.skip("backslash is a path separator on Windows")
     odd = project / "a\\..\\b.txt"
-    odd.write_text("odd")
+    odd.write_text("odd", encoding="utf-8")
     store = ShadowStore(project)
     snap = store.snapshot("t")
     odd.unlink()
     result = store.restore(snap)
-    assert odd.read_text() == "odd" and not result.failed
+    assert odd.read_text(encoding="utf-8") == "odd" and not result.failed
 
 
 def test_redo_after_gc_raises_cleanly(project: Path) -> None:
@@ -612,17 +616,17 @@ def test_cli_undo_finds_a_deleted_project(project: Path, capsys: pytest.CaptureF
     """The headline demo: the agent deletes the project, a *fresh* `vcr undo` restores it."""
     from agent_vcr import cli
 
-    (project / ".env").write_text("SECRET=1\n")
+    (project / ".env").write_text("SECRET=1\n", encoding="utf-8")
     head = _git(project, "rev-parse", "HEAD")
     Airbag(project, policy=Policy()).before(_call(project.parent, f"rm -rf {project}"))
-    shutil.rmtree(project)
+    rm_rf(project)
     cli.main(["undo", "--project-dir", str(project)])
     assert "Undid" in capsys.readouterr().out
-    assert (project / ".env").read_text() == "SECRET=1\n"
+    assert (project / ".env").read_text(encoding="utf-8") == "SECRET=1\n"
     assert _git(project, "rev-parse", "HEAD") == head
     # ...and from a subdirectory of a project whose .git is gone:
     Airbag(project, policy=Policy()).before(_call(project, "rm -rf .git"))
-    shutil.rmtree(project / ".git")
+    rm_rf(project / ".git")
     cli.main(["undo", "--project-dir", str(project / "src")])
     assert _git(project, "rev-parse", "HEAD") == head
 
@@ -637,7 +641,7 @@ def test_undo_and_redo_output_names_actions_and_uses_dry_run_signs(
     app = project / "src" / "app.py"
     bag.before(ToolCall(agent="claude", tool_name="Edit", kind="edit", cwd=str(project),
                         paths=[str(app)]))
-    app.write_text("print('v2')\n")
+    app.write_text("print('v2')\n", encoding="utf-8")
     bag.before(_call(project, "rm src/app.py"))
     app.unlink()
 
@@ -651,12 +655,12 @@ def test_undo_and_redo_output_names_actions_and_uses_dry_run_signs(
     cli.main(["undo", "--project-dir", str(project)])  # Edit: the file is changed back
     out = capsys.readouterr().out
     assert "Undid: Edit src/app.py" in out and "    ~ src/app.py" in out
-    assert app.read_text() == "print('v1')\n"
+    assert app.read_text(encoding="utf-8") == "print('v1')\n"
 
     cli.main(["redo", "--project-dir", str(project)])
     out = capsys.readouterr().out
     assert "Redid: Edit src/app.py" in out and "    ~ src/app.py" in out
-    assert app.read_text() == "print('v2')\n"
+    assert app.read_text(encoding="utf-8") == "print('v2')\n"
     cli.main(["redo", "--project-dir", str(project)])
     out = capsys.readouterr().out
     assert "Redid: rm src/app.py" in out and "    - src/app.py" in out

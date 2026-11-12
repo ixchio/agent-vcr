@@ -59,7 +59,7 @@ def _env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 def _git(cwd: Path, *args: str) -> str:
     env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
     return subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True,
-                          env=env).stdout
+                          env=env, encoding="utf-8", errors="replace").stdout
 
 
 @pytest.fixture
@@ -67,7 +67,7 @@ def project(tmp_path: Path) -> Path:
     proj = tmp_path / "proj"
     proj.mkdir()
     _git(proj, "init", "-q", "-b", "main")
-    (proj / "app.py").write_text("print('v1')\n")
+    (proj / "app.py").write_text("print('v1')\n", encoding="utf-8")
     return proj
 
 
@@ -119,7 +119,8 @@ def test_load_from_env_and_project_file(project: Path, monkeypatch: pytest.Monke
     monkeypatch.setenv(dbs.ENV_VAR, "postgresql://localhost/one, postgresql://prod.example.com/x")
     (project / ".vcr").mkdir()
     (project / ".vcr" / "airbag-databases.json").write_text(
-        json.dumps({"databases": ["postgresql:///two?host=/tmp/s", "postgresql://localhost/one"]}))
+        json.dumps({"databases": ["postgresql:///two?host=/tmp/s", "postgresql://localhost/one"]}),
+            encoding="utf-8")
     configs, problems = dbs.load_databases(project)
     assert [db.dbname for db in configs] == ["one", "two"]
     assert len(problems) == 1 and "prod.example.com" in problems[0]
@@ -127,7 +128,8 @@ def test_load_from_env_and_project_file(project: Path, monkeypatch: pytest.Monke
 
 def test_bad_project_file_is_reported(project: Path) -> None:
     (project / ".vcr").mkdir()
-    (project / ".vcr" / "airbag-databases.json").write_text('{"databases": "nope"}')
+    (project / ".vcr" / "airbag-databases.json").write_text('{"databases": "nope"}',
+                                                            encoding="utf-8")
     configs, problems = dbs.load_databases(project)
     assert configs == [] and "airbag-databases.json" in problems[0]
 
@@ -171,7 +173,8 @@ def test_orm_commands_use_database_url_or_the_only_config(
     monkeypatch.setenv("DATABASE_URL", "mysql://localhost/app")
     assert dbs.match_target(target, CONFIG, project) is None
     monkeypatch.delenv("DATABASE_URL")
-    (project / ".env").write_text("DATABASE_URL=postgresql://localhost:5432/app\n")
+    (project / ".env").write_text("DATABASE_URL=postgresql://localhost:5432/app\n",
+                                  encoding="utf-8")
     assert dbs.match_target(target, CONFIG, project) is None  # .env says another server
 
 
@@ -268,7 +271,8 @@ class Cluster:
         out = subprocess.run(
             [str(self.bin / "psql"), "-X", "-q", "-tA", "-h", self.sock, "-p", str(self.port),
              "-d", db, "-v", "ON_ERROR_STOP=1", "-c", sql],
-            check=True, capture_output=True, text=True, timeout=30)
+            check=True, capture_output=True, text=True, timeout=30,
+                encoding="utf-8", errors="replace")
         return out.stdout.strip()
 
     def drop_command(self, table: str = "users") -> str:
@@ -372,7 +376,7 @@ def test_rewind_restores_files_and_database(pg: Cluster, project: Path) -> None:
 
     result = bag.rewind(int(first))  # before both actions
     assert result.databases == ["app"] and result.failed == []
-    assert (project / "app.py").read_text() == "print('v1')\n"
+    assert (project / "app.py").read_text(encoding="utf-8") == "print('v1')\n"
     assert pg.psql("SELECT count(*) FROM users") == "2"
 
 
@@ -464,7 +468,8 @@ def test_orm_commands_never_skip_the_prompt(command: str, project: Path,
     # One local database configured, but the ORM reads its own config (here: prod).
     monkeypatch.setenv(dbs.ENV_VAR, "postgresql://localhost:5433/app")
     (project / "prisma").mkdir()
-    (project / "prisma" / ".env").write_text("DATABASE_URL=postgresql://prod.example.com/app\n")
+    (project / "prisma" / ".env").write_text("DATABASE_URL=postgresql://prod.example.com/app\n",
+                                             encoding="utf-8")
     _fake_dumps(monkeypatch)
     decision = _decide(project, command)
     assert decision.verdict.level == "irreversible", command
@@ -553,7 +558,7 @@ def test_conninfo_host_beats_dash_h_like_real_psql(pg: Cluster) -> None:
     args = ["-h", "/nonexistent/socket", "-p", str(pg.port), f"host={pg.sock} dbname=app",
             "-c", "select 1"]
     out = subprocess.run([str(pg.bin / "psql"), "-X", "-tA", *args], capture_output=True,
-                         text=True, timeout=30)
+                         text=True, timeout=30, encoding="utf-8", errors="replace")
     assert out.returncode == 0 and out.stdout.strip() == "1"
     db, certain = dbs.resolve_target({"prog": "psql", "args": args, "env": {}},
                                      [dbs.parse_url(pg.url)])
@@ -574,7 +579,7 @@ def test_undoing_a_later_edit_leaves_the_database_alone(
     assert edit.snapshot is not None and drop.snapshot is not None
     assert edit.snapshot.seq != drop.snapshot.seq  # a snapshot with dumps is never shared
     assert edit.databases == []
-    (project / "app.py").write_text("print('v2')\n")
+    (project / "app.py").write_text("print('v2')\n", encoding="utf-8")
 
     cli.main(["rewind", "--project-dir", str(project)])
     timeline = capsys.readouterr().out.splitlines()
@@ -584,7 +589,7 @@ def test_undoing_a_later_edit_leaves_the_database_alone(
     assert result is not None
     action, restore = result
     assert action["tool"] == "Edit" and restore.databases == []
-    assert (project / "app.py").read_text() == "print('v1')\n"
+    assert (project / "app.py").read_text(encoding="utf-8") == "print('v1')\n"
     assert _tables(pg) == "t2"  # the database was not touched
 
     result = bag.undo(1)  # now the DROP itself

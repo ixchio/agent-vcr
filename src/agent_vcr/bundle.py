@@ -77,7 +77,7 @@ def _git_commit(cwd: Path | None = None) -> str | None:
             cwd=str(cwd or Path.cwd()),
             capture_output=True,
             text=True,
-            timeout=10,
+            timeout=10, encoding="utf-8", errors="replace",
         )
         if out.returncode == 0 and out.stdout.strip():
             return out.stdout.strip()
@@ -175,7 +175,7 @@ def export_bundle(
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp = Path(tmpdir)
         manifest_path = tmp / MANIFEST_NAME
-        manifest_path.write_text(manifest.model_dump_json(indent=2) + "\n")
+        manifest_path.write_text(manifest.model_dump_json(indent=2) + "\n", encoding="utf-8")
         # Build next to the destination, then os.replace: an interrupted export
         # never leaves a truncated .vcrb at the final path.
         fd, tmp_bundle = tempfile.mkstemp(

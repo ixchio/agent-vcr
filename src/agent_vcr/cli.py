@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from agent_vcr import __version__
+from agent_vcr._platform import utf8_stdio
 
 CLAUDE_CODE_EVENTS = (
     "PreToolUse",
@@ -68,7 +69,7 @@ def write_claude_code_hooks(project_dir: str | Path = ".") -> Path:
 
     settings: dict[str, Any] = {}
     if settings_path.exists() and settings_path.stat().st_size > 0:
-        with open(settings_path) as f:
+        with open(settings_path, encoding="utf-8") as f:
             loaded = json.load(f)
         if not isinstance(loaded, dict):
             raise ValueError(f"{settings_path} must contain a JSON object")
@@ -109,7 +110,7 @@ def _atomic_write_json(path: Path, data: Any) -> None:
     """Write JSON via tmp + os.replace so a crash never truncates settings."""
     fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=path.name + ".", suffix=".tmp")
     try:
-        with os.fdopen(fd, "w") as f:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
             f.write("\n")
         os.replace(tmp, path)
@@ -450,7 +451,7 @@ def _cmd_superagent_run(args: argparse.Namespace) -> None:
         ToolSpec,
     )
 
-    plan = _json.loads(_Path(args.plan).read_text())
+    plan = _json.loads(_Path(args.plan).read_text(encoding="utf-8"))
     gateway = ToolGateway()
     agents: dict = {}
     if args.handlers:
@@ -532,7 +533,7 @@ def _cmd_workflow_validate(args: argparse.Namespace) -> None:
 
     from agent_vcr.workflows.models import WorkflowDef
 
-    definition = WorkflowDef(**_json.loads(_Path(args.file).read_text()))
+    definition = WorkflowDef(**_json.loads(_Path(args.file).read_text(encoding="utf-8")))
     from agent_vcr.workflows.engine import WorkflowEngine
 
     order = WorkflowEngine._topo_order(definition)
@@ -559,7 +560,7 @@ def _cmd_workflow_run(args: argparse.Namespace) -> None:
     registry = WorkflowRegistry(args.workflows_dir)
     if args.file:
         definition = registry.save(
-            WorkflowDef(**_json.loads(_Path(args.file).read_text())))
+            WorkflowDef(**_json.loads(_Path(args.file).read_text(encoding="utf-8"))))
     else:
         definition = registry.get(args.workflow)
     gateway, agents = _load_handlers_file(args.handlers)
@@ -736,6 +737,7 @@ def _cmd_workflow_tick(args: argparse.Namespace) -> None:
 
 def main(argv: list[str] | None = None) -> None:
     """Run the Agent VCR CLI."""
+    utf8_stdio()  # a cp1252 pipe/console cannot encode the arrows and emoji printed below
     raw_args = list(argv if argv is not None else sys.argv[1:])
     if raw_args and raw_args[0] == "serve":
         # Pass everything through so `vcr serve --help` shows the server's options.

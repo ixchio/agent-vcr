@@ -74,7 +74,7 @@ class TestCloudStore:
         # persistence across instances, hashes only at rest
         store2 = CloudStore(tmp_path)
         assert store2.verify_token(secret) is None
-        raw = json.loads((tmp_path / "tokens.json").read_text())
+        raw = json.loads((tmp_path / "tokens.json").read_text(encoding="utf-8"))
         assert secret not in json.dumps(raw)
 
     def test_session_ingest_gate(self, tmp_path):
@@ -408,7 +408,8 @@ class TestBugFixes:
             assert exc.value.status == 403
             # ...yet login succeeds and persists the profile
             path = CloudClient(base, scoped).login(profile="scoped")
-            assert json.loads(path.read_text())["profiles"]["scoped"]["token"] == scoped
+            assert json.loads(path.read_text(
+                encoding="utf-8"))["profiles"]["scoped"]["token"] == scoped
             # stored profile round-trips
             assert CloudClient.from_profile("scoped").base_url == base
         finally:
@@ -446,4 +447,4 @@ class TestBugFixes:
             t.join()
         assert not errors
         assert len(store.list_tokens("p")) == 1
-        json.loads((tmp_path / "tokens.json").read_text())  # still parses
+        json.loads((tmp_path / "tokens.json").read_text(encoding="utf-8"))  # still parses

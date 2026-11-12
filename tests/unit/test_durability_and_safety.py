@@ -128,7 +128,8 @@ def test_import_agent_vcr_is_lazy() -> None:
     src = str(Path(__file__).resolve().parents[2] / "src")
     env = {**os.environ, "PYTHONPATH": src + os.pathsep + os.environ.get("PYTHONPATH", "")}
     out = subprocess.run(
-        [sys.executable, "-c", code], capture_output=True, text=True, env=env, timeout=60
+        [sys.executable, "-c", code], capture_output=True, text=True, env=env, timeout=60,
+            encoding="utf-8", errors="replace"
     )
     assert out.returncode == 0, out.stderr
     assert out.stdout.strip() == ""
@@ -182,7 +183,7 @@ def test_hook_main_never_fails_and_keeps_raw_input(tmp_path: Path, monkeypatch) 
     assert frame.input_state["payload"]["raw"] == "not json {"
 
     monkeypatch.setenv("AGENT_VCR_DIR", str(tmp_path / "file-not-dir"))
-    (tmp_path / "file-not-dir").write_text("blocks mkdir")
+    (tmp_path / "file-not-dir").write_text("blocks mkdir", encoding="utf-8")
     monkeypatch.setattr(sys, "stdin", io.StringIO("{}"))
     assert claude_code.main(["Stop"]) == 0  # recording failed, hook still succeeds
 
@@ -194,10 +195,10 @@ def test_init_uses_current_interpreter_and_upgrades_legacy_hooks(tmp_path: Path)
     settings.write_text(json.dumps({"hooks": {"PreToolUse": [
         {"matcher": "*", "hooks": [{"type": "command", "command": legacy}]},
         {"matcher": "Bash", "hooks": [{"type": "command", "command": "my-own-hook"}]},
-    ]}}))
+    ]}}), encoding="utf-8")
 
     write_claude_code_hooks(tmp_path)
-    data = json.loads(settings.read_text())
+    data = json.loads(settings.read_text(encoding="utf-8"))
     commands = [h["command"] for e in data["hooks"]["PreToolUse"] for h in e["hooks"]]
     assert legacy not in commands
     assert "my-own-hook" in commands  # user hooks untouched
@@ -243,13 +244,16 @@ def test_bundle_import_rejects_path_traversal(tmp_path: Path, evil: str) -> None
 
 def test_local_sandbox_does_not_leak_host_secrets(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("FAKE_OPENAI_API_KEY", "sk-secret")
+    # The sandbox runs the platform shell: sh, or cmd.exe on Windows.
+    key, home = (("%FAKE_OPENAI_API_KEY%", "%HOME%") if sys.platform == "win32"
+                 else ("${FAKE_OPENAI_API_KEY}", "$HOME"))
     with LocalSandbox(workdir=tmp_path / "sb") as sb:
-        res = sb.execute_command('echo "key=${FAKE_OPENAI_API_KEY}" home=$HOME')
+        res = sb.execute_command(f'echo "key={key}" home={home}')
         assert res.success
         assert "sk-secret" not in res.stdout
         assert str(tmp_path / "sb") in res.stdout
     with LocalSandbox(config=SandboxConfig(inherit_env=True), workdir=tmp_path / "sb2") as sb:
-        assert "sk-secret" in sb.execute_command("echo $FAKE_OPENAI_API_KEY").stdout
+        assert "sk-secret" in sb.execute_command(f"echo {key}").stdout
 
 
 def test_default_auto_approver_fails_closed() -> None:
@@ -313,10 +317,10 @@ def test_golden_cache_reads_legacy_relative_index_entries(tmp_path: Path) -> Non
     cache_dir = tmp_path / "golden"
     _golden_run(cache_dir, tmp_path / "vcr")
     index_path = cache_dir / "index.json"
-    index = json.loads(index_path.read_text())
+    index = json.loads(index_path.read_text(encoding="utf-8"))
     for info in index.values():
         info["file"] = ".vcr/golden/" + info["file"]  # how <=1.5.2 stored it
-    index_path.write_text(json.dumps(index))
+    index_path.write_text(json.dumps(index), encoding="utf-8")
 
     outputs, _ = GoldenRunCache(str(cache_dir)).replay(
         "refund task", recorder=VCRRecorder(str(tmp_path / "out"))

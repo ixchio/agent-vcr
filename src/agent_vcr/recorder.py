@@ -17,6 +17,8 @@ logger = logging.getLogger(__name__)
 
 import contextlib  # noqa: E402
 
+from agent_vcr._platform import locked as _locked  # noqa: E402
+from agent_vcr._platform import replace as replace_file  # noqa: E402
 from agent_vcr.models import (  # noqa: E402
     INPUT_FROM_PREVIOUS_KEY,
     Frame,
@@ -56,29 +58,20 @@ def _handle_existing_recording(path: Path, if_exists: str) -> None:
             "or start_session(if_exists='overwrite'|'rotate')."
         )
     backup = path.with_name(path.name + ".prev")
-    os.replace(path, backup)
+    replace_file(path, backup)
     logger.warning("Session file %s already existed; previous run moved to %s", path, backup)
 
 
 @contextlib.contextmanager
 def _manifest_lock(output_dir: Path) -> Iterator[None]:
-    """Exclusive cross-process lock for manifest read-modify-write (POSIX flock).
+    """Exclusive cross-process lock for manifest read-modify-write.
 
     Without it, parallel recorders (multiple agents, pytest-xdist) each read
     the manifest, add their session and replace it — losing each other's
-    entries. On platforms without ``fcntl`` this degrades to no locking.
+    entries. ``flock`` on POSIX, ``msvcrt.locking`` on Windows.
     """
-    try:
-        import fcntl
-    except ImportError:  # pragma: no cover - Windows
+    with open(output_dir / ".manifest.lock", "a+b") as handle, _locked(handle):
         yield
-        return
-    with open(output_dir / ".manifest.lock", "a") as handle:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 def update_manifest(output_dir: Path, session_data: dict[str, Any]) -> None:
@@ -88,7 +81,7 @@ def update_manifest(output_dir: Path, session_data: dict[str, Any]) -> None:
         manifest: dict[str, Any] = {}
         if manifest_path.exists():
             try:
-                with open(manifest_path) as f:
+                with open(manifest_path, encoding="utf-8") as f:
                     loaded = json.load(f)
                 manifest = loaded if isinstance(loaded, dict) else {}
             except (json.JSONDecodeError, OSError) as e:
@@ -107,9 +100,9 @@ def update_manifest(output_dir: Path, session_data: dict[str, Any]) -> None:
 
         fd, tmp_path = tempfile.mkstemp(dir=str(output_dir), suffix=".tmp", prefix="manifest_")
         try:
-            with os.fdopen(fd, "w") as f:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
                 json.dump(manifest, f, indent=2, default=str)
-            os.replace(tmp_path, str(manifest_path))
+            replace_file(tmp_path, str(manifest_path))
         except BaseException:
             with contextlib.suppress(OSError):
                 os.unlink(tmp_path)
@@ -196,7 +189,7 @@ def _stream_rewrite(path: Path, session: Session, *, validate: bool) -> int:
                 copied += 1
             out.flush()
             os.fsync(out.fileno())
-        os.replace(tmp_path, str(path))
+        replace_file(tmp_path, str(path))
     except BaseException:
         with contextlib.suppress(OSError):
             os.unlink(tmp_path)
@@ -209,13 +202,13 @@ def rewrite_session_file(path: Path, session: Session, frames: list[Frame]) -> N
     header = {"type": "session", "schema": "execution/v1", "data": session.model_dump()}
     fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp", prefix="vcr_")
     try:
-        with os.fdopen(fd, "w") as f:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(json_dumps_safe(header) + "\n")
             for frame in frames:
                 f.write(json_dumps_safe({"type": "frame", "data": frame.model_dump()}) + "\n")
             f.flush()
             os.fsync(f.fileno())
-        os.replace(tmp_path, str(path))
+        replace_file(tmp_path, str(path))
     except BaseException:
         with contextlib.suppress(OSError):
             os.unlink(tmp_path)
@@ -601,7 +594,7 @@ class VCRRecorder:
         skipped: list[str] = []
         for path in sorted(out.glob("*.vcr")):
             try:
-                with open(path) as f:
+                with open(path, encoding="utf-8") as f:
                     for line in f:
                         line = line.strip()
                         if not line:
@@ -630,9 +623,9 @@ class VCRRecorder:
             dir=str(out), suffix=".tmp", prefix="manifest_"
         )
         try:
-            with os.fdopen(fd, "w") as f:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
                 json.dump(manifest, f, indent=2)
-            os.replace(tmp_path, str(manifest_path))
+            replace_file(tmp_path, str(manifest_path))
         except Exception:
             with contextlib.suppress(OSError):
                 os.unlink(tmp_path)
@@ -779,11 +772,11 @@ class VCRRecorder:
         payload = json_dumps_safe(header) + "\n"
         fd, tmp_path = tempfile.mkstemp(dir=str(self.output_dir), suffix=".tmp", prefix="vcr_")
         try:
-            with os.fdopen(fd, "w") as f:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
                 f.write(payload)
                 f.flush()
                 os.fsync(f.fileno())
-            os.replace(tmp_path, str(path))
+            replace_file(tmp_path, str(path))
         except BaseException:
             with contextlib.suppress(OSError):
                 os.unlink(tmp_path)
@@ -807,7 +800,7 @@ class VCRRecorder:
             json_dumps_safe({"type": "frame", "data": frame.model_dump()}) + "\n"
             for frame in self._frames
         )
-        with open(path, "a") as f:
+        with open(path, "a", encoding="utf-8") as f:
             f.write(payload)
             f.flush()
             os.fsync(f.fileno())

@@ -45,7 +45,7 @@ class TestScanRootUnderDotDir:
     def _make_project(self, tmp_path: Path) -> Path:
         proj = tmp_path / ".hidden" / "proj"
         (proj / "pkg").mkdir(parents=True)
-        (proj / "pkg" / "bad.py").write_text(SYNTAX_ERROR)
+        (proj / "pkg" / "bad.py").write_text(SYNTAX_ERROR, encoding="utf-8")
         return proj
 
     def test_absolute_path_under_hidden_dir(self, tmp_path: Path) -> None:
@@ -64,10 +64,10 @@ class TestScanRootUnderDotDir:
     def test_dot_dirs_inside_root_still_skipped(self, tmp_path: Path) -> None:
         proj = tmp_path / ".hidden" / "proj"
         (proj / ".cache").mkdir(parents=True)
-        (proj / ".cache" / "bad.py").write_text(SYNTAX_ERROR)
+        (proj / ".cache" / "bad.py").write_text(SYNTAX_ERROR, encoding="utf-8")
         (proj / "venv").mkdir()
-        (proj / "venv" / "bad.py").write_text(SYNTAX_ERROR)
-        (proj / "ok.py").write_text("x = 1\n")
+        (proj / "venv" / "bad.py").write_text(SYNTAX_ERROR, encoding="utf-8")
+        (proj / "ok.py").write_text("x = 1\n", encoding="utf-8")
         assert scan_directory(str(proj), SentinelConfig()) == EXIT_PASSED
 
     def test_cli_process_exit_code(self, tmp_path: Path) -> None:
@@ -76,7 +76,7 @@ class TestScanRootUnderDotDir:
             [sys.executable, "-m", "openhands_sentinel.cli", "scan", str(proj)],
             capture_output=True,
             text=True,
-            timeout=60,
+            timeout=60, encoding="utf-8", errors="replace",
         )
         assert proc.returncode != 0
         assert "PASSED" not in proc.stdout
@@ -93,7 +93,7 @@ class TestMissingOrEmptyTarget:
 
     def test_file_target_is_error(self, tmp_path: Path) -> None:
         f = tmp_path / "a.py"
-        f.write_text("x = 1\n")
+        f.write_text("x = 1\n", encoding="utf-8")
         assert scan_directory(str(f), SentinelConfig()) == EXIT_BAD_TARGET
 
     def test_watch_missing_directory(self, tmp_path: Path) -> None:
@@ -105,7 +105,7 @@ class TestMissingOrEmptyTarget:
     def test_no_python_files(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        (tmp_path / "README.md").write_text("hi\n")
+        (tmp_path / "README.md").write_text("hi\n", encoding="utf-8")
         assert scan_directory(str(tmp_path), SentinelConfig()) == EXIT_NO_FILES
         out = capsys.readouterr().out
         assert "No Python files found" in out
@@ -173,8 +173,10 @@ class TestQualifiedDuplicates:
         assert _rules(r, "duplicate_function") == []
 
     def test_cli_scan_methods_in_two_files_passes(self, tmp_path: Path) -> None:
-        (tmp_path / "a.py").write_text("class A:\n    def run(self):\n        return 1\n")
-        (tmp_path / "b.py").write_text("class B:\n    def run(self):\n        return 2\n")
+        (tmp_path / "a.py").write_text("class A:\n    def run(self):\n        return 1\n",
+                                       encoding="utf-8")
+        (tmp_path / "b.py").write_text("class B:\n    def run(self):\n        return 2\n",
+                                       encoding="utf-8")
         assert scan_directory(str(tmp_path), SentinelConfig()) == EXIT_PASSED
 
 
@@ -363,12 +365,12 @@ class TestAutoAnalyze:
 class TestFileEditAction:
     def test_str_replace_analyzed_from_disk_after_edit(self, tmp_path: Path) -> None:
         target = tmp_path / "mod.py"
-        target.write_text("x = 1\n")
+        target.write_text("x = 1\n", encoding="utf-8")
         s = _sentinel(tmp_path)
         s.attach(FakeStream())
         s._on_event(FileEditAction(str(target), old_str="x = 1", new_str="from os import *"))
         assert s.stats.files_analyzed == 0  # edit not applied yet
-        target.write_text("from os import *\n")  # runtime applies the edit
+        target.write_text("from os import *\n", encoding="utf-8")  # runtime applies the edit
         s._on_event(FileEditObservation(str(target)))
         assert s.stats.files_analyzed == 1
         assert s._results_history[-1].warning_count == 1

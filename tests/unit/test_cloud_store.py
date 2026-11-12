@@ -9,6 +9,7 @@ Validates:
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -44,6 +45,12 @@ from agent_vcr.workflows.backend import (
     create_workflow_backend,
 )
 
+
+def _var(name: str) -> str:
+    """An environment variable reference in the sandbox's shell (sh, or cmd.exe on Windows)."""
+    return f"%{name}%" if sys.platform == "win32" else f"${name}"
+
+
 # ===========================================================================
 # 1. Sandbox Runtime Tests
 # ===========================================================================
@@ -72,7 +79,9 @@ class TestLocalSandbox:
     def test_command_timeout(self, tmp_path: Path) -> None:
         config = SandboxConfig(timeout_seconds=0.3)
         with LocalSandbox(config=config, workdir=tmp_path / "sandbox") as sb:
-            res = sb.execute_command("sleep 2", timeout=0.2)
+            # No coreutils `sleep` on Windows: the interpreter runs in sh and cmd.exe alike.
+            res = sb.execute_command(f'"{sys.executable}" -c "import time; time.sleep(2)"',
+                                     timeout=0.2)
             assert res.timed_out
             assert not res.success
             assert res.exit_code == -1
@@ -82,12 +91,13 @@ class TestLocalSandbox:
     def test_environment_variables(self, tmp_path: Path) -> None:
         config = SandboxConfig(env={"SANDBOX_VAR": "vcr_active"})
         with LocalSandbox(config=config, workdir=tmp_path / "sandbox") as sb:
-            res = sb.execute_command("echo $SANDBOX_VAR")
+            res = sb.execute_command(f"echo {_var('SANDBOX_VAR')}")
             assert res.success
             assert "vcr_active" in res.stdout
 
             # Test per-command override
-            res_override = sb.execute_command("echo $EXTRA_VAR", env={"EXTRA_VAR": "custom_override"})
+            res_override = sb.execute_command(f"echo {_var('EXTRA_VAR')}",
+                                              env={"EXTRA_VAR": "custom_override"})
             assert res_override.success
             assert "custom_override" in res_override.stdout
 
@@ -166,7 +176,7 @@ class TestLocalSandbox:
 
     def test_symlink_escape_protection(self, tmp_path: Path) -> None:
         outside_file = tmp_path / "outside_secret.txt"
-        outside_file.write_text("secret_password_123")
+        outside_file.write_text("secret_password_123", encoding="utf-8")
 
         with LocalSandbox(workdir=tmp_path / "sandbox") as sb:
             # Create symlink pointing to external file
