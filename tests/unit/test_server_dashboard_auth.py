@@ -7,6 +7,7 @@ state-changing requests must come from the server's own origin (CSRF guard).
 
 from __future__ import annotations
 
+import logging
 import re
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,8 @@ from starlette.websockets import WebSocketDisconnect
 import agent_vcr.server as server_module
 from agent_vcr.recorder import VCRRecorder
 from agent_vcr.server import DASHBOARD_COOKIE, VCRServer
+
+COOKIE = f"{DASHBOARD_COOKIE}_8000"  # per port; the default port in tests
 
 ADMIN = "admin-secret"
 AUTH = "auth-secret"
@@ -74,7 +77,7 @@ class TestCookieSignIn:
         assert resp.headers["location"] == "/dashboard/"
         assert token not in resp.headers["location"]
         cookie = resp.headers["set-cookie"]
-        assert cookie.startswith(f"{DASHBOARD_COOKIE}=")
+        assert cookie.startswith(f"{COOKIE}=")
         assert token not in cookie  # an opaque signed value, never the token itself
         assert "HttpOnly" in cookie
         assert "SameSite=strict" in cookie
@@ -94,7 +97,7 @@ class TestCookieSignIn:
         other = _client(tmp_path / "b")
         posted = other.post("/dashboard/login", data={"token": ADMIN}, headers=_origin(other),
                             follow_redirects=False)
-        assert posted.status_code == 303 and DASHBOARD_COOKIE in posted.headers["set-cookie"]
+        assert posted.status_code == 303 and COOKIE in posted.headers["set-cookie"]
         assert other.get("/api/sessions").status_code == 200
 
     def test_login_page_lets_the_browser_send_its_origin(self, tmp_path: Path) -> None:
@@ -141,14 +144,14 @@ class TestCookieSignIn:
                                                      monkeypatch: pytest.MonkeyPatch) -> None:
         client = _client(tmp_path)
         _sign_in(client)
-        value = client.cookies[DASHBOARD_COOKIE]
+        value = client.cookies[COOKIE]
         version, expires, sig = value.split(".")
-        client.cookies.set(DASHBOARD_COOKIE, f"{version}.{int(expires) + 999}.{sig}")
+        client.cookies.set(COOKIE, f"{version}.{int(expires) + 999}.{sig}")
         assert client.get("/api/sessions").status_code == 401
-        client.cookies.set(DASHBOARD_COOKIE, "garbage")
+        client.cookies.set(COOKIE, "garbage")
         assert client.get("/api/sessions").status_code == 401
 
-        client.cookies.set(DASHBOARD_COOKIE, value)
+        client.cookies.set(COOKIE, value)
         assert client.get("/api/sessions").status_code == 200
         real_time = server_module.time.time
         monkeypatch.setattr(server_module.time, "time",
@@ -159,7 +162,7 @@ class TestCookieSignIn:
         first = _client(tmp_path / "a")
         _sign_in(first)
         second = _client(tmp_path / "b")
-        second.cookies.set(DASHBOARD_COOKIE, first.cookies[DASHBOARD_COOKIE])
+        second.cookies.set(COOKIE, first.cookies[COOKIE])
         assert second.get("/api/sessions").status_code == 401
 
     def test_logout_clears_the_cookie(self, tmp_path: Path) -> None:
@@ -167,7 +170,7 @@ class TestCookieSignIn:
         _sign_in(client)
         resp = client.get("/dashboard/logout", follow_redirects=False)
         assert resp.status_code == 303 and resp.headers["location"] == "/dashboard/login"
-        assert f'{DASHBOARD_COOKIE}=""' in resp.headers["set-cookie"]
+        assert f'{COOKIE}=""' in resp.headers["set-cookie"]
         assert client.get("/api/sessions").status_code == 401
 
     def test_tokenless_local_mode_needs_no_sign_in(self, tmp_path: Path) -> None:
@@ -250,3 +253,113 @@ def test_built_bundle_uses_wss_on_https_pages() -> None:
     js = bundles[0].read_text(encoding="utf-8")
     assert "`ws://${window.location.host}`" not in js
     assert "${location.protocol===`https:`?`wss`:`ws`}://${window.location.host}" in js
+
+
+class TestReviewFixes:
+    def test_https_cookie_uses_the_host_prefix(self, tmp_path: Path) -> None:
+        client = _client(tmp_path, base_url="https://vcr.example.test")
+        cookie = _sign_in(client).headers["set-cookie"]
+        assert cookie.startswith(f"__Host-{COOKIE}=")
+        assert "Secure" in cookie and "Path=/" in cookie and "Domain" not in cookie
+        assert client.get("/api/sessions").status_code == 200
+        resp = client.get("/dashboard/logout", follow_redirects=False)
+        assert any(c.startswith(f'__Host-{COOKIE}=""') and "Secure" in c
+                   for c in resp.headers.get_list("set-cookie"))
+
+    def test_two_servers_on_one_host_keep_separate_sessions(self, tmp_path: Path) -> None:
+        first = _client(tmp_path / "a", port=8000)
+        second = _client(tmp_path / "b", port=8001)
+        _sign_in(first)
+        _sign_in(second)
+        jar = {**dict(first.cookies), **dict(second.cookies)}  # one browser, both cookies
+        assert set(jar) == {f"{DASHBOARD_COOKIE}_8000", f"{DASHBOARD_COOKIE}_8001"}
+        for client in (first, second):
+            client.cookies.clear()
+            for name, value in jar.items():
+                client.cookies.set(name, value)
+            assert client.get("/api/sessions").status_code == 200
+
+    @pytest.mark.parametrize("value", ["tök", "v1.9999999999.ä" + "0" * 63, "v1.1." + "Z" * 64])
+    def test_malformed_and_non_ascii_cookies_are_401_not_500(self, tmp_path: Path,
+                                                             value: str) -> None:
+        client = _client(tmp_path)
+        raw: Any = f"{COOKIE}={value}".encode()
+        assert client.get("/api/sessions", headers={"cookie": raw}).status_code == 401
+        entry = client.get("/dashboard/", headers={"cookie": raw}, follow_redirects=False)
+        assert entry.status_code == 303
+        with pytest.raises(WebSocketDisconnect), client.websocket_connect(
+            "/ws/live", headers={"cookie": raw, **_origin(client)}
+        ) as ws:
+            ws.receive_json()
+
+    def test_cors_preflight_reaches_the_cors_layer(self, tmp_path: Path) -> None:
+        client = _client(tmp_path, allowed_origins=["https://ui.example.com"])
+        preflight = {"Access-Control-Request-Method": "POST",
+                     "Access-Control-Request-Headers": "authorization,content-type"}
+        ok = client.options("/api/sessions/sess-1/resume",
+                            headers={"Origin": "https://ui.example.com", **preflight})
+        assert ok.status_code == 200
+        assert ok.headers["access-control-allow-origin"] == "https://ui.example.com"
+        refused = client.options("/api/sessions", headers={"Origin": "https://evil.example",
+                                                           **preflight})
+        assert refused.status_code == 400  # refused by CORS, not a 401
+        # A plain OPTIONS (not a preflight) still needs authentication.
+        assert client.options("/api/sessions").status_code == 401
+
+    def test_failed_sign_ins_are_rate_limited_per_client(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        client = _client(tmp_path)
+        for _ in range(server_module.SIGN_IN_FAILURE_LIMIT):
+            assert _sign_in(client, "wrong").status_code == 401
+        blocked = _sign_in(client)  # even the right token, until the window passes
+        assert blocked.status_code == 429 and "set-cookie" not in blocked.headers
+        assert blocked.headers["retry-after"] == "60"
+        posted = client.post("/dashboard/login", data={"token": ADMIN}, headers=_origin(client),
+                             follow_redirects=False)
+        assert posted.status_code == 429
+
+        real = server_module.time.monotonic
+        monkeypatch.setattr(server_module.time, "monotonic",
+                            lambda: real() + server_module.SIGN_IN_WINDOW_S + 1)
+        assert _sign_in(client).status_code == 303
+
+    def test_successful_sign_ins_are_not_counted(self, tmp_path: Path) -> None:
+        client = _client(tmp_path)
+        for _ in range(server_module.SIGN_IN_FAILURE_LIMIT + 5):
+            assert _sign_in(client).status_code == 303
+
+
+class TestAccessLogRedaction:
+    def test_uvicorn_access_record_is_redacted(self) -> None:
+        record = logging.LogRecord(
+            "uvicorn.access", logging.INFO, __file__, 1, '%s - "%s %s HTTP/%s" %d',
+            ("127.0.0.1:5000", "GET", f"/dashboard?token={ADMIN}&x=1", "1.1", 303), None,
+        )
+        assert server_module.RedactTokenFilter().filter(record)
+        message = record.getMessage()
+        assert ADMIN not in message
+        assert "/dashboard?token=***&x=1" in message
+
+    def test_server_installs_the_filter_on_uvicorn_loggers(self, tmp_path: Path) -> None:
+        _server(tmp_path, admin_token=ADMIN)
+        _server(tmp_path / "again", admin_token=ADMIN)  # idempotent
+        for name in ("uvicorn.access", "uvicorn.error"):
+            filters = logging.getLogger(name).filters
+            assert sum(isinstance(f, server_module.RedactTokenFilter) for f in filters) == 1
+
+        # A handler on the logger itself: uvicorn's own config may stop propagation.
+        seen: list[str] = []
+        handler = logging.Handler()
+        handler.emit = lambda record: seen.append(record.getMessage())  # type: ignore[method-assign]
+        target = logging.getLogger("uvicorn.error")
+        previous = target.level
+        target.addHandler(handler)
+        target.setLevel(logging.INFO)
+        try:
+            target.info('%s - "WebSocket %s" [accepted]', "127.0.0.1:1",
+                        f"/ws/live?token={ADMIN}")
+        finally:
+            target.removeHandler(handler)
+            target.setLevel(previous)
+        assert seen and ADMIN not in seen[0] and "token=***" in seen[0]

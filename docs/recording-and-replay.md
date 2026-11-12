@@ -249,6 +249,9 @@ print(VCRPlayer.load(".vcr/overnight.vcr").verify_integrity()["ok"])   # True
   rewrite its header and never needs the whole run in memory.
 - `AsyncVCRRecorder(max_cached_frames=...)` works the same; use `await rec.load_frames()` to
   read evicted frames off the event loop.
+- In bounded mode states are stored the way the file stores them (a JSON round trip): `{1: x}`
+  comes back as `{"1": x}` and tuples as lists, whether a frame is still cached or not, the
+  same as `VCRPlayer` returns. `get_frames()` returns a snapshot list.
 - The default stays `None` (unbounded): small runs behave exactly as before, and code that calls
   `get_frames()` in a loop never turns into repeated file reads without you opting in.
 
