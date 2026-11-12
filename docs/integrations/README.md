@@ -77,7 +77,8 @@ Install the extra that matches your framework:
 pip install ai-agent-vcr                 # raw Python, Claude Code recording, Sentinel
 pip install "ai-agent-vcr[langgraph]"    # LangGraph
 pip install "ai-agent-vcr[crewai]"       # CrewAI
-pip install "ai-agent-vcr[openhands]"    # OpenHands (legacy openhands-ai event stream)
+pip install ai-agent-vcr openhands-sdk openhands-tools   # OpenHands SDK 1.x
+pip install "ai-agent-vcr[openhands]"    # OpenHands legacy V0 (openhands-ai event stream)
 ```
 
 ## Raw Python
@@ -247,27 +248,67 @@ garbage-collected. Use `with` or `attach()`.
 
 ## OpenHands
 
-> Needs OpenHands installed. Which package depends on the piece — see below.
+> Targets the current **OpenHands SDK 1.x** (`pip install openhands-sdk openhands-tools`,
+> verified against 1.7.3). The legacy V0 `openhands-ai` event stream still works through
+> `attach()` — see the end of this section.
 
-- **Rollback for any repo-writing agent:** `ACIDWorkspace` gives your agent a git-branch
-  transaction with savepoints and rollback. Full guide: [acid-workspace.md](../acid-workspace.md).
+- **Record every tool call:** `VCRRuntime` is a conversation callback that writes one frame per
+  tool call — arguments, output, exit code, error, latency.
 - **Stop destructive commands before they run:** the airbag snapshots the workspace before every
   mutating action and blocks the irreversible ones. Full guide and hook install:
   [airbag.md](../airbag.md).
-- **Code-quality guard:** Sentinel attaches to the (legacy `openhands-ai`) event stream and checks
-  every file write. Guide: [sentinel.md](../sentinel.md).
+- **Code-quality guard:** Sentinel checks every file `file_editor` writes and, on a blocker,
+  rejects the agent's next action until the file is fixed. Guide: [sentinel.md](../sentinel.md).
+- **Rollback for any repo-writing agent:** `ACIDWorkspace` gives your agent a git-branch
+  transaction with savepoints and rollback. Full guide: [acid-workspace.md](../acid-workspace.md).
 
-In-process airbag for the OpenHands SDK (`openhands-sdk` 1.x; `agent`, `ws` are yours):
+All three callbacks together (`agent`, `ws` are yours):
 
 ```python
 from openhands.sdk import Conversation
 
 from agent_vcr.integrations.openhands_airbag import AirbagCallback, protect
+from agent_vcr.integrations.openhands_hook import VCRRuntime
+from openhands_sentinel import Sentinel
 
-airbag = AirbagCallback()
-conversation = Conversation(agent=agent, workspace=ws, callbacks=[airbag])
-protect(conversation, airbag)   # blocks irreversible actions; `vcr undo` reverts the rest
+airbag = AirbagCallback()                 # snapshot first, block irreversible commands
+vcr = VCRRuntime(session_id="fix-login")  # one frame per tool call
+sentinel = Sentinel()                     # AST check after every file_editor write
+conversation = Conversation(agent=agent, workspace=ws, callbacks=[airbag, vcr, sentinel])
+protect(conversation, airbag)
+sentinel.bind(conversation)
+
+conversation.send_message("Fix the failing login test")
+conversation.run()
+
+print(vcr.save())          # .vcr/fix-login.vcr
+print(sentinel.save())     # .vcr/sentinel-openhands.vcr
 ```
+
+OpenHands calls every callback synchronously, *before* an action runs and again when its result
+arrives. `VCRRuntime` pairs each `ActionEvent` with its result by `tool_call_id`:
+
+| Frame field | What's in it |
+| --- | --- |
+| `node_name` | `openhands:<tool>` — `openhands:terminal`, `openhands:file_editor`, ... |
+| `input_state` | `tool`, `args` (the action, e.g. `command` or `command`/`path`/`file_text`), `tool_call_id`, `action_id`, `thought` |
+| `output_state.status` | `ok`, `error` (tool error / `AgentErrorEvent`), `rejected` (`UserRejectObservation`), `no_observation` |
+| `output_state` | `output` (observation text), `exit_code` (terminal), `observation` (`path`, `new_content`, ...) |
+| `metadata` | `latency_ms`; `error_type` / `error_message` for errors and rejections |
+
+- Frames over 50 KB are logged and replaced by a 1000-character preview that keeps `tool`,
+  `status` and `exit_code` (`max_frame_bytes=`, `truncate_oversized=False` to only warn).
+- `save()` also records actions that never got a result (the tool crashed) as `no_observation`.
+- If the recorder you pass already has an active session, frames are appended to it — give
+  `VCRRuntime` and `Sentinel` the same `VCRRecorder` to get one file.
+- Recording problems are logged, never raised into the agent run. Message, state and system
+  events are not recorded.
+
+**Legacy V0 (`openhands-ai`, `pip install "ai-agent-vcr[openhands]"`):** call
+`VCRRuntime().attach(runtime.event_stream)` instead. Every event on the stream becomes its own
+frame (`openhands:CmdRunAction`, `openhands:CmdOutputObservation`, ...), with the same size
+guardrail. `attach()` refuses an SDK conversation: SDK callbacks can only be passed when the
+`Conversation` is created.
 
 ## Claude Code — record every session 🎥
 
@@ -315,6 +356,10 @@ The JSON schemas in [`../../schemas/`](../../schemas/) are the language-neutral 
 
 - **Frameworks change their callbacks.** Payloads come from LangGraph and CrewAI; re-check your
   recordings when you upgrade them.
+- **OpenHands SDK: local conversations only.** `VCRRuntime` and Sentinel were verified with a
+  local `Conversation` (callbacks in the same process). A `RemoteConversation` against an agent
+  server is untested. `latency_ms` is measured between callbacks, so it is the tool's wall time
+  plus a little SDK overhead, not a profiler reading.
 - **Recording is not rollback.** These adapters capture state; undoing file changes is
   [ACIDWorkspace](../acid-workspace.md) or the [airbag](../airbag.md).
 - **The CrewAI event-bus listener is process-wide**, so two crews running at once in one process
@@ -333,7 +378,9 @@ The JSON schemas in [`../../schemas/`](../../schemas/) are the language-neutral 
 | LangGraph | `VCRLangGraph(rec).wrap_graph(builder)` / `.wrap_node(name, fn)` | `[langgraph]` |
 | CrewAI | `VCRCrewAI(rec).kickoff(crew)` / `kickoff_async` / `kickoff_for_each` | `[crewai]` |
 | CrewAI | `with VCRCrewCallback(rec): crew.kickoff()` | `[crewai]` |
+| OpenHands SDK | `Conversation(..., callbacks=[VCRRuntime()])` | `openhands-sdk` |
 | OpenHands SDK | `protect(conversation, AirbagCallback())` | `openhands-sdk` |
+| OpenHands V0 | `VCRRuntime().attach(runtime.event_stream)` | `[openhands]` |
 | Claude Code | `vcr init --claude-code` | — |
 | n8n / HTTP | `POST /api/workflows/{name}/trigger` | `[dashboard]` |
 

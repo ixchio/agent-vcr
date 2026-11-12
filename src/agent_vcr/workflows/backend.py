@@ -2,18 +2,19 @@
 
 Provides abstract WorkflowBackend supporting:
 - LocalWorkflowBackend (in-process durable execution on the VCR kernel)
-- InngestWorkflowBackend (distributed event-driven dispatch with step memoization for LLMs)
+- InngestWorkflowBackend — a *test double* only (``simulate=True``); a real Inngest
+  backend is not implemented and raises InngestBackendUnavailable
 """
 
 from __future__ import annotations
 
 import abc
 import logging
-import os
 import uuid
 from typing import Any
 
 from agent_vcr.workflows.models import (
+    CompletedCompensation,
     RunRecord,
     RunStatus,
     WorkflowDef,
@@ -22,15 +23,6 @@ from agent_vcr.workflows.models import (
 from agent_vcr.workflows.store import RunStore
 
 logger = logging.getLogger(__name__)
-
-# Check for Inngest SDK
-_INNGEST_IMPORT_ERROR: ImportError | None = None
-try:
-    import inngest  # type: ignore[import-not-found]
-except ImportError as exc:
-    _INNGEST_IMPORT_ERROR = exc
-    inngest = None  # type: ignore[assignment]
-
 
 class WorkflowBackend(abc.ABC):
     """Abstract pluggable workflow execution backend."""
@@ -130,11 +122,36 @@ class LocalWorkflowBackend(WorkflowBackend):
         return self.engine.step_once(run_id)
 
 
-class InngestWorkflowBackend(WorkflowBackend):
-    """Distributed workflow backend using Inngest (inngest >= 0.5.0).
+INNGEST_UNAVAILABLE = (
+    "The Inngest workflow backend is not available yet. The previous adapter only sent an "
+    "'agent_vcr/<name>.triggered' event: nothing executed the workflow's steps, and cancel "
+    "skipped compensation. Use create_workflow_backend('local') (LocalWorkflowBackend), which "
+    "runs steps durably in-process with compensation. For tests, "
+    "InngestWorkflowBackend(simulate=True) is a test double that records the events it would "
+    "send and never executes or sends anything."
+)
 
-    Uses step memoization so non-deterministic LLM/agent responses are preserved
-    across retries and distributed worker recovery.
+
+class InngestBackendUnavailable(NotImplementedError):
+    """Raised when a real (non-simulated) Inngest backend is requested."""
+
+    def __init__(self, message: str = INNGEST_UNAVAILABLE) -> None:
+        super().__init__(message)
+
+
+class InngestWorkflowBackend(WorkflowBackend):
+    """Test double for a future Inngest backend — ``simulate=True`` only.
+
+    A real Inngest backend is not implemented: constructing one without
+    ``simulate=True`` (or with a ``client``) raises
+    :class:`InngestBackendUnavailable`.
+
+    The double never executes steps and never contacts Inngest. It creates run
+    records, appends the events a real backend would send to
+    ``dispatched_events``, and memoizes step outputs you hand it (as if a remote
+    worker had run the step). ``cancel_run`` goes through the local
+    :class:`~agent_vcr.workflows.engine.WorkflowEngine`, so compensations owed by
+    memoized steps run before the run is marked ABORTED.
     """
 
     def __init__(
@@ -145,27 +162,27 @@ class InngestWorkflowBackend(WorkflowBackend):
         run_store: RunStore | None = None,
         simulate: bool = False,
         vcr_dir: str = ".vcr",
+        engine: Any | None = None,
         **kwargs: Any,
     ) -> None:
+        del event_key, kwargs
+        if not simulate or client is not None:
+            raise InngestBackendUnavailable()
+        from agent_vcr.workflows.engine import WorkflowEngine
+
         self.app_id = app_id
-        self.event_key = event_key or os.environ.get("INNGEST_EVENT_KEY")
         self.vcr_dir = vcr_dir
-        self.runs = run_store or RunStore(directory=f"{vcr_dir}/workflow_runs")
-        self.simulate = simulate
+        self.simulate = True
+        self.client = None
+        if engine is not None:
+            self.engine = engine
+            self.runs = engine.runs
+        else:
+            self.runs = run_store or RunStore(directory=f"{vcr_dir}/workflow_runs")
+            self.engine = WorkflowEngine(run_store=self.runs, vcr_dir=vcr_dir)
         self.dispatched_events: list[dict[str, Any]] = []
         self._registered_functions: dict[str, Any] = {}
         self._memoized_steps: dict[tuple[str, str], Any] = {}
-
-        if client is not None:
-            self.client = client
-        elif self.simulate or _INNGEST_IMPORT_ERROR is not None:
-            self.client = None
-        else:
-            inngest_mod = getattr(inngest, "Inngest", None)
-            if inngest_mod is not None:
-                self.client = inngest_mod(app_id=app_id, event_key=self.event_key)
-            else:
-                self.client = None
 
     def format_event(
         self,
@@ -173,7 +190,7 @@ class InngestWorkflowBackend(WorkflowBackend):
         inputs: dict[str, Any] | None = None,
         run_id: str | None = None,
     ) -> dict[str, Any]:
-        """Format an Inngest event payload for a workflow trigger."""
+        """Format the Inngest event payload a real backend would send."""
         rid = run_id or str(uuid.uuid4())
         return {
             "name": f"agent_vcr/{workflow.name}.triggered",
@@ -188,31 +205,37 @@ class InngestWorkflowBackend(WorkflowBackend):
         }
 
     def register_workflow(self, workflow: WorkflowDef) -> None:
-        """Build Inngest function definition with step memoization."""
+        """Record the function a real backend would register (id, trigger, steps)."""
         fn_id = f"vcr-{workflow.name}-v{workflow.version}"
-        trigger_event = f"agent_vcr/{workflow.name}.triggered"
-
-        # Record step plan for memoized execution
         self._registered_functions[fn_id] = {
             "id": fn_id,
-            "trigger": trigger_event,
+            "trigger": f"agent_vcr/{workflow.name}.triggered",
             "steps": [step.id for step in workflow.steps],
         }
-        logger.debug("Registered Inngest function %s for event %s", fn_id, trigger_event)
 
     def memoize_step(self, run_id: str, step_id: str, output: Any) -> None:
-        """Store memoized step output for deterministic recovery and replay."""
-        self._memoized_steps[(run_id, step_id)] = output
+        """Mark a top-level step as done elsewhere with ``output`` (idempotent).
+
+        If the step declares ``compensate``, the compensation becomes owed, exactly
+        as when the engine commits the step itself.
+        """
         record = self.get_run(run_id)
-        if record is not None and record.status == RunStatus.RUNNING:
-            out_dict = output if isinstance(output, dict) else {"result": output}
-            record.outputs[step_id] = out_dict
-            if step_id not in record.completed_top_steps:
-                record.completed_top_steps.append(step_id)
-            self.runs.persist(record)
+        if record is None or record.status != RunStatus.RUNNING:
+            self._memoized_steps[(run_id, step_id)] = output
+            return
+        if step_id in record.completed_top_steps:
+            return  # already memoized: first output wins
+        self._memoized_steps[(run_id, step_id)] = output
+        out_dict = output if isinstance(output, dict) else {"result": output}
+        record.outputs[step_id] = out_dict
+        record.completed_top_steps.append(step_id)
+        step = next((s for s in record.definition.steps if s.id == step_id), None)
+        if step is not None and step.compensate is not None:
+            record.compensations.append(_owed_compensation(record, step))
+        self.runs.persist(record)
 
     def get_memoized_step(self, run_id: str, step_id: str) -> Any | None:
-        """Retrieve memoized step output if previously executed."""
+        """Retrieve memoized step output if previously recorded."""
         if (run_id, step_id) in self._memoized_steps:
             return self._memoized_steps[(run_id, step_id)]
         record = self.get_run(run_id)
@@ -226,37 +249,16 @@ class InngestWorkflowBackend(WorkflowBackend):
         inputs: dict[str, Any] | None = None,
         tags: list[str] | None = None,
     ) -> str:
-        """Send event to Inngest to trigger distributed execution."""
+        """Create the run record and record the trigger event (nothing is sent or run)."""
+        del tags
+        # Steps run elsewhere, so their refs need not exist in the local gateway;
+        # only the DAG shape is checked.
+        self.engine._check_dag(workflow)
         self.register_workflow(workflow)
         record = self.runs.create(workflow, inputs)
-        event_payload = self.format_event(workflow, inputs, run_id=record.run_id)
-
-        self.dispatched_events.append(event_payload)
-
-        if self.client is not None and hasattr(self.client, "send"):
-            try:
-                event_cls = (
-                    getattr(inngest, "Event", None) if inngest is not None else None
-                )
-                if event_cls is not None:
-                    evt = event_cls(
-                        name=event_payload["name"],
-                        data=event_payload["data"],
-                        user=event_payload.get("user"),
-                    )
-                    self.client.send(evt)
-                else:
-                    self.client.send(event_payload)
-            except Exception as exc:
-                logger.error("Failed to send event to Inngest: %s", exc)
-                if not self.simulate:
-                    raise
-
-        logger.info(
-            "Dispatched workflow %s (run %s) via Inngest event",
-            workflow.name,
-            record.run_id,
-        )
+        self.dispatched_events.append(self.format_event(workflow, inputs, run_id=record.run_id))
+        logger.info("Simulated Inngest dispatch of %s (run %s); no step was executed",
+                    workflow.name, record.run_id)
         return record.run_id
 
     def get_run(self, run_id: str) -> RunRecord | None:
@@ -266,29 +268,24 @@ class InngestWorkflowBackend(WorkflowBackend):
             return None
 
     def cancel_run(self, run_id: str) -> bool:
+        """Cancel through the engine: owed compensations run, then ABORTED.
+
+        Returns False for unknown or already-terminal runs.
+        """
         try:
-            record = self.runs.load(run_id)
-            if record.status == RunStatus.RUNNING:
-                self.runs.request_cancel(run_id, "Cancelled via Inngest backend")
-                record.status = RunStatus.ABORTED
-                record.cancelled = True
-                record.error = "Cancelled via Inngest backend"
-                self.runs.persist(record)
-                return True
-            return False
+            return bool(self.engine.cancel(run_id, "Cancelled via Inngest backend"))
         except (KeyError, FileNotFoundError):
             return False
 
     def resume_run(self, run_id: str) -> RunRecord | None:
         try:
             record = self.runs.load(run_id)
-            if record.status == RunStatus.RUNNING:
-                # Re-dispatch event to resume steps
-                event_payload = self.format_event(record.definition, record.inputs, run_id=run_id)
-                self.dispatched_events.append(event_payload)
-            return record
         except (KeyError, FileNotFoundError):
             return None
+        if record.status == RunStatus.RUNNING:
+            self.dispatched_events.append(
+                self.format_event(record.definition, record.inputs, run_id=run_id))
+        return record
 
     def dispatch_step(
         self,
@@ -297,7 +294,7 @@ class InngestWorkflowBackend(WorkflowBackend):
         inputs: dict[str, Any],
         output: Any | None = None,
     ) -> dict[str, Any]:
-        """Format and dispatch an Inngest memoized step call."""
+        """Record the memoized step call a real backend would make."""
         cached_output = self.get_memoized_step(run_id, step.id)
         if output is not None and cached_output is None:
             self.memoize_step(run_id, step.id, output)
@@ -321,6 +318,21 @@ class InngestWorkflowBackend(WorkflowBackend):
         return step_payload
 
 
+def _owed_compensation(record: RunRecord, step: WorkflowStep) -> CompletedCompensation:
+    """The compensation a committed top-level step owes (inputs resolved like the engine)."""
+    from agent_vcr.workflows import engine as eng
+
+    assert step.compensate is not None
+    ctx = eng._RunContext(
+        run_id=record.run_id, outputs=dict(record.outputs), inputs=dict(record.inputs),
+        budget=eng.BudgetTracker(), known_steps=eng._collect_ids(record.definition.steps),
+        loop_vars=eng._collect_loop_vars(record.definition.steps))
+    return CompletedCompensation(
+        step_path=step.id, ref=step.compensate.ref, kind=step.compensate.kind,
+        inputs=eng._resolve_inputs(step.compensate.inputs, ctx, eng._EMPTY_SCOPE),
+        timeout_s=step.compensate.timeout_s or step.timeout_s)
+
+
 def create_workflow_backend(
     backend: str = "auto",
     engine: Any | None = None,
@@ -333,31 +345,23 @@ def create_workflow_backend(
     """Create a workflow execution backend.
 
     Supported backends:
-    - 'auto': chooses Inngest if inngest_client or INNGEST_EVENT_KEY is provided; otherwise LocalWorkflowBackend.
-    - 'local': LocalWorkflowBackend.
-    - 'inngest': InngestWorkflowBackend.
+    - 'auto' / 'local' / 'engine' / 'in_process': LocalWorkflowBackend.
+    - 'inngest': not available yet — raises :class:`InngestBackendUnavailable`
+      unless ``simulate_inngest=True`` (or ``simulate=True``), which returns the
+      :class:`InngestWorkflowBackend` test double.
     """
     target = backend.lower()
-    if target == "auto":
-        has_inngest_cfg = bool(inngest_client or os.environ.get("INNGEST_EVENT_KEY"))
-        try:
-            import inngest  # noqa: F401
-            inngest_available = True
-        except ImportError:
-            inngest_available = False
-
-        target = "inngest" if (inngest_available and has_inngest_cfg) else "local"
-
     if target == "inngest":
         simulate = bool(simulate_inngest or kwargs.pop("simulate", False))
+        if not simulate or inngest_client is not None:
+            raise InngestBackendUnavailable()
         return InngestWorkflowBackend(
-            client=inngest_client,
             run_store=run_store,
-            simulate=simulate,
+            simulate=True,
             vcr_dir=vcr_dir,
+            engine=engine,
             **kwargs,
         )
-    elif target in ("local", "engine", "in_process"):
+    if target in ("auto", "local", "engine", "in_process"):
         return LocalWorkflowBackend(engine=engine, run_store=run_store, vcr_dir=vcr_dir)
-    else:
-        raise ValueError(f"Unknown workflow backend: {backend}")
+    raise ValueError(f"Unknown workflow backend: {backend}")

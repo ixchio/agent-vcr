@@ -456,10 +456,45 @@ In Python: `Scheduler(".vcr/schedules").run_pending(engine, WorkflowRegistry().g
 | Backend | What you get |
 |---|---|
 | `LocalWorkflowBackend` (default) | Runs in your process through `WorkflowEngine`. Everything on this page. |
-| `InngestWorkflowBackend` | A thin adapter (`pip install "ai-agent-vcr[inngest]"`). `dispatch()` creates the run file and sends an `agent_vcr/<name>.triggered` event. `memoize_step()` / `get_memoized_step()` keep a step's output so a retried worker doesn't call the model again. **It doesn't run your steps:** you write the Inngest function. Its `cancel_run()` marks the run aborted **without** compensating. |
+| `InngestWorkflowBackend` | **Not available yet.** `create_workflow_backend("inngest")` raises `InngestBackendUnavailable` (a `NotImplementedError`). The old adapter only sent a trigger event — nothing ran your steps, and its cancel skipped compensation — so it now fails loudly instead. |
 
-`create_workflow_backend("auto")` picks Inngest only when the SDK is installed *and* an
-`inngest_client` or `INNGEST_EVENT_KEY` is present. Otherwise you get the local backend.
+```python
+from agent_vcr.superagent import ToolGateway
+from agent_vcr.workflows import WorkflowDef, WorkflowEngine, WorkflowStep, create_workflow_backend
+
+gateway = ToolGateway()
+
+
+@gateway.tool("ping")
+def ping() -> dict:
+    return {"pong": True}
+
+
+wf = WorkflowDef(name="ping", steps=[WorkflowStep(id="p", ref="ping")])
+engine = WorkflowEngine(gateway)
+backend = create_workflow_backend("local", engine=engine)  # same as "auto"
+record = backend.dispatch(wf)
+print(record.status.value, backend.cancel_run(record.run_id))
+# committed False   (already finished; a running run is compensated, then aborted)
+
+try:
+    create_workflow_backend("inngest")
+except NotImplementedError as err:
+    print(type(err).__name__)
+# InngestBackendUnavailable
+engine.shutdown()
+```
+
+`"auto"` always gives you the local backend, even with `INNGEST_EVENT_KEY` set.
+`cancel_run()` goes through `engine.cancel()`: owed compensations run before the run is marked
+`aborted`.
+
+For tests only, `InngestWorkflowBackend(simulate=True)` (or
+`create_workflow_backend("inngest", simulate=True)`) is a **test double**. It never executes a
+step and never contacts Inngest: `dispatch()` creates the run file and appends the event a real
+backend would send to `dispatched_events`; `memoize_step(run_id, step_id, output)` marks a step
+done as if a remote worker ran it (first output wins, and its `compensate` becomes owed);
+`cancel_run()` runs those compensations through the engine. Passing a `client` raises.
 
 Webhook-style starts: `engine.trigger(workflow, inputs, secret=...)` checks the secret of any
 `webhook` trigger in the definition (constant-time compare) and raises `PermissionError` on a
@@ -478,7 +513,8 @@ mismatch. `vcr-server` exposes workflows over HTTP; see the [dashboard guide](..
   only.
 - **No CLI cancel, and approvals outside `vcr workflow run` are always denied** unless you
   drive the engine from Python.
-- **The Inngest backend is an adapter, not an executor.**
+- **No distributed execution.** The Inngest backend is not available yet; everything runs in
+  your process through `WorkflowEngine`.
 - **Local files, one machine.** Runs live in `.vcr/workflow_runs/`. Two engines resuming the same
   run in different processes aren't protected from each other. Inside one engine, a second
   drive of a live run raises `RuntimeError`.
