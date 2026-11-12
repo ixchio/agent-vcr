@@ -341,16 +341,25 @@ class TestAccessLogRedaction:
         assert ADMIN not in message
         assert "/dashboard?token=***&x=1" in message
 
-    def test_server_installs_the_filter_on_uvicorn_loggers(
-        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
-    ) -> None:
+    def test_server_installs_the_filter_on_uvicorn_loggers(self, tmp_path: Path) -> None:
         _server(tmp_path, admin_token=ADMIN)
         _server(tmp_path / "again", admin_token=ADMIN)  # idempotent
         for name in ("uvicorn.access", "uvicorn.error"):
             filters = logging.getLogger(name).filters
             assert sum(isinstance(f, server_module.RedactTokenFilter) for f in filters) == 1
-        with caplog.at_level(logging.INFO, logger="uvicorn.error"):
-            logging.getLogger("uvicorn.error").info(
-                '%s - "WebSocket %s" [accepted]', "127.0.0.1:1", f"/ws/live?token={ADMIN}"
-            )
-        assert ADMIN not in caplog.text and "token=***" in caplog.text
+
+        # A handler on the logger itself: uvicorn's own config may stop propagation.
+        seen: list[str] = []
+        handler = logging.Handler()
+        handler.emit = lambda record: seen.append(record.getMessage())  # type: ignore[method-assign]
+        target = logging.getLogger("uvicorn.error")
+        previous = target.level
+        target.addHandler(handler)
+        target.setLevel(logging.INFO)
+        try:
+            target.info('%s - "WebSocket %s" [accepted]', "127.0.0.1:1",
+                        f"/ws/live?token={ADMIN}")
+        finally:
+            target.removeHandler(handler)
+            target.setLevel(previous)
+        assert seen and ADMIN not in seen[0] and "token=***" in seen[0]
