@@ -27,8 +27,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **pytest plugin** (auto-registered): the `agent_vcr` fixture records an agent run on the
   first test run and replays it with zero model calls afterwards;
   `assert_matches_golden()` fails the test on behavior, cost, token or latency regressions with
-  a readable diff. `--vcr-record=none|once|all`, `--vcr-dir`, `--vcr-fail-on`,
-  `@pytest.mark.agent_vcr(...)`, xdist-safe.
+  a readable diff. `--vcr-record=none|once|all` (or `AGENT_VCR_RECORD=none` in CI), `--vcr-dir`,
+  `--vcr-fail-on`, `@pytest.mark.agent_vcr(...)`, xdist-safe, pytest 6.2+.
 - **Dashboard sign-in for token-protected servers**: open `/dashboard?token=...` once, or use the
   `/dashboard/login` form, to get a short-lived HttpOnly, SameSite=Strict session cookie (Secure
   on HTTPS). Cookie-only state-changing requests and the live WebSocket must come from the

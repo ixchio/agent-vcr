@@ -191,7 +191,7 @@ def test_triage(agent_vcr):
     agent_vcr.assert_matches_golden(max_cost_usd=0.05)
 ```
 
-`pytest --vcr-record=none` in CI fails instead of calling a model. See
+`AGENT_VCR_RECORD=none pytest` in CI fails instead of calling a model. See
 [docs/pytest-plugin.md](https://github.com/ixchio/agent-vcr/blob/main/docs/pytest-plugin.md).
 
 ### Sentinel
