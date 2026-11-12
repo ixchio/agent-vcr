@@ -5,16 +5,16 @@ and keeps the recording. Every run after that replays it, so CI spends zero toke
 
 **TL;DR**
 
-- Install `ai-agent-vcr` (1.7.0 or later) and pytest picks the plugin up. You get two fixtures,
-  `agent_vcr` and `vcr_recorder`, and one marker, `@pytest.mark.agent_vcr`. Tests that use none
-  of them run exactly as before.
+- Install `ai-agent-vcr` (1.7.0 or later) and pytest (6.2 or later) picks the plugin up. You get
+  two fixtures, `agent_vcr` and `vcr_recorder`, and one marker, `@pytest.mark.agent_vcr`. Tests
+  that use none of them run exactly as before.
 - `agent_vcr.run(task, agent)` runs your agent live once and saves that run as a **golden**.
   After that it returns the recorded outputs through Ghost Replay and doesn't call your agent.
 - `agent_vcr.assert_matches_golden()` applies the [Agent CI](agent-ci.md) rules. A fresh run that
   regresses on behavior, cost, tokens or latency fails the test, and the assertion message shows
   the diff.
-- Run CI with `--vcr-record=none`. A missing golden then fails the test and tells you how to
-  record it. The model is never called.
+- Run CI with `AGENT_VCR_RECORD=none` (or `--agent-vcr-record=none`). A missing golden then
+  fails the test and tells you how to record it. The model is never called.
 
 ## Try it in 60 seconds
 
@@ -77,8 +77,8 @@ CARELESS=1 pytest test_triage.py -q --vcr-record=all
 E       AssertionError: agent_vcr: DEGRADED vs golden (fail_on=degraded)
 E         test:      test_triage.py::test_triage
 E         task:      'triage ticket t_123'
-E         golden:    .vcr/pytest/golden/test_triage.py--test_triage/935739b6f2eecdde.vcr
-E         candidate: /tmp/pytest-of-you/pytest-38/agent_vcr-test_triage.py--test_triage0/candidate-0.vcr
+E         golden:    .vcr/pytest/golden/test_triage.py--test_triage-b903b9e789/935739b6f2eecdde.vcr
+E         candidate: /tmp/pytest-of-you/pytest-131/agent_vcr-test_triage.py--test_triage-b903b9e7890/candidate-0.vcr
 E         reasons:
 E           - tokens +75% vs baseline
 E           - new tool(s) vs baseline: delete_customer
@@ -98,8 +98,11 @@ agent-vcr: 1 run(s) recorded, 0 saved as golden; 1 not saved because the test fa
 The failed run did **not** replace the golden. Commit `.vcr/pytest/golden/` and gate CI with:
 
 ```bash
-pytest -q --vcr-record=none
+AGENT_VCR_RECORD=none pytest -q
 ```
+
+The environment variable is the CI-safe spelling: it works even when another plugin, such as
+pytest-vcr, owns `--vcr-record`. `--agent-vcr-record=none` and `--vcr-record=none` do the same.
 
 Delete the golden folder and the same command fails without calling anything:
 
@@ -108,7 +111,7 @@ agent_vcr: no golden recording for this test, and recording is off (--vcr-record
   test:      test_triage.py::test_triage
   task:      'triage ticket t_123'
   identity:  {"model": "demo-model"}
-  looked in: .vcr/pytest/golden/test_triage.py--test_triage
+  looked in: .vcr/pytest/golden/test_triage.py--test_triage-b903b9e789
 Record it once where the agent can run, review it, and commit the folder:
   pytest --vcr-record=once 'test_triage.py::test_triage'
 ```
@@ -136,7 +139,9 @@ Record it once where the agent can run, review it, and commit the folder:
 | `all` | Run live, compare with the golden, replace it if the test passes | Run live, save the golden if the test passes |
 
 - **A golden is keyed by test, task and identity.** Each test gets its own folder,
-  `<vcr-dir>/golden/<test-node-id-slug>/`, holding a [golden-run cache](recording-and-replay.md#-ghost-replay-re-use-a-run-you-trust):
+  `<vcr-dir>/golden/<file>--<test>-<hash>/`: up to 60 readable characters of the node id plus a
+  hash of the exact id, so `[a/b]` and `[a-b]`, or `[A]` and `[a]` on a case-insensitive disk,
+  never share a folder. It holds a [golden-run cache](recording-and-replay.md#-ghost-replay-re-use-a-run-you-trust):
   `index.json` plus one `<fingerprint>.vcr` per task + identity. The fingerprint is the same as
   in `GoldenRunCache`: the task is trimmed and lowercased, and the identity is normalized with
   sorted keys.
@@ -159,8 +164,9 @@ Record it once where the agent can run, review it, and commit the folder:
 - **Latency drift below 50 ms is ignored.** When the whole golden run took under 50 ms, a
   "+100%" is timer noise, so the plugin skips the latency drift check by default. Pass
   `max_latency_delta=` to force it. A `max_latency_ms` ceiling always applies.
-- **Which setting wins:** `--vcr-record` on the command line, then the marker's `record=`,
-  then `once`. So `--vcr-record=none` in CI always holds.
+- **Which setting wins:** the command line (`--vcr-record` / `--agent-vcr-record`), then
+  `$AGENT_VCR_RECORD`, then the `agent_vcr_record` ini option, then the marker's `record=`, then
+  `once`. A global `none` always beats a marker, so CI stays replay-only.
 - **Inert unless used.** At startup the plugin registers options and a marker, and that's all.
   Agent VCR's modules load only when a test asks for one of the fixtures. Folders are created
   only when something is recorded.
@@ -339,7 +345,7 @@ Commit `.vcr/pytest/golden/` (and keep `sessions/` out unless you want those rec
 
 ```yaml
       - name: Agent tests (replay only, zero tokens)
-        run: pytest -q --vcr-record=none
+        run: AGENT_VCR_RECORD=none pytest -q
 ```
 
 It works under pytest-xdist (`-n auto`): each test owns its golden folder, so workers never
@@ -359,8 +365,14 @@ write the same file.
   expectations can fail it. Catching drift needs `--vcr-record=all` (or a new identity), which
   calls the model and costs real tokens.
 - **An agent that records nothing and returns `None` fails the test.** There's nothing to replay.
-- **If pytest-vcr is installed, it owns `--vcr-record`.** Use `--agent-vcr-record` instead.
-  `--vcr-dir` and `--vcr-fail-on` are unaffected.
+- **If pytest-vcr is installed, it owns `--vcr-record`.** Use `--agent-vcr-record`,
+  `$AGENT_VCR_RECORD` or the `agent_vcr_record` ini option. A `--vcr-record` that went to
+  pytest-vcr triggers an `AgentVCRWarning` and a line in the summary. `none` is still honoured
+  (it can only prevent live calls); any other value is ignored. `--vcr-dir` and `--vcr-fail-on`
+  are unaffected.
+- **Identity and pipeline input must have a stable JSON form:** strings, numbers, lists, dicts
+  and sets (sets are sorted). Anything else, such as an object or a `Path`, raises `TypeError`;
+  pass a string or hash of it instead.
 - **No summary line under xdist.** Workers don't print the `agent-vcr:` line. Recording and
   replay still work.
 - **Recordings hold what your agent saw:** prompts, tool arguments, outputs. Keep secrets out
@@ -375,7 +387,7 @@ write the same file.
 | Gate a run | `agent_vcr.assert_matches_golden(run=None, fail_on=None, expect=None, **Expectation fields)` |
 | Per-test defaults | `@pytest.mark.agent_vcr(task=, identity=, record="none"\|"once"\|"all")`, then `agent_vcr.run(agent)` |
 | Plain recording | `vcr_recorder` fixture: a started `VCRRecorder`, saved at teardown |
-| Record mode | `--vcr-record=none\|once\|all` (default `once`; alias `--agent-vcr-record`) |
+| Record mode | `--vcr-record=none\|once\|all` (default `once`; alias `--agent-vcr-record`), `$AGENT_VCR_RECORD`, ini `agent_vcr_record` |
 | What fails a test | `--vcr-fail-on=degraded\|failed\|never` (default `degraded`) |
 | Where goldens live | `--vcr-dir DIR` (default `.vcr/pytest`): `golden/<test>/`, `sessions/` |
 | Inspect a result | `run.output`, `run.outputs`, `run.replayed`, `run.ledger`, `run.recording`, `run.golden_path`, `run.tokens`, `run.cost_usd` |
