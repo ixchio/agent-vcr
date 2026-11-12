@@ -667,3 +667,30 @@ def test_undo_and_redo_output_names_actions_and_uses_dry_run_signs(
     out = capsys.readouterr().out
     assert "Redid: rm src/app.py" in out and "    - src/app.py" in out
     assert not app.exists()
+
+
+def test_precious_files_inside_an_ignored_directory_are_protected(project: Path) -> None:
+    """`data/` in .gitignore used to hide data/app.db and data/.env from every snapshot."""
+    (project / ".gitignore").write_text("data/\n.env\n*.db\nnode_modules/\n")
+    weird = project / "data" / "we[ir]d dir"
+    weird.mkdir(parents=True)
+    (weird / ".env").write_text("A=1\n")
+    con = sqlite3.connect(project / "data" / "app.db")
+    con.execute("create table t(x)")
+    con.execute("insert into t values (42)")
+    con.commit()
+    con.close()
+    (project / "node_modules" / "pkg").mkdir(parents=True)
+    (project / "node_modules" / "pkg" / ".env").write_text("dependency\n")
+
+    bag = Airbag(project, policy=Policy())
+    bag.before(_call(project, "rm -rf data node_modules"))
+    shutil.rmtree(project / "data")
+    shutil.rmtree(project / "node_modules")
+    bag.undo()
+
+    assert (weird / ".env").read_text() == "A=1\n"
+    con = sqlite3.connect(project / "data" / "app.db")
+    assert con.execute("select x from t").fetchall() == [(42,)]
+    con.close()
+    assert not (project / "node_modules").exists()  # dependency trees are never captured

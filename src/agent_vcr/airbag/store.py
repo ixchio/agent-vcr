@@ -69,6 +69,9 @@ _MALLOC_ENV = {"MALLOC_TRIM_THRESHOLD_": "268435456", "MALLOC_TOP_PAD_": "167772
 _PREWRITE_JOBS = 4
 _PREWRITE_MIN_FILES = 2000
 
+#: At most this many ignored directories are searched for precious files per snapshot.
+_PRECIOUS_DIR_LIMIT = 200
+
 _SQLITE_MAGIC = b"SQLite format 3\x00"
 _SAFE_NAME = re.compile(r"[^A-Za-z0-9._-]+")
 
@@ -849,11 +852,36 @@ class ShadowStore:
         out = self._git(
             "ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--directory",
         ).stdout
+        entries = [raw for raw in out.split(b"\0") if raw]
+        # A whole ignored directory comes back collapsed ("data/"). Look inside it for
+        # precious files only (data/app.db, config/.env), never inside dependency or
+        # build trees (node_modules/, .venv/...), with one pathspec-limited listing.
+        collapsed = [
+            raw.decode("utf-8", "surrogateescape") for raw in entries if raw.endswith(b"/")
+        ]
+        look_inside = [
+            d for d in collapsed
+            if not any(_matches_exclude(d + "x", pat) for pat in self.excludes)
+        ][:_PRECIOUS_DIR_LIMIT]
+        if look_inside:
+            specs = [f":(glob){_glob_escape(d)}**/{pat}"
+                     for d in look_inside for pat in self.precious]
+            # ls-files has no --pathspec-from-file; batch to stay far below Windows'
+            # 32k-character command-line limit.
+            for start in range(0, len(specs), 100):
+                inner = self._git(
+                    "ls-files", "-z", "--others", "--ignored", "--exclude-standard",
+                    "--", *specs[start:start + 100], check=False,
+                )
+                if inner.returncode == 0:
+                    entries.extend(raw for raw in inner.stdout.split(b"\0") if raw)
         result: list[str] = []
         too_big: list[str] = []
-        for raw in out.split(b"\0"):
-            if not raw or raw.endswith(b"/"):
-                continue  # collapsed ignored directory (node_modules/, ...)
+        seen: set[bytes] = set()
+        for raw in entries:
+            if raw.endswith(b"/") or raw in seen:
+                continue  # collapsed ignored directory (handled above)
+            seen.add(raw)
             rel = raw.decode("utf-8", "surrogateescape")
             name = rel.rsplit("/", 1)[-1]
             if not any(fnmatch.fnmatch(name, pat) for pat in self.precious):
@@ -1301,6 +1329,11 @@ def _safe_rel(rel: str) -> bool:
     # A backslash is an ordinary filename character on POSIX.
     parts = (rel.replace("\\", "/") if os.name == "nt" else rel).split("/")
     return bool(rel) and not rel.startswith("/") and ".." not in parts and parts[0] != ".git"
+
+
+def _glob_escape(path: str) -> str:
+    """Escape glob metacharacters so a literal directory name is safe in a :(glob) pathspec."""
+    return re.sub(r"([*?\[\]\\])", r"\\\1", path)
 
 
 def _matches_exclude(rel: str, pattern: str) -> bool:
