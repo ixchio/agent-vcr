@@ -19,9 +19,11 @@ hooks to your agents' user-level configs and leaves other hooks alone. `vcr doct
   (`~/.claude/settings.json`, `~/.codex/hooks.json`, `~/.gemini/settings.json`, …): one install
   protects every project, and nothing is written into your repositories, so a committed hook can
   no longer break a teammate's agent. `--project` keeps the per-project install (Claude Code:
-  `.claude/settings.local.json`). Snapshots are taken in git repositories and folders with a
-  `.vcr/` folder; never in your home folder, `/`, Desktop, Documents or Downloads. There,
-  destructive commands are confirmed like irreversible ones, since nothing could undo them.
+  `.claude/settings.local.json`). Snapshots are taken in git repositories and in folders you opt
+  in with **`vcr airbag protect`**; never in your home folder, `/`, Desktop, Documents or
+  Downloads. Outside protected folders, irreversible commands are still stopped and so are
+  tree deletions (`rm -r` on a directory, `git clean`, `find -delete`, `rsync --delete`), since
+  no snapshot could bring them back; everything else goes ahead with a one-line notice.
 - **`vcr doctor`** checks the install, stale `vcr` launchers, git, every agent's hooks (and the
   interpreter they call), Codex/Gemini trust steps and whether the current folder is protected,
   and prints the exact fix. `vcr doctor --fix` repairs stale hook paths and migrates old hooks.

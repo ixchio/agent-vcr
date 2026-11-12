@@ -97,8 +97,9 @@ agent tool call ──► hook process (python -m agent_vcr.airbag.hook <agent>)
 * **Install and scope.** Hooks go into each agent's user-level config by default
   (`airbag/agents.py`), so one install covers every project and nothing lands in a repository; on
   POSIX the hook command is wrapped so a missing interpreter is a silent no-op. `airbag/scope.py`
-  decides where snapshots are taken (git repositories, folders with `.vcr/`, existing stores;
-  never the home folder or `/`); elsewhere destructive commands are escalated like irreversible
+  decides where snapshots are taken (git repositories, folders opted in with
+  `vcr airbag protect`, existing stores; never the home folder or `/`); elsewhere tree deletions
+  are escalated like irreversible
   ones. `airbag/doctor.py` (`vcr doctor`) checks all of this and repairs stale hook paths;
   `airbag/statusline.py` feeds Claude Code's status line.
 * **Fast first snapshot.** Files are staged with `git update-index --stdin` (linear) instead of
