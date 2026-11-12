@@ -70,6 +70,11 @@ jobs:
         python -m pip install --upgrade pip
         pip install -e ".[dev,langgraph,tui]"
 
+    - name: TEMPORARY first-snapshot timing
+      continue-on-error: true
+      run: |
+        python scripts/time_first_snapshot.py
+
     - name: Test with pytest
       run: |
         pytest tests/unit tests/e2e -q --no-cov -p no:cacheprovider
