@@ -366,8 +366,11 @@ def test_staging_matches_1_7_0_for_every_case(tmp_path: Path, git: bool, prewrit
         assert "src/app.py" in second.meta["skipped_large"]
         _mutate_2(root, symlinks=symlinks, unreadable=unreadable)
         pair.check("third")
-        # The fast path really ran (the comparison is not git add against itself).
-        assert calls == [True] * 4
+        # The fast path really ran (the comparison is not git add against itself): for
+        # first, second and third. "unchanged" only has data/app.db to restage while its
+        # SQLite backup is too recent to reuse (the 2 s racy window), which depends on
+        # how fast the machine got here (on the Windows runner it usually is not).
+        assert calls in ([True] * 3, [True] * 4)
     finally:
         for path in (root / "unreadable.txt", root / "docs" / "readme.md"):
             with contextlib.suppress(OSError):

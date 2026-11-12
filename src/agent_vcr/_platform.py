@@ -213,6 +213,62 @@ def kill_process_tree(proc: subprocess.Popen[Any]) -> None:
             proc.kill()
 
 
+# ── file change time ────────────────────────────────────────────────────
+
+#: 100 ns ticks between 1601-01-01 (FILETIME) and 1970-01-01 (Unix epoch).
+_FILETIME_EPOCH = 116_444_736_000_000_000
+
+if sys.platform == "win32":  # pragma: no cover - Windows
+    import ctypes
+    from ctypes import wintypes
+
+    class _FileBasicInfo(ctypes.Structure):
+        _fields_ = [("CreationTime", ctypes.c_longlong),
+                    ("LastAccessTime", ctypes.c_longlong),
+                    ("LastWriteTime", ctypes.c_longlong),
+                    ("ChangeTime", ctypes.c_longlong),
+                    ("FileAttributes", wintypes.DWORD)]
+
+    def _windows_change_time_ns(path: str) -> int | None:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        create = kernel32.CreateFileW
+        create.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID,
+                           wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+        create.restype = wintypes.HANDLE
+        get_info = kernel32.GetFileInformationByHandleEx
+        get_info.argtypes = [wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD]
+        get_info.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        # FILE_READ_ATTRIBUTES only, every share mode: never blocks a writer (SQLite).
+        handle = create(path, 0x80, 0x1 | 0x2 | 0x4, None, 3, 0x02000000, None)
+        if handle is None or handle == wintypes.HANDLE(-1).value:
+            return None
+        try:
+            info = _FileBasicInfo()
+            if not get_info(handle, 0, ctypes.byref(info), ctypes.sizeof(info)):  # FileBasicInfo
+                return None
+            return (int(info.ChangeTime) - _FILETIME_EPOCH) * 100
+        finally:
+            kernel32.CloseHandle(handle)
+
+
+def change_time_ns(path: str, st: os.stat_result) -> int:
+    """When ``path``'s data or metadata last changed (``st`` is its ``os.stat``).
+
+    POSIX: ``st_ctime_ns``, which every write moves (even when the mtime is put
+    back). On Windows ``st_ctime`` is the *creation* time, so the NTFS change
+    time is read instead; when it cannot be read the result is "now", which
+    makes a caller comparing change times assume the file changed.
+    """
+    if sys.platform == "win32":  # pragma: no cover - Windows
+        try:
+            found = _windows_change_time_ns(path)
+        except (OSError, AttributeError, ValueError):
+            found = None
+        return found if found is not None else time.time_ns()
+    return st.st_ctime_ns
+
+
 # ── text I/O ────────────────────────────────────────────────────────────
 
 

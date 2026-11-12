@@ -498,7 +498,9 @@ def test_migration_keeps_other_files_and_their_folder(repo: Path, home: Path) ->
 def test_hook_sites_report_guarding_correctly(repo: Path, home: Path) -> None:
     ag.install("copilot", repo, user=True)
     copilot = next(s for s in ag.find_hooks(repo) if s.agent == "copilot")
-    assert copilot.guarded  # its powershell variant only runs on Windows
+    # POSIX: its bash variant is guarded; the powershell one only runs on Windows and is
+    # not counted. Windows: every hook is a plain command, reported as unguarded.
+    assert copilot.guarded == POSIX
     if POSIX:
         legacy = home / "Documents" / "Cline" / "Hooks" / "PreToolUse"
         legacy.parent.mkdir(parents=True)
@@ -607,7 +609,10 @@ def test_doctor_fix_moves_project_hooks_and_upgrades_170_commands(
     assert any("moved the Claude Code hook" in d for d in done)
     assert not (repo / ".claude").exists()
     sites = ag.find_hooks(repo)
-    assert {s.scope for s in sites} == {"user"} and all(s.guarded for s in sites)
+    assert {s.scope for s in sites} == {"user"}
+    # Windows hooks are plain commands (Git Bash, cmd and PowerShell share no guard
+    # syntax), so there is nothing to upgrade there and none reports as guarded.
+    assert all(s.guarded for s in sites) if POSIX else not any(s.guarded for s in sites)
 
 
 def test_doctor_flags_stale_launchers(home: Path, tmp_path: Path) -> None:

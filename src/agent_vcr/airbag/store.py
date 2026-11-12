@@ -1431,7 +1431,10 @@ def _sqlite_key(full: str) -> list[list[int] | None] | None:
                 return None
             key.append(None)
             continue
-        key.append([st.st_size, st.st_mtime_ns, st.st_ctime_ns, st.st_ino, st.st_dev])
+        # The change time catches an in-place write that put the mtime back (on Windows
+        # st_ctime is the creation time, so it is read from NTFS instead).
+        ctime = _platform.change_time_ns(full + suffix, st)
+        key.append([st.st_size, st.st_mtime_ns, ctime, st.st_ino, st.st_dev])
     return key
 
 
