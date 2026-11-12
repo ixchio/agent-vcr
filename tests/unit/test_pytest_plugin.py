@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -339,7 +340,7 @@ def test_none_mode_without_golden_fails_and_never_calls_the_agent(pytester, inne
             "*test:      test_agent.py::test_triage",
             "*task:      'triage ticket t_123'",
             '*identity:  {"model": "demo-model"}',
-            "*looked in: .vcr*pytest*golden*test_agent.py--test_triage",
+            "*looked in: .vcr*pytest*golden*test_agent.py--test_triage-*",
             "*pytest --vcr-record=once 'test_agent.py::test_triage'",
         ]
     )
@@ -437,7 +438,8 @@ from pathlib import Path
 def test_opts(agent_vcr, request):
     assert agent_vcr.mode == "all"
     assert request.config.getoption("agent_vcr_fail_on") == "never"
-    assert agent_vcr.golden_dir == Path.cwd() / "custom" / "golden" / "test_opts.py--test_opts"
+    assert agent_vcr.golden_dir.parent == Path.cwd() / "custom" / "golden"
+    assert agent_vcr.golden_dir.name.startswith("test_opts.py--test_opts-")
     agent_vcr.run("t", lambda rec: {"ok": 1})
 '''
     )
@@ -486,22 +488,32 @@ import pytest
 class TestGroup:
     @pytest.mark.parametrize("n", [1])
     def test_rec(self, vcr_recorder, n):
-        assert vcr_recorder.get_session().session_id == "test_rec.py--TestGroup--test_rec-1"
+        sid = vcr_recorder.get_session().session_id
+        assert sid.startswith("test_rec.py--TestGroup--test_rec-1-")
         vcr_recorder.record_step("step", {"n": n}, {"n": n + 1})
 '''
     )
     inner().assert_outcomes(passed=1)
-    path = pytester.path / ".vcr" / "pytest" / "sessions" / "test_rec.py--TestGroup--test_rec-1.vcr"
+    slug = node_slug("test_rec.py::TestGroup::test_rec[1]")
+    path = pytester.path / ".vcr" / "pytest" / "sessions" / f"{slug}.vcr"
     lines = [json.loads(line) for line in path.read_text().splitlines()]
     assert lines[0]["data"]["metadata"]["agent_vcr"]["test"] == "test_rec.py::TestGroup::test_rec[1]"
     assert lines[1]["data"]["node_name"] == "step"
 
 
-def test_node_slug_is_file_safe_and_bounded() -> None:
-    assert node_slug("tests/a.py::TestX::test_y[p-1/2]") == "tests-a.py--TestX--test_y-p-1-2"
+def test_node_slug_is_file_safe_unique_and_bounded() -> None:
+    slug = node_slug("tests/a.py::TestX::test_y[p-1/2]")
+    assert slug.startswith("a.py--TestX--test_y-p-1-2-")
+    assert slug == node_slug("tests/a.py::TestX::test_y[p-1/2]")  # stable
+    # Ids that read the same, or differ only in case, still get distinct folders.
+    ids = [f"t.py::test_slug[{p}]" for p in ("a/b", "a-b", "a:b", "a b", "A", "a")]
+    slugs = [node_slug(i) for i in ids]
+    assert len(set(slugs)) == len(ids)
+    assert len({s.lower() for s in slugs}) == len(ids)
     long = node_slug("t.py::test[" + "x" * 300 + "]")
-    assert len(long) <= 120 and "/" not in long
+    assert len(long) <= 72 and long.isascii() and "/" not in long
     assert long != node_slug("t.py::test[" + "x" * 299 + "y]")
+    assert all(re.fullmatch(r"[A-Za-z0-9._-]+", s) for s in [*slugs, long])
 
 
 # -- inert when unused ------------------------------------------------------------
@@ -556,3 +568,229 @@ def pytest_sessionfinish(session):
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert (pytester.path / "plugin.txt").read_text() == "agent_vcr.pytest_plugin"
     assert (pytester.path / "mods.txt").read_text() == "agent_vcr,agent_vcr.pytest_plugin"
+
+
+# -- review regressions ------------------------------------------------------------
+
+
+def _subprocess_pytest(cwd: Path, *args: str, **env_extra: str) -> subprocess.CompletedProcess:
+    env = {**os.environ, "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1", **env_extra}
+    env["PYTHONPATH"] = os.pathsep.join([str(REPO / "src"), *sys.path])
+    return subprocess.run(
+        [sys.executable, "-m", "pytest", "-q", "-p", "agent_vcr.pytest_plugin",
+         "-p", "no:cacheprovider", *args],
+        cwd=cwd, env=env, capture_output=True, text=True, timeout=120,
+    )
+
+
+def test_plugin_source_avoids_pytest7_only_apis() -> None:
+    """pytest < 7 has no StashKey / .stash: using them broke every pytest run."""
+    source = (REPO / "src" / "agent_vcr" / "pytest_plugin.py").read_text()
+    assert "StashKey" not in source
+    assert ".stash" not in source
+
+
+def test_plugin_works_without_stash_api(pytester: pytest.Pytester) -> None:
+    """Simulate an old pytest: no pytest.StashKey / pytest.Stash at import time."""
+    pytester.makeconftest("")
+    pytester.makepyfile(
+        test_old='''
+def test_unrelated():
+    assert True
+
+
+def test_agent(agent_vcr):
+    assert agent_vcr.run("t", lambda rec: {"ok": 1}).output == {"ok": 1}
+'''
+    )
+    runner = pytester.makepyfile(
+        run_old='''
+import sys
+
+import pytest
+
+for name in ("StashKey", "Stash"):
+    if hasattr(pytest, name):
+        delattr(pytest, name)
+sys.exit(pytest.main(["-q", "-p", "agent_vcr.pytest_plugin", "-p", "no:cacheprovider",
+                      "test_old.py"]))
+'''
+    )
+    env = {**os.environ, "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1"}
+    env["PYTHONPATH"] = os.pathsep.join([str(REPO / "src"), *sys.path])
+    for _ in range(2):  # record, then replay
+        proc = subprocess.run([sys.executable, str(runner)], cwd=pytester.path, env=env,
+                              capture_output=True, text=True, timeout=120)
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "replayed" in proc.stdout
+
+
+FAKE_PYTEST_VCR = '''
+def pytest_addoption(parser):
+    parser.getgroup("vcr").addoption("--vcr-record", dest="vcr_record", default=None,
+                                     choices=["once", "new_episodes", "none", "all"])
+'''
+
+
+def test_pytest_vcr_owning_the_flag_never_records_on_none(pytester, inner) -> None:
+    pytester.makepyfile(pytest_vcr=FAKE_PYTEST_VCR, test_agent=AGENT_TESTS)
+    pytester.syspathinsert()
+    result = inner("-p", "pytest_vcr", "--vcr-record=none")
+    result.assert_outcomes(failed=1)
+    assert _calls(pytester) == 0  # pytest-vcr took the flag, but none still holds
+    result.stdout.fnmatch_lines(
+        [
+            "*no golden recording*recording is off (--agent-vcr-record=none)*",
+            "*--vcr-record=none was taken by pytest-vcr*Treating it as none*",
+        ]
+    )
+    other = inner("-p", "pytest_vcr", "--vcr-record=all")
+    other.assert_outcomes(passed=1)
+    other.stdout.fnmatch_lines(["*--vcr-record=all was taken by pytest-vcr*default (once)*"])
+    assert "AgentVCRWarning" in other.stdout.str()
+    inner("-p", "pytest_vcr", "--agent-vcr-record=all").assert_outcomes(passed=1)
+    assert _calls(pytester) == 2
+
+
+def test_env_and_ini_record_modes(pytester, inner, monkeypatch) -> None:
+    pytester.makepyfile(test_agent=AGENT_TESTS)
+    monkeypatch.setenv("AGENT_VCR_RECORD", "none")
+    inner().assert_outcomes(failed=1)
+    inner("--agent-vcr-record=once").assert_outcomes(passed=1)  # command line beats env
+    assert _calls(pytester) == 1
+    monkeypatch.setenv("AGENT_VCR_RECORD", "sometimes")
+    bad = inner()
+    assert bad.ret == pytest.ExitCode.USAGE_ERROR
+    bad.stderr.fnmatch_lines(["*$AGENT_VCR_RECORD must be one of none, once, all*"])
+    monkeypatch.delenv("AGENT_VCR_RECORD")
+
+    pytester.makeini("[pytest]\nagent_vcr_record = all\n")
+    inner().assert_outcomes(passed=1)  # ini all: re-recorded
+    assert _calls(pytester) == 2
+    monkeypatch.setenv("AGENT_VCR_RECORD", "once")
+    inner().assert_outcomes(passed=1)  # env beats ini: replay
+    assert _calls(pytester) == 2
+
+
+def test_global_none_beats_marker_record(pytester, inner, monkeypatch) -> None:
+    pytester.makepyfile(
+        test_mark='''
+import pytest
+
+
+@pytest.mark.agent_vcr(task="t", record="all")
+def test_mark(agent_vcr):
+    agent_vcr.run(lambda rec: {"ok": 1})
+'''
+    )
+    monkeypatch.setenv("AGENT_VCR_RECORD", "none")
+    inner().assert_outcomes(failed=1)
+
+
+def test_similar_param_ids_get_separate_goldens(pytester, inner) -> None:
+    pytester.makepyfile(
+        test_slug='''
+import pytest
+
+
+@pytest.mark.parametrize("p", ["a/b", "a-b", "a:b", "a b", "A", "a"])
+def test_slug(agent_vcr, p):
+    def agent(rec):
+        open("calls.txt", "a").write("call\\n")
+        return {"p": p}
+    run = agent_vcr.run("same task", agent)
+    assert run.output == {"p": p}
+'''
+    )
+    inner().assert_outcomes(passed=6)
+    again = inner()
+    again.assert_outcomes(passed=6)
+    again.stdout.fnmatch_lines(["*6 run(s) replayed*"])
+    assert _calls(pytester) == 6
+    folders = list((pytester.path / ".vcr" / "pytest" / "golden").iterdir())
+    assert len({f.name.lower() for f in folders}) == 6
+
+
+def test_getfixturevalue_saves_the_golden(pytester, inner) -> None:
+    pytester.makepyfile(
+        test_dyn='''
+def agent(rec):
+    open("calls.txt", "a").write("call\\n")
+    return {"ok": True}
+
+
+def test_dyn(request):
+    av = request.getfixturevalue("agent_vcr")
+    av.run("dyn task", agent)
+
+
+def test_dyn_fails(request):
+    av = request.getfixturevalue("agent_vcr")
+    av.run("dyn fail", agent)
+    assert False
+'''
+    )
+    first = inner()
+    first.assert_outcomes(passed=1, failed=1)
+    first.stdout.fnmatch_lines(["*2 run(s) recorded, 1 saved as golden; 1 not saved*"])
+    second = inner("-k", "not fails")
+    second.assert_outcomes(passed=1)
+    second.stdout.fnmatch_lines(["*1 run(s) replayed*"])
+    assert _calls(pytester) == 2
+
+
+SET_IDENTITY_TESTS = '''
+def agent(rec):
+    open("calls.txt", "a").write("call\\n")
+    return {"ok": True}
+
+
+def test_set_identity(agent_vcr):
+    tools = {"search", "calc", "browse", "shell", "edit", "fetch", "write", "read"}
+    agent_vcr.run("set task", agent, identity={"tools": tools, "nested": [frozenset({3, 1, 2})]})
+
+
+def test_set_input(agent_vcr):
+    steps = [("one", lambda s: {"n": len(s["tags"])})]
+    agent_vcr.run("set input", steps, input={"tags": {"x", "y", "z", "w", "v", "u"}})
+'''
+
+
+def test_set_identity_is_stable_across_hash_seeds(pytester: pytest.Pytester) -> None:
+    pytester.makepyfile(test_sets=SET_IDENTITY_TESTS)
+    first = _subprocess_pytest(pytester.path, PYTHONHASHSEED="1")
+    assert first.returncode == 0, first.stdout + first.stderr
+    assert _calls(pytester) == 1
+    for seed in ("2", "3", "4"):
+        again = _subprocess_pytest(pytester.path, "--agent-vcr-record=none", PYTHONHASHSEED=seed)
+        assert again.returncode == 0, again.stdout + again.stderr
+        assert "2 run(s) replayed" in again.stdout
+    assert _calls(pytester) == 1
+
+
+def test_identity_without_stable_json_form_raises(pytester, inner) -> None:
+    pytester.makepyfile(
+        test_bad_ident='''
+import pytest
+
+
+class Model:
+    pass
+
+
+def test_object(agent_vcr):
+    with pytest.raises(TypeError, match=r"identity\\['model'\\] holds a Model"):
+        agent_vcr.run("t", lambda rec: {"ok": 1}, identity={"model": Model()})
+
+
+def test_bad_key(agent_vcr):
+    with pytest.raises(TypeError, match="dict key"):
+        agent_vcr.run("t", lambda rec: {"ok": 1}, identity={("a",): 1})
+
+
+def test_input(agent_vcr):
+    with pytest.raises(TypeError, match="input"):
+        agent_vcr.run("t", [("s", lambda s: s)], input={"obj": object()})
+'''
+    )
+    inner().assert_outcomes(passed=3)

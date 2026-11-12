@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import time
 import warnings
@@ -63,9 +64,11 @@ class AgentVCRWarning(UserWarning):
 @dataclass
 class _Settings:
     vcr_dir: Path
-    record: str | None  # None: not given on the command line
+    record: str | None  # None: no global setting (command line, env, ini)
     fail_on: str
     record_flag: str
+    notice: str = ""  # shown once when a fixture is used (pytest-vcr owns --vcr-record)
+    root: Path | None = None
 
 
 @dataclass
@@ -76,23 +79,88 @@ class _Stats:
     not_saved: int = 0
     tokens_saved: int = 0
     cost_saved_usd: float = 0.0
+    notice_shown: bool = False
 
 
-_SETTINGS = pytest.StashKey[_Settings]()
-_STATS = pytest.StashKey[_Stats]()
-_REPORTS = pytest.StashKey["dict[str, pytest.TestReport]"]()
+# State lives in private attributes, not pytest's stash API (pytest >= 7), so
+# that importing and registering the plugin can never fail on an older pytest.
+_SETTINGS_ATTR = "_agent_vcr_settings"
+_STATS_ATTR = "_agent_vcr_stats"
+_REPORTS_ATTR = "_agent_vcr_reports"
+_USED_ATTR = "_agent_vcr_used"
+ENV_RECORD = "AGENT_VCR_RECORD"
+INI_RECORD = "agent_vcr_record"
+
+
+def _settings(config: Any) -> _Settings:
+    settings = getattr(config, _SETTINGS_ATTR, None)
+    if settings is None:  # pytest_configure did not run (should not happen)
+        settings = _Settings(Path(DEFAULT_VCR_DIR).resolve(), None, DEFAULT_FAIL_ON, "--vcr-record")
+        setattr(config, _SETTINGS_ATTR, settings)
+    return settings  # type: ignore[no-any-return]
+
+
+def _stats(config: Any) -> _Stats:
+    stats = getattr(config, _STATS_ATTR, None)
+    if stats is None:
+        stats = _Stats()
+        setattr(config, _STATS_ATTR, stats)
+    return stats  # type: ignore[no-any-return]
 
 
 # -- options, marker, hooks ---------------------------------------------------
 
 
+def _pytest_vcr_installed() -> bool:
+    try:
+        return find_spec("pytest_vcr") is not None
+    except (ImportError, ValueError):
+        return False
+
+
 def _record_flags() -> list[str]:
     """``--vcr-record`` unless pytest-vcr (which owns that flag) is installed."""
-    try:
-        pytest_vcr = find_spec("pytest_vcr") is not None
-    except (ImportError, ValueError):
-        pytest_vcr = False
-    return ["--agent-vcr-record"] if pytest_vcr else ["--vcr-record", "--agent-vcr-record"]
+    if _pytest_vcr_installed():
+        return ["--agent-vcr-record"]
+    return ["--vcr-record", "--agent-vcr-record"]
+
+
+def _record_value(value: Any, source: str) -> str | None:
+    text = str(value or "").strip().lower()
+    if not text:
+        return None
+    if text not in RECORD_MODES:
+        raise pytest.UsageError(
+            f"agent_vcr: {source} must be one of {', '.join(RECORD_MODES)}, got {value!r}"
+        )
+    return text
+
+
+def _resolve_record(config: Any, record_flag: str) -> tuple[str | None, str]:
+    """Global record mode: command line > $AGENT_VCR_RECORD > ini > nothing.
+
+    Returns ``(mode, notice)``. When pytest-vcr owns ``--vcr-record`` and it was
+    given, the value went to pytest-vcr: ``none`` is still honoured (it can only
+    stop live calls), and the notice says how to set agent_vcr's mode.
+    """
+    for value, source in (
+        (config.getoption("agent_vcr_record", None), record_flag),
+        (os.environ.get(ENV_RECORD), f"${ENV_RECORD}"),
+        (config.getini(INI_RECORD), f"the {INI_RECORD} ini option"),
+    ):
+        mode = _record_value(value, source)
+        if mode is not None:
+            return mode, ""
+    foreign = config.getoption("vcr_record", None) if _pytest_vcr_installed() else None
+    if not foreign:
+        return None, ""
+    notice = (
+        f"agent_vcr: --vcr-record={foreign} was taken by pytest-vcr, which owns that flag. "
+        f"Use --agent-vcr-record, ${ENV_RECORD} or the {INI_RECORD} ini option for agent_vcr. "
+    )
+    if foreign == "none":
+        return "none", notice + "Treating it as none, so the agent is not called live."
+    return None, notice + f"agent_vcr ignored it and used its default ({DEFAULT_RECORD})."
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -119,38 +187,61 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         choices=FAIL_ON_CHOICES,
         help="which assert_matches_golden verdicts fail a test (default: degraded)",
     )
+    parser.addini(
+        INI_RECORD,
+        f"agent_vcr record mode (none|once|all) when neither --agent-vcr-record nor "
+        f"${ENV_RECORD} is set",
+        default="",
+    )
 
 
 def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line(
         "markers",
         "agent_vcr(task=None, identity=None, record=None): defaults for the agent_vcr fixture "
-        "(record: none|once|all; --vcr-record on the command line wins)",
+        f"(record: none|once|all; --agent-vcr-record, ${ENV_RECORD} and the {INI_RECORD} "
+        "ini option win)",
     )
     # Relative to rootdir, not the cwd: goldens must be found wherever pytest
     # is run from (and --vcr-dir often comes from addopts).
-    vcr_dir = Path(config.rootpath, config.getoption("agent_vcr_dir", None) or DEFAULT_VCR_DIR)
-    config.stash[_SETTINGS] = _Settings(
-        vcr_dir=vcr_dir,
-        record=config.getoption("agent_vcr_record", None),
-        fail_on=config.getoption("agent_vcr_fail_on", DEFAULT_FAIL_ON) or DEFAULT_FAIL_ON,
-        record_flag=_record_flags()[0],
+    # rootpath is pytest >= 6.1; older versions only have the py.path rootdir.
+    rootpath = getattr(config, "rootpath", None) or Path(str(getattr(config, "rootdir", ".")))
+    vcr_dir = Path(rootpath, config.getoption("agent_vcr_dir", None) or DEFAULT_VCR_DIR)
+    record_flag = _record_flags()[0]
+    record, notice = _resolve_record(config, record_flag)
+    setattr(
+        config,
+        _SETTINGS_ATTR,
+        _Settings(
+            vcr_dir=vcr_dir,
+            record=record,
+            fail_on=config.getoption("agent_vcr_fail_on", DEFAULT_FAIL_ON) or DEFAULT_FAIL_ON,
+            record_flag=record_flag,
+            notice=notice,
+            root=Path(rootpath),
+        ),
     )
-    config.stash[_STATS] = _Stats()
+    setattr(config, _STATS_ATTR, _Stats())
 
 
 @pytest.hookimpl(hookwrapper=True)
 def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo[None]) -> Iterator[None]:
     """Keep phase reports so teardown knows whether the test passed."""
     outcome = yield
-    if any(name in getattr(item, "fixturenames", ()) for name in _FIXTURES):
+    if getattr(item, _USED_ATTR, False) or any(
+        name in getattr(item, "fixturenames", ()) for name in _FIXTURES
+    ):
         report: pytest.TestReport = outcome.get_result()  # type: ignore[attr-defined]
-        item.stash.setdefault(_REPORTS, {})[report.when] = report
+        reports = getattr(item, _REPORTS_ATTR, None)
+        if reports is None:
+            reports = {}
+            setattr(item, _REPORTS_ATTR, reports)
+        reports[report.when] = report
 
 
 def pytest_terminal_summary(terminalreporter: Any, config: pytest.Config) -> None:
-    stats = config.stash.get(_STATS, None)
-    if stats is None or not (stats.recorded or stats.replayed):
+    stats = getattr(config, _STATS_ATTR, None)
+    if stats is None or not (stats.recorded or stats.replayed or stats.notice_shown):
         return
     parts = []
     if stats.replayed:
@@ -163,7 +254,10 @@ def pytest_terminal_summary(terminalreporter: Any, config: pytest.Config) -> Non
     if stats.not_saved:
         parts.append(f"{stats.not_saved} not saved because the test failed")
     terminalreporter.write_sep("-", "agent-vcr")
-    terminalreporter.write_line("agent-vcr: " + "; ".join(parts))
+    if parts:
+        terminalreporter.write_line("agent-vcr: " + "; ".join(parts))
+    if stats.notice_shown:
+        terminalreporter.write_line(_settings(config).notice, yellow=True, bold=True)
 
 
 # -- helpers --------------------------------------------------------------------
@@ -172,19 +266,59 @@ def pytest_terminal_summary(terminalreporter: Any, config: pytest.Config) -> Non
 _SLUG_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
 
+_SLUG_MAX = 60
+
+
 def node_slug(nodeid: str) -> str:
-    """File-name-safe form of a test node id (``a/b.py::T::t[x]`` → ``a-b.py--T--t-x``)."""
-    slug = _SLUG_RE.sub("-", nodeid.replace("::", "--")).strip("-.") or "test"
-    if len(slug) > 120:  # keep file names well under filesystem limits
-        digest = hashlib.sha256(nodeid.encode()).hexdigest()[:12]
-        slug = f"{slug[:100].rstrip('-.')}-{digest}"
-    return slug
+    """File-name-safe, unique form of a test node id.
+
+    ``a/b.py::T::t[x]`` → ``b.py--T--t-x-<hash>``. The readable part is lossy
+    (``[a/b]`` and ``[a-b]`` read the same) and is capped at 60 characters, so a
+    hash of the exact node id is always appended: distinct tests never share a
+    folder, even on case-insensitive filesystems, and paths stay short (Windows).
+    """
+    path, sep, rest = nodeid.partition("::")
+    short = path.rsplit("/", 1)[-1] + sep + rest  # folders are in the hash, not the name
+    readable = _SLUG_RE.sub("-", short.replace("::", "--")).strip("-.")
+    readable = readable[:_SLUG_MAX].strip("-.") or "test"
+    digest = hashlib.sha256(nodeid.encode("utf-8")).hexdigest()[:10]
+    return f"{readable}-{digest}"
+
+
+def _canonical(value: Any, where: str) -> Any:
+    """A JSON value whose encoding never depends on hash seeds or object ids.
+
+    Sets are sorted; anything without a stable JSON form raises ``TypeError``
+    (``default=str`` would make set order, and so the golden key, vary per run).
+    """
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, dict):
+        out: dict[str, Any] = {}
+        for key, item in value.items():
+            if isinstance(key, str):
+                name = key
+            elif key is None or isinstance(key, (bool, int, float)):
+                name = json.dumps(key)  # what json.dumps does with such keys
+            else:
+                raise TypeError(f"{where}: dict key {key!r} is not a string or number")
+            out[name] = _canonical(item, f"{where}[{name!r}]")
+        return out
+    if isinstance(value, (list, tuple)):
+        return [_canonical(item, f"{where}[{i}]") for i, item in enumerate(value)]
+    if isinstance(value, (set, frozenset)):
+        items = [_canonical(item, f"{where}{{...}}") for item in value]
+        return sorted(items, key=lambda item: json.dumps(item, sort_keys=True))
+    raise TypeError(
+        f"{where} holds a {type(value).__name__}, which has no stable JSON form; use strings, "
+        "numbers, lists, dicts or sets (for example a hash or str() of the value)"
+    )
 
 
 def _normalize(identity: dict[str, Any] | None) -> dict[str, Any]:
     if not identity:
         return {}
-    return dict(json.loads(json.dumps(identity, sort_keys=True, default=str)))
+    return dict(_canonical(identity, "identity"))
 
 
 def _changed_keys(old: dict[str, Any], new: dict[str, Any]) -> list[str]:
@@ -201,8 +335,14 @@ def _pct(new: float, old: float) -> str:
 
 
 def _test_passed(item: pytest.Item) -> bool:
-    reports = item.stash.get(_REPORTS, {})
-    return all(reports.get(when) is not None and reports[when].passed for when in ("setup", "call"))
+    reports = getattr(item, _REPORTS_ATTR, None) or {}
+    call = reports.get("call")
+    if call is None or not call.passed:
+        return False
+    # No setup report: the fixture was requested during the call
+    # (request.getfixturevalue), so setup had already passed.
+    setup = reports.get("setup")
+    return setup is None or bool(setup.passed)
 
 
 # -- results --------------------------------------------------------------------
@@ -296,7 +436,7 @@ class AgentVCR:
         if steps is not None:
             # The pipeline input is part of what makes a golden valid.
             digest = hashlib.sha256(
-                json.dumps(input, sort_keys=True, default=str).encode()
+                json.dumps(_canonical(input, "input"), sort_keys=True).encode()
             ).hexdigest()
             identity = {**identity, "input_sha256": digest[:16]}
         for prev in self.runs:
@@ -517,7 +657,8 @@ class AgentVCR:
         return kwargs
 
     def _resolve_mode(self) -> str:
-        # Command line > marker > "once": --vcr-record=none in CI always wins.
+        # Command line > $AGENT_VCR_RECORD > ini > marker > "once": a global
+        # none (CI) always wins over a marker.
         return self._settings.record or self._marker.get("record") or DEFAULT_RECORD
 
     def _show(self, path: Path | None) -> str:
@@ -525,7 +666,7 @@ class AgentVCR:
         if path is None:
             return "-"
         try:
-            return str(Path(path).relative_to(self._item.config.rootpath))
+            return str(Path(path).relative_to(self._settings.root or Path.cwd()))
         except ValueError:
             return str(path)
 
@@ -744,13 +885,24 @@ def _fingerprint_of(cache: GoldenRunCache | None, info: dict[str, Any] | None) -
 # -- fixtures -------------------------------------------------------------------
 
 
+def _mark_used(request: pytest.FixtureRequest) -> None:
+    """Flag the item so its reports are kept, also for request.getfixturevalue()."""
+    setattr(request.node, _USED_ATTR, True)
+    settings, stats = _settings(request.config), _stats(request.config)
+    if settings.notice and not stats.notice_shown:
+        stats.notice_shown = True
+        warnings.warn(AgentVCRWarning(settings.notice), stacklevel=3)
+
+
 @pytest.fixture
 def agent_vcr(
     request: pytest.FixtureRequest, tmp_path_factory: pytest.TempPathFactory
 ) -> Iterator[AgentVCR]:
     """Record your agent once, replay it forever: ``agent_vcr.run(task, agent)``."""
-    config = request.config
-    session = AgentVCR(request.node, config.stash[_SETTINGS], config.stash[_STATS], tmp_path_factory)
+    _mark_used(request)
+    session = AgentVCR(
+        request.node, _settings(request.config), _stats(request.config), tmp_path_factory
+    )
     yield session
     session._finish()
 
@@ -760,7 +912,8 @@ def vcr_recorder(request: pytest.FixtureRequest) -> Iterator[VCRRecorder]:
     """A started ``VCRRecorder`` session named after the test, saved at teardown."""
     from agent_vcr.recorder import VCRRecorder
 
-    settings: _Settings = request.config.stash[_SETTINGS]
+    _mark_used(request)
+    settings = _settings(request.config)
     rec = VCRRecorder(output_dir=str(settings.vcr_dir / "sessions"))
     rec.start_session(
         node_slug(request.node.nodeid),
