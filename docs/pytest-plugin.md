@@ -5,7 +5,7 @@ and keeps the recording. Every run after that replays it, so CI spends zero toke
 
 **TL;DR**
 
-- Install `ai-agent-vcr` (1.7.0 or later) and pytest (6.2 or later) picks the plugin up. You get
+- Install `ai-agent-vcr` (1.7.1 or later) and pytest (6.2 or later) picks the plugin up. You get
   two fixtures, `agent_vcr` and `vcr_recorder`, and one marker, `@pytest.mark.agent_vcr`. Tests
   that use none of them run exactly as before.
 - `agent_vcr.run(task, agent)` runs your agent live once and saves that run as a **golden**.

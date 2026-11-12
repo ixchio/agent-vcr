@@ -421,7 +421,7 @@ vcr airbag uninstall codex   # one agent
 vcr airbag uninstall         # every agent, user and project level; your own hooks are left alone
 ```
 
-### Upgrading from 1.7.0
+### Upgrading from 1.6.0 or 1.7.0
 
 1.7.0 installed hooks into the project (`.claude/settings.json`, `.codex/hooks.json`, …) with
 your machine's Python path in them. Committed, every teammate's agent then runs a hook that

@@ -13,7 +13,7 @@ Six superpowers, one snippet each. Everything below runs offline: no API key, no
 ```bash
 pipx install ai-agent-vcr     # the `vcr` command, isolated (Python 3.9–3.13)
 pip install ai-agent-vcr      # …or into your environment, for the Python API below
-vcr --version                 # vcr 1.7.0
+vcr --version                 # vcr 1.7.1
 ```
 
 Work in an empty folder for the Python snippets below: they write a `.vcr/` directory next to

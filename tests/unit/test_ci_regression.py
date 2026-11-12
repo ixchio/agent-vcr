@@ -190,7 +190,7 @@ class TestRunRegression:
         assert json.loads(out.read_text(encoding="utf-8"))["dataset"] == "ci-demo"
 
     def test_public_api(self):
-        assert agent_vcr.__version__ == "1.7.0"
+        assert agent_vcr.__version__ == "1.7.1"
         for name in ("ReplayDataset", "TestCase", "Expectation", "run_regression",
                      "compare_sessions", "evaluate_candidate", "RegressionReport",
                      "CaseVerdict", "RiskLevel"):
